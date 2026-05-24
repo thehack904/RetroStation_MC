@@ -9,7 +9,7 @@
   </a>
 </p>
 <p align="center">
-  <img src="docs/screenshots/Admin_Page-Guide_Online.png" width="900">
+  <img src="docs/screenshots/Admin_Page-Guide_Online.jpg" width="900">
 </p>
 
 RetroStation MC is an admin-driven retro TV guide channel generator. It ingests an M3U playlist and XMLTV guide data, renders a continuous guide-style video feed, packages that feed as HLS, and exposes a single-channel M3U/XMLTV pair for use in RetroIPTVGuide or another IPTV client.
