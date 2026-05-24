@@ -74,10 +74,18 @@ Open:
 
 ## Quick start with Python
 
+
 Requirements:
 
 - Python 3.11 or newer
 - FFmpeg in `PATH`
+
+```bash
+./install-linux.sh
+```
+
+Or run the setup steps manually:
+
 
 ```bash
 python3 -m venv .venv
