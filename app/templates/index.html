@@ -1,0 +1,674 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RetroStation MC — Control Panel</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    {% set c = theme_data_all.get(config.theme, {}) %}
+    :root {
+      --theme-bg: {{ c.get('background', '#0b1220') }};
+      --theme-panel-bg: {{ c.get('program_bg', '#111b31') }};
+      --theme-panel-border: {{ c.get('grid_line', '#223454') }};
+      --theme-text: {{ c.get('program_text', '#e8eefb') }};
+      --theme-input-bg: {{ c.get('background', '#0b1220') }};
+      --theme-input-border: {{ c.get('grid_line', '#35527e') }};
+      --theme-stat-bg: {{ c.get('channel_bg', '#0a1324') }};
+      --theme-stat-text: {{ c.get('time_text', '#a8b8d8') }};
+      --theme-btn-bg: {{ c.get('header_bg', '#2f65d9') }};
+      --theme-btn-text: {{ c.get('header_text', '#ffffff') }};
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══════════════════════  STATUS HEADER  ═══════════════════════ -->
+  <header class="status-bar">
+    <div class="status-bar__brand">RetroStation MC</div>
+    <div class="status-bar__info">
+      <span class="status-bar__item">
+        <span class="dot {{ 'dot--green' if status.pipeline_active else 'dot--red' }}"></span>
+        <strong>{{ 'Running' if status.pipeline_active else 'Stopped' }}</strong>
+      </span>
+      <span class="status-bar__sep">|</span>
+      <span class="status-bar__item">Theme: <strong>{{ status.current_theme or '—' }}</strong></span>
+      <span class="status-bar__sep">|</span>
+      <span class="status-bar__item">{{ config.resolution }}&nbsp;&nbsp;{{ config.fps }}fps</span>
+      <span class="status-bar__sep">|</span>
+      <span class="status-bar__item">Last Refresh: <strong>{{ status.last_refresh_status or '—' }}</strong></span>
+      {% if events %}
+      <span class="status-bar__sep">|</span>
+      <span class="status-bar__item">Last Event: <strong>{{ events[0].created_at }}</strong></span>
+      {% endif %}
+    </div>
+    <div class="status-bar__actions">
+      <form method="post" action="{{ url_for('restart_pipeline') }}">
+        <button type="submit" class="btn btn--sm">&#x21BB; Restart Guide</button>
+      </form>
+      <form method="post" action="{{ url_for('stop_guide') }}">
+        <button type="submit" class="btn btn--sm btn--danger">&#x23F9; Stop Guide</button>
+      </form>
+      <form method="post" action="{{ url_for('refresh_now') }}">
+        <button type="submit" class="btn btn--sm">&#x21C4; Refresh EPG</button>
+      </form>
+    </div>
+  </header>
+
+  <!-- ═══════════════════════  FLASH MESSAGES  ═════════════════════ -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-bar">
+      {% for category, message in messages %}
+        <div class="flash flash--{{ category }}">{{ message }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% endwith %}
+
+  <!-- ═══════════════════════  MAIN WORKSPACE  ════════════════════ -->
+  <div class="workspace">
+
+    <!-- ═══════════  LEFT COLUMN  ═══════════ -->
+    <div class="workspace__left">
+      <form method="post" action="{{ url_for('save_config') }}" id="config-form">
+
+        <!-- Guide Configuration -->
+        <section class="section">
+          <div class="section__header">Guide Configuration</div>
+          <div class="field-row">
+            <label class="field-label">Playlist Source</label>
+            <input type="text" name="playlist_source" value="{{ config.playlist_source }}">
+          </div>
+          <div class="field-row">
+            <label class="field-label">XMLTV Source</label>
+            <input type="text" name="xmltv_source" value="{{ config.xmltv_source }}">
+          </div>
+          <div class="field-row">
+            <label class="field-label">Channel Group</label>
+            <input type="text" name="channel_group" value="{{ config.channel_group }}">
+          </div>
+          <div class="field-row">
+            <label class="field-label">Timezone</label>
+            <select name="timezone">
+              {% for value in ['local', 'utc'] %}
+                <option value="{{ value }}" {% if value == config.timezone %}selected{% endif %}>{{ value }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </section>
+
+        <!-- Render Settings -->
+        <section class="section">
+          <div class="section__header">Render Settings</div>
+          <div class="field-row">
+            <label class="field-label">Resolution</label>
+            <select name="resolution">
+              {% for value in ['1280x720', '1920x1080'] %}
+                <option value="{{ value }}" {% if value == config.resolution %}selected{% endif %}>{{ value }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Frame Rate</label>
+            <input type="number" min="1" max="60" name="fps" value="{{ config.fps }}">
+          </div>
+          <div class="field-row">
+            <label class="field-label">Segment Length (sec)</label>
+            <input type="number" min="1" max="10" name="segment_seconds" value="{{ config.segment_seconds }}">
+          </div>
+          <div class="field-row">
+            <label class="field-label">Guide Duration (min)</label>
+            <input type="number" min="30" max="240" step="30" name="guide_minutes" value="{{ config.guide_minutes }}">
+          </div>
+          <div class="field-row">
+            <label class="field-label">Visible Rows</label>
+            <input type="number" min="3" max="20" name="visible_rows" value="{{ config.visible_rows }}">
+          </div>
+          <div class="field-row">
+            <label class="field-label">Page Dwell (sec)</label>
+            <input type="number" min="3" max="60" name="page_seconds" value="{{ config.page_seconds }}">
+          </div>
+          <div class="field-row">
+            <label class="field-label">Transition</label>
+            <select name="transition">
+              <option value="cut" {% if config.transition == 'cut' %}selected{% endif %}>Cut (instant)</option>
+              <option value="scroll" {% if config.transition == 'scroll' %}selected{% endif %}>Scroll (vertical)</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Output Format</label>
+            <select name="output_format">
+              <option value="both" {% if config.output_format == 'both' %}selected{% endif %}>M3U + XMLTV</option>
+              <option value="m3u" {% if config.output_format == 'm3u' %}selected{% endif %}>M3U only</option>
+              <option value="m3u8" {% if config.output_format == 'm3u8' %}selected{% endif %}>M3U8 only</option>
+            </select>
+          </div>
+        </section>
+
+        <!-- Theme Selection -->
+        <section class="section">
+          <div class="section__header">Theme Selection</div>
+          <div class="field-row">
+            <label class="field-label">Theme</label>
+            <select name="theme" id="theme-select">
+              {% for theme in themes %}
+                <option value="{{ theme }}" {% if theme == config.theme %}selected{% endif %}>{{ theme }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Guide Title</label>
+            <input type="text" name="title" value="{{ config.title }}">
+          </div>
+          <div class="theme-preview" id="theme-preview">
+            <span class="theme-swatch" id="swatch-bg" title="Guide background"></span>
+            <span class="theme-swatch" id="swatch-header" title="Header bar"></span>
+            <span class="theme-swatch" id="swatch-program" title="Program cells"></span>
+            <span class="theme-swatch" id="swatch-channel" title="Channel column"></span>
+            <span class="theme-preview-label">Color preview</span>
+          </div>
+        </section>
+
+        <div class="form-actions">
+          <button type="submit" name="action" value="save" class="btn">Save Config</button>
+          <button type="submit" name="action" value="start_restart" class="btn btn--primary">
+            {% if status.pipeline_active %}Save &amp; Restart{% else %}Save &amp; Start{% endif %}
+          </button>
+        </div>
+
+      </form>
+    </div><!-- /workspace__left -->
+
+    <!-- ═══════════  RIGHT COLUMN  ═══════════ -->
+    <div class="workspace__right">
+
+      <!-- Stream Outputs -->
+      <section class="section">
+        <div class="section__header">Stream Outputs</div>
+        <div class="output-row">
+          <span class="output-label">HLS Stream</span>
+          <input type="text" class="output-url" id="url-hls" readonly
+            value="{{ url_for('hls_master_playlist', _external=True) }}">
+          <button type="button" class="btn btn--sm btn--copy" onclick="copyUrl('url-hls', this)">Copy</button>
+        </div>
+        <div class="output-row">
+          <span class="output-label">M3U Playlist</span>
+          <input type="text" class="output-url" id="url-m3u" readonly
+            value="{{ url_for('channel_playlist', _external=True) }}">
+          <button type="button" class="btn btn--sm btn--copy" onclick="copyUrl('url-m3u', this)">Copy</button>
+        </div>
+        <div class="output-row">
+          <span class="output-label">XMLTV Guide</span>
+          <input type="text" class="output-url" id="url-xmltv" readonly
+            value="{{ url_for('channel_xmltv', _external=True) }}">
+          <button type="button" class="btn btn--sm btn--copy" onclick="copyUrl('url-xmltv', this)">Copy</button>
+        </div>
+      </section>
+
+      <!-- Pipeline Status -->
+      <section class="section">
+        <div class="section__header">Pipeline Status</div>
+        <div class="status-grid">
+          <div class="status-item">
+            <span class="status-label">State</span>
+            <span class="status-value">
+              <span class="dot {{ 'dot--green' if status.pipeline_active else 'dot--red' }}"></span>
+              {{ 'Live' if status.pipeline_active else 'Idle' }}
+            </span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Renderer</span>
+            <span class="status-value">
+              <span class="dot {{ 'dot--green' if status.renderer_running else 'dot--yellow' }}"></span>
+              {{ 'Running' if status.renderer_running else 'Stopped' }}
+            </span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">FFmpeg</span>
+            <span class="status-value">
+              <span class="dot {{ 'dot--green' if status.ffmpeg_running else 'dot--yellow' }}"></span>
+              {{ 'Running' if status.ffmpeg_running else 'Stopped' }}
+            </span>
+          </div>
+          <div class="status-item">
+            <span class="status-label">Last Refresh</span>
+            <span class="status-value">{{ status.last_refresh_status or '—' }}</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Preview Panel -->
+      <section class="section section--preview">
+        <div class="section__header">
+          Preview
+          {% if status.pipeline_active %}<span class="live-badge">LIVE</span>{% endif %}
+        </div>
+        <div class="preview-wrap">
+          <video id="preview-player" controls muted autoplay playsinline class="preview-video"></video>
+        </div>
+      </section>
+
+    </div><!-- /workspace__right -->
+  </div><!-- /workspace -->
+
+  <!-- ═══════════════════  LOWER TABBED SECTION  ════════════════════ -->
+  <div class="tabs-wrap">
+    <div class="tabs-nav">
+      <button class="tab-btn tab-btn--active" data-tab="general">General</button>
+      <button class="tab-btn" data-tab="music">Music</button>
+      <button class="tab-btn" data-tab="diagnostics">Diagnostics</button>
+      <button class="tab-btn" data-tab="logs">Logs</button>
+      <button class="tab-btn" data-tab="about">About</button>
+    </div>
+
+    <!-- General Tab -->
+    <div class="tab-panel tab-panel--active" id="tab-general">
+      <div class="info-grid">
+        <div class="info-row"><span class="info-label">Playlist</span><code>{{ status.playlist_source or '—' }}</code></div>
+        <div class="info-row"><span class="info-label">XMLTV</span><code>{{ status.xmltv_source or '—' }}</code></div>
+        <div class="info-row"><span class="info-label">Theme</span><code>{{ status.current_theme or '—' }}</code></div>
+        <div class="info-row"><span class="info-label">Stream URL</span><code>{{ status.stream_url }}</code></div>
+      </div>
+    </div>
+
+    <!-- Music Tab -->
+    <div class="tab-panel" id="tab-music">
+      <form method="post" action="{{ url_for('music_upload') }}" enctype="multipart/form-data" class="music-upload-form">
+        <div class="music-upload-row">
+          <label class="music-file-label">
+            <span>Upload audio files (MP3, FLAC, WAV, OGG, M4A, AAC — max 100 MB each)</span>
+            <input type="file" name="files" multiple accept=".mp3,.flac,.wav,.ogg,.m4a,.aac" style="width:auto">
+          </label>
+          <button type="submit" class="btn btn--sm">Upload</button>
+        </div>
+      </form>
+
+      <form method="post" action="{{ url_for('music_settings') }}" id="music-settings-form" style="margin-top:14px">
+        <div class="field-row-inline">
+          <label class="field-label" style="min-width:90px">Mode</label>
+          <select name="music_mode" id="music-mode-select" style="width:160px">
+            <option value="none" {% if config.music_mode == 'none' %}selected{% endif %}>None (silence)</option>
+            <option value="single" {% if config.music_mode == 'single' %}selected{% endif %}>Single file</option>
+            <option value="playlist" {% if config.music_mode == 'playlist' %}selected{% endif %}>Playlist</option>
+          </select>
+          <label class="inline-check" style="margin-left:20px">
+            <input type="checkbox" name="music_loop" value="1" {% if config.music_loop %}checked{% endif %}>
+            Loop
+          </label>
+        </div>
+
+        {% if music_files %}
+        <div id="music-file-list" style="margin-top:14px">
+          <p class="music-list-heading">Uploaded files</p>
+          {% for fname in music_files %}
+          <div class="music-file-row" data-filename="{{ fname }}">
+            <label class="music-single-selector" id="single-label-{{ loop.index }}">
+              <input type="radio" name="music_single_file" value="{{ fname }}"
+                aria-label="Select {{ fname }} for single mode"
+                {% if config.music_single_file == fname %}checked{% endif %}>
+            </label>
+            <label class="music-playlist-selector" id="playlist-label-{{ loop.index }}">
+              <input type="checkbox" class="pl-check" value="{{ fname }}"
+                aria-label="Include {{ fname }} in playlist"
+                {% if fname in config.music_playlist_files %}checked{% endif %}>
+            </label>
+            <span class="pl-order" id="pl-order-{{ loop.index }}"></span>
+            <button type="button" class="btn btn--sm pl-up" title="Move up"
+              aria-label="Move {{ fname }} up in playlist" onclick="moveMusicUp(this)">&#9650;</button>
+            <button type="button" class="btn btn--sm pl-down" title="Move down"
+              aria-label="Move {{ fname }} down in playlist" onclick="moveMusicDown(this)">&#9660;</button>
+            <span class="music-fname">{{ fname }}</span>
+            <button type="button" class="btn btn--sm btn--danger"
+              onclick="deleteMusicFile('{{ url_for('music_delete', filename=fname) }}')"
+              aria-label="Delete {{ fname }}">Delete</button>
+          </div>
+          {% endfor %}
+          <!-- Hidden inputs for playlist order are injected by JS before submit -->
+          <div id="playlist-order-inputs"></div>
+        </div>
+        {% else %}
+        <p style="opacity:0.6;margin-top:14px">No audio files uploaded yet.</p>
+        {% endif %}
+
+        <div class="form-actions" style="margin-top:14px">
+          <button type="submit" name="action" value="save" class="btn">Save Music Settings</button>
+          {% if status.pipeline_active %}
+          <button type="submit" name="action" value="restart" class="btn btn--primary">Save &amp; Restart Pipeline</button>
+          {% endif %}
+        </div>
+      </form>
+    </div><!-- /tab-music -->
+
+    <!-- Diagnostics Tab -->
+    <div class="tab-panel" id="tab-diagnostics">
+      <form method="post" action="{{ url_for('diagnostics_settings') }}">
+        <div class="field-row">
+          <label class="field-label">Delayed Edge (segments)</label>
+          <input type="number" min="1" max="120" name="diag_delay_segments" value="{{ config.diag_delay_segments }}">
+        </div>
+        <div class="field-row">
+          <label class="field-label">Minimum Buffer (seconds)</label>
+          <input type="number" min="1" max="900" name="diag_min_buffer_secs" value="{{ config.diag_min_buffer_secs }}">
+        </div>
+        <div class="field-row">
+          <label class="field-label">Minimum Buffer (segments)</label>
+          <input type="number" min="1" max="300" name="diag_min_buffer_segments" value="{{ config.diag_min_buffer_segments }}">
+        </div>
+        <div class="field-row">
+          <label class="field-label">Standby Window (segments)</label>
+          <input type="number" min="1" max="20" name="diag_standby_window_segments" value="{{ config.diag_standby_window_segments }}">
+        </div>
+        <div class="field-row">
+          <label class="field-label">UI Log Tail Lines</label>
+          <input type="number" min="10" max="2000" name="diag_log_tail_lines" value="{{ config.diag_log_tail_lines }}">
+        </div>
+        <div class="form-actions" style="margin-top:14px">
+          <button type="submit" name="action" value="save" class="btn">Save Diagnostics</button>
+          {% if status.pipeline_active %}
+          <button type="submit" name="action" value="restart" class="btn btn--primary">Save &amp; Restart Pipeline</button>
+          {% endif %}
+        </div>
+      </form>
+    </div>
+
+    <!-- Logs Tab -->
+    <div class="tab-panel" id="tab-logs">
+      <div class="field-row-inline" style="margin-bottom:10px;gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="status-bar__item">Stored Events: <strong>{{ events_total }}</strong></span>
+        <a class="btn btn--sm" href="{{ url_for('logs_export') }}?format=jsonl">Download Full Logs (JSONL)</a>
+        <a class="btn btn--sm" href="{{ url_for('logs_export') }}?format=csv">Download Full Logs (CSV)</a>
+        <a class="btn btn--sm" href="{{ url_for('logs_api') }}?limit=500&offset=0" target="_blank" rel="noopener">Open Logs API</a>
+      </div>
+      <div class="log-terminal">
+        {% for event in events %}
+          <div class="log-line">
+            <span class="log-ts">{{ event.created_at }}</span>
+            <span class="log-level log-level--{{ event.level|lower }}">{{ event.level }}</span>
+            <span class="log-cat">{{ event.category }}</span>
+            <span class="log-msg">{{ event.message }}</span>
+          </div>
+        {% else %}
+          <div class="log-line log-empty">No events recorded yet.</div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- About Tab -->
+    <div class="tab-panel" id="tab-about">
+      <div class="info-grid">
+        <div class="info-row"><span class="info-label">Application</span><code>RetroStation MC</code></div>
+        <div class="info-row"><span class="info-label">Version</span><code>v1.0.0</code></div>
+        <div class="info-row"><span class="info-label">Description</span><code>Admin-driven retro guide channel generator for RetroIPTVGuide.</code></div>
+      </div>
+    </div>
+
+  </div><!-- /tabs-wrap -->
+
+  <!-- HLS player -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+  <script>
+    (function () {
+      var video = document.getElementById('preview-player');
+      // stream_url now returns /hls/master.m3u8 so the preview uses the same
+      // two-level HLS path as IPTV clients: master → standby.m3u8 or live.m3u8.
+      var src = {{ status.stream_url | tojson }};
+      var hlsInst = null;
+      var mediaErrCount = 0;
+
+      function initHls() {
+        if (hlsInst) { hlsInst.destroy(); hlsInst = null; }
+        mediaErrCount = 0;
+        if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+          hlsInst = new Hls();
+          hlsInst.loadSource(src);
+          hlsInst.attachMedia(video);
+          hlsInst.on(Hls.Events.ERROR, function (event, data) {
+            if (!data.fatal) return;
+            if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaErrCount < 3) {
+              mediaErrCount++;
+              hlsInst.recoverMediaError();
+            } else {
+              setTimeout(initHls, 4000);
+            }
+          });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = src;
+        }
+      }
+
+      initHls();
+
+      // Stall detection: if the video hasn't advanced for ~12 seconds while
+      // it should be playing, destroy and recreate the player so it picks up
+      // the live stream again (e.g. when standby transitions to the guide).
+      var lastTime = 0, stallTicks = 0;
+      setInterval(function () {
+        if (video.paused || video.ended || video.readyState < 3) {
+          lastTime = video.currentTime;
+          stallTicks = 0;
+          return;
+        }
+        if (video.currentTime === lastTime) {
+          if (++stallTicks >= 3) { stallTicks = 0; initHls(); }
+        } else {
+          lastTime = video.currentTime;
+          stallTicks = 0;
+        }
+      }, 4000);
+
+      // Stream-version polling: re-initialise the player whenever the server
+      // reports a standby↔live transition.  The master.m3u8 variant URL
+      // carries a ?v=N cache-busting parameter that changes on every
+      // transition, so re-calling initHls() picks up the new variant
+      // (standby.m3u8 → live.m3u8 or vice versa) without a page reload.
+      var knownVersion = {{ status.stream_version | default(0) }};
+      setInterval(function () {
+        fetch('/status')
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var v = data.stream_version;
+            if (v !== undefined && v !== knownVersion) {
+              knownVersion = v;
+              initHls();
+            }
+          })
+          .catch(function () { /* ignore transient network errors */ });
+      }, 5000);
+    })();
+  </script>
+
+  <!-- Theme live preview -->
+  <script>
+    (function () {
+      var themeData = {{ theme_data_all | tojson }};
+
+      function applyTheme(name) {
+        var c = themeData[name] || {};
+        var root = document.documentElement;
+        root.style.setProperty('--theme-bg', c.background || '#0b1220');
+        root.style.setProperty('--theme-panel-bg', c.program_bg || '#111b31');
+        root.style.setProperty('--theme-panel-border', c.grid_line || '#223454');
+        root.style.setProperty('--theme-text', c.program_text || '#e8eefb');
+        root.style.setProperty('--theme-input-bg', c.background || '#0b1220');
+        root.style.setProperty('--theme-input-border', c.grid_line || '#35527e');
+        root.style.setProperty('--theme-stat-bg', c.channel_bg || '#0a1324');
+        root.style.setProperty('--theme-stat-text', c.time_text || '#a8b8d8');
+        root.style.setProperty('--theme-btn-bg', c.header_bg || '#2f65d9');
+        root.style.setProperty('--theme-btn-text', c.header_text || '#ffffff');
+        document.getElementById('swatch-bg').style.background = c.background || '';
+        document.getElementById('swatch-header').style.background = c.header_bg || '';
+        document.getElementById('swatch-program').style.background = c.program_bg || '';
+        document.getElementById('swatch-channel').style.background = c.channel_bg || '';
+      }
+
+      var sel = document.getElementById('theme-select');
+      applyTheme(sel.value);
+      sel.addEventListener('change', function () { applyTheme(this.value); });
+    })();
+  </script>
+
+  <!-- Tab switching -->
+  <script>
+    (function () {
+      var btns = document.querySelectorAll('.tab-btn');
+      var panels = document.querySelectorAll('.tab-panel');
+      function activateTab(name) {
+        var targetBtn = document.querySelector('.tab-btn[data-tab="' + name + '"]');
+        var targetPanel = document.getElementById('tab-' + name);
+        if (!targetBtn || !targetPanel) return;
+        btns.forEach(function (b) { b.classList.remove('tab-btn--active'); });
+        panels.forEach(function (p) { p.classList.remove('tab-panel--active'); });
+        targetBtn.classList.add('tab-btn--active');
+        targetPanel.classList.add('tab-panel--active');
+      }
+      btns.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          activateTab(btn.dataset.tab);
+        });
+      });
+      if (window.location.hash && window.location.hash.startsWith('#tab-')) {
+        activateTab(window.location.hash.slice(5).split('?')[0]);
+      }
+    })();
+  </script>
+
+  <!-- Copy URL helper -->
+  <script>
+    function copyUrl(inputId, btn) {
+      var el = document.getElementById(inputId);
+      if (!el || !btn) return;
+      var orig = btn.textContent;
+      function flash(text) {
+        btn.textContent = text;
+        setTimeout(function () { btn.textContent = orig; }, 1500);
+      }
+      function fallbackCopy() {
+        el.focus();
+        el.select();
+        el.setSelectionRange(0, el.value.length);
+        var copied = false;
+        try {
+          copied = !!(document.execCommand && document.execCommand('copy'));
+        } catch (e) {
+          copied = false;
+        }
+        flash(copied ? 'Copied!' : 'Copy failed');
+        if (window.getSelection) window.getSelection().removeAllRanges();
+        el.blur();
+      }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(el.value).then(function () {
+          flash('Copied!');
+        }).catch(function () {
+          fallbackCopy();
+        });
+        return;
+      }
+      fallbackCopy();
+    }
+  </script>
+
+  <!-- Music controls -->
+  <script>
+    (function () {
+      var modeSelect = document.getElementById('music-mode-select');
+      if (!modeSelect) return;
+
+      var initialPlaylist = {{ config.music_playlist_files | tojson }};
+      var fileList = document.getElementById('music-file-list');
+
+      function getRows() {
+        return fileList ? Array.from(fileList.querySelectorAll('.music-file-row')) : [];
+      }
+
+      function applyMode(mode) {
+        getRows().forEach(function (row) {
+          var sl = row.querySelector('.music-single-selector');
+          var pl = row.querySelector('.music-playlist-selector');
+          var up = row.querySelector('.pl-up');
+          var dn = row.querySelector('.pl-down');
+          var ord = row.querySelector('.pl-order');
+          if (sl) sl.style.display = (mode === 'single') ? '' : 'none';
+          if (pl) pl.style.display = (mode === 'playlist') ? '' : 'none';
+          if (up) up.style.display = (mode === 'playlist') ? '' : 'none';
+          if (dn) dn.style.display = (mode === 'playlist') ? '' : 'none';
+          if (ord) ord.style.display = (mode === 'playlist') ? '' : 'none';
+        });
+        updatePlaylistOrder();
+      }
+
+      function updatePlaylistOrder() {
+        var rows = getRows();
+        var mode = modeSelect.value;
+        var pos = 1;
+        rows.forEach(function (row) {
+          var ord = row.querySelector('.pl-order');
+          var check = row.querySelector('.pl-check');
+          if (ord && check) {
+            if (mode === 'playlist' && check.checked) { ord.textContent = pos++; }
+            else { ord.textContent = ''; }
+          }
+        });
+        var container = document.getElementById('playlist-order-inputs');
+        if (!container) return;
+        container.innerHTML = '';
+        if (mode === 'playlist') {
+          rows.forEach(function (row) {
+            var check = row.querySelector('.pl-check');
+            if (check && check.checked) {
+              var inp = document.createElement('input');
+              inp.type = 'hidden';
+              inp.name = 'music_playlist_files';
+              inp.value = check.value;
+              container.appendChild(inp);
+            }
+          });
+        }
+      }
+
+      if (fileList && initialPlaylist.length > 0) {
+        var rows = getRows();
+        initialPlaylist.forEach(function (fname) {
+          var match = rows.find(function (r) { return r.dataset.filename === fname; });
+          if (match) fileList.insertBefore(match, document.getElementById('playlist-order-inputs'));
+        });
+      }
+
+      if (fileList) {
+        fileList.addEventListener('change', function (e) {
+          if (e.target.classList.contains('pl-check')) updatePlaylistOrder();
+        });
+      }
+
+      modeSelect.addEventListener('change', function () { applyMode(this.value); });
+      applyMode(modeSelect.value);
+    })();
+
+    function moveMusicUp(btn) {
+      var row = btn.closest('.music-file-row');
+      var prev = row.previousElementSibling;
+      while (prev && !prev.classList.contains('music-file-row')) prev = prev.previousElementSibling;
+      if (prev) row.parentNode.insertBefore(row, prev);
+      document.getElementById('music-mode-select').dispatchEvent(new Event('change'));
+    }
+
+    function moveMusicDown(btn) {
+      var row = btn.closest('.music-file-row');
+      var next = row.nextElementSibling;
+      while (next && !next.classList.contains('music-file-row')) next = next.nextElementSibling;
+      if (next) row.parentNode.insertBefore(next, row);
+      document.getElementById('music-mode-select').dispatchEvent(new Event('change'));
+    }
+
+    function deleteMusicFile(url) {
+      var form = document.createElement('form');
+      form.method = 'post';
+      form.action = url;
+      document.body.appendChild(form);
+      form.submit();
+    }
+  </script>
+
+</body>
+</html>

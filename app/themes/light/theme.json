@@ -1,0 +1,24 @@
+{
+  "name": "Light",
+  "colors": {
+    "background": "#ffffff",
+    "header_bg": "#222222",
+    "header_text": "#ffffff",
+    "footer_bg": "#222222",
+    "footer_text": "#cccccc",
+    "channel_bg": "#f9f9f9",
+    "channel_text": "#000000",
+    "grid_line": "#cccccc",
+    "time_text": "#000000",
+    "program_bg": "#dddddd",
+    "program_outline": "#aaaaaa",
+    "program_text": "#000000",
+    "now_line": "#009900"
+  },
+  "layout": {
+    "header_height": 88,
+    "footer_height": 42,
+    "channel_column_width": 250,
+    "row_height": 68
+  }
+}

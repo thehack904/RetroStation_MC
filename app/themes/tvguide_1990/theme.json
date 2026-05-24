@@ -1,0 +1,24 @@
+{
+  "name": "TV Guide 1990",
+  "colors": {
+    "background": "#d8d7d3",
+    "header_bg": "#ffffff",
+    "header_text": "#000000",
+    "footer_bg": "#d8d7d3",
+    "footer_text": "#000000",
+    "channel_bg": "#d8d7d3",
+    "channel_text": "#000000",
+    "grid_line": "#000000",
+    "time_text": "#000000",
+    "program_bg": "#ffffff",
+    "program_outline": "#000000",
+    "program_text": "#000000",
+    "now_line": "#000000"
+  },
+  "layout": {
+    "header_height": 88,
+    "footer_height": 42,
+    "channel_column_width": 250,
+    "row_height": 68
+  }
+}

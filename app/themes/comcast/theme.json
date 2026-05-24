@@ -1,0 +1,24 @@
+{
+  "name": "Comcast",
+  "colors": {
+    "background": "#1a3666",
+    "header_bg": "#7493c2",
+    "header_text": "#ffffff",
+    "footer_bg": "#001b50",
+    "footer_text": "#ffffff",
+    "channel_bg": "#001b50",
+    "channel_text": "#ffffff",
+    "grid_line": "#0044cc",
+    "time_text": "#ffffff",
+    "program_bg": "#003890",
+    "program_outline": "#0044cc",
+    "program_text": "#ffffff",
+    "now_line": "#ffcc00"
+  },
+  "layout": {
+    "header_height": 88,
+    "footer_height": 42,
+    "channel_column_width": 250,
+    "row_height": 68
+  }
+}

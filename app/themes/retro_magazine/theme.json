@@ -1,0 +1,24 @@
+{
+  "name": "Retro Magazine",
+  "colors": {
+    "background": "#ffffff",
+    "header_bg": "#ffffff",
+    "header_text": "#000000",
+    "footer_bg": "#ffffff",
+    "footer_text": "#000000",
+    "channel_bg": "#ffffff",
+    "channel_text": "#000000",
+    "grid_line": "#000000",
+    "time_text": "#000000",
+    "program_bg": "#ffffff",
+    "program_outline": "#000000",
+    "program_text": "#000000",
+    "now_line": "#000000"
+  },
+  "layout": {
+    "header_height": 88,
+    "footer_height": 42,
+    "channel_column_width": 250,
+    "row_height": 68
+  }
+}

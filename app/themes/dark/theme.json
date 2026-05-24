@@ -1,0 +1,24 @@
+{
+  "name": "Dark",
+  "colors": {
+    "background": "#111111",
+    "header_bg": "#222222",
+    "header_text": "#eeeeee",
+    "footer_bg": "#222222",
+    "footer_text": "#cccccc",
+    "channel_bg": "#1a1a1a",
+    "channel_text": "#ffffff",
+    "grid_line": "#333333",
+    "time_text": "#bbbbbb",
+    "program_bg": "#3a3a3a",
+    "program_outline": "#555555",
+    "program_text": "#eeeeee",
+    "now_line": "#00ff00"
+  },
+  "layout": {
+    "header_height": 88,
+    "footer_height": 42,
+    "channel_column_width": 250,
+    "row_height": 68
+  }
+}

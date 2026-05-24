@@ -1,0 +1,24 @@
+{
+  "name": "DirecTV",
+  "colors": {
+    "background": "#049fff",
+    "header_bg": "#002b80",
+    "header_text": "#ffffff",
+    "footer_bg": "#001f66",
+    "footer_text": "#ffffff",
+    "channel_bg": "#001b50",
+    "channel_text": "#ffffff",
+    "grid_line": "#004bdb",
+    "time_text": "#b9dcff",
+    "program_bg": "#001f66",
+    "program_outline": "#004bdb",
+    "program_text": "#ffffff",
+    "now_line": "#ffcc00"
+  },
+  "layout": {
+    "header_height": 88,
+    "footer_height": 42,
+    "channel_column_width": 250,
+    "row_height": 68
+  }
+}

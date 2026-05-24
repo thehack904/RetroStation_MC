@@ -1,0 +1,24 @@
+{
+  "name": "RetroIPTV",
+  "colors": {
+    "background": "#e9e8e6",
+    "header_bg": "#3fb7b0",
+    "header_text": "#ffffff",
+    "footer_bg": "#3fb7b0",
+    "footer_text": "#ffffff",
+    "channel_bg": "#f6e1c8",
+    "channel_text": "#3b0f1a",
+    "grid_line": "#5a3040",
+    "time_text": "#3b0f1a",
+    "program_bg": "#ffffff",
+    "program_outline": "#5a3040",
+    "program_text": "#3b0f1a",
+    "now_line": "#ffd24a"
+  },
+  "layout": {
+    "header_height": 88,
+    "footer_height": 42,
+    "channel_column_width": 250,
+    "row_height": 68
+  }
+}

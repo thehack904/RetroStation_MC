@@ -1,0 +1,13 @@
+services:
+  retro-guide-poc:
+    build: .
+    container_name: retro-guide-poc
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+      - ./sample_data:/app/sample_data
+    environment:
+      - RETROGUIDE_HOST=0.0.0.0
+      - RETROGUIDE_PORT=8787

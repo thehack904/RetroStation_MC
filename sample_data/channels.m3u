@@ -1,0 +1,19 @@
+#EXTM3U
+#EXTINF:-1 tvg-id="channel.2" tvg-name="WRETRO" tvg-chno="2" group-title="Local",WRETRO
+http://example.invalid/stream1
+#EXTINF:-1 tvg-id="channel.4" tvg-name="NewsNet" tvg-chno="4" group-title="News",NewsNet
+http://example.invalid/stream2
+#EXTINF:-1 tvg-id="channel.5" tvg-name="MovieMax" tvg-chno="5" group-title="Movies",MovieMax
+http://example.invalid/stream3
+#EXTINF:-1 tvg-id="channel.7" tvg-name="Sports One" tvg-chno="7" group-title="Sports",Sports One
+http://example.invalid/stream4
+#EXTINF:-1 tvg-id="channel.9" tvg-name="Kids Planet" tvg-chno="9" group-title="Kids",Kids Planet
+http://example.invalid/stream5
+#EXTINF:-1 tvg-id="channel.11" tvg-name="History Vault" tvg-chno="11" group-title="Education",History Vault
+http://example.invalid/stream6
+#EXTINF:-1 tvg-id="channel.13" tvg-name="Music Hub" tvg-chno="13" group-title="Music",Music Hub
+http://example.invalid/stream7
+#EXTINF:-1 tvg-id="channel.15" tvg-name="Comedy Centralish" tvg-chno="15" group-title="Entertainment",Comedy Centralish
+http://example.invalid/stream8
+#EXTINF:-1 tvg-id="channel.18" tvg-name="Space Channel" tvg-chno="18" group-title="Science",Space Channel
+http://example.invalid/stream9

@@ -1,0 +1,24 @@
+{
+  "name": "Classic Blue",
+  "colors": {
+    "background": "#08101d",
+    "header_bg": "#173361",
+    "header_text": "#ffffff",
+    "footer_bg": "#102040",
+    "footer_text": "#d9e6ff",
+    "channel_bg": "#0d1930",
+    "channel_text": "#ffffff",
+    "grid_line": "#2d4a7a",
+    "time_text": "#d9e6ff",
+    "program_bg": "#21406b",
+    "program_outline": "#7db2ff",
+    "program_text": "#ffffff",
+    "now_line": "#ffd166"
+  },
+  "layout": {
+    "header_height": 88,
+    "footer_height": 42,
+    "channel_column_width": 250,
+    "row_height": 68
+  }
+}

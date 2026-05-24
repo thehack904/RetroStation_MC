@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <programme start="20260412180000 +0000" stop="20260412183000 +0000" channel="channel.2"><title>Evening Headlines</title><desc>Local and regional news.</desc></programme>
+  <programme start="20260412183000 +0000" stop="20260412190000 +0000" channel="channel.2"><title>Metro Forecast</title><desc>Weather and traffic.</desc></programme>
+  <programme start="20260412190000 +0000" stop="20260412200000 +0000" channel="channel.2"><title>Prime Interview</title><desc>Studio discussion.</desc></programme>
+
+  <programme start="20260412180000 +0000" stop="20260412190000 +0000" channel="channel.4"><title>National Report</title><desc>Top stories of the hour.</desc></programme>
+  <programme start="20260412190000 +0000" stop="20260412200000 +0000" channel="channel.4"><title>World Desk</title><desc>International coverage.</desc></programme>
+
+  <programme start="20260412180000 +0000" stop="20260412200000 +0000" channel="channel.5"><title>Sunday Movie</title><desc>Feature presentation.</desc></programme>
+  <programme start="20260412200000 +0000" stop="20260412220000 +0000" channel="channel.5"><title>Late Feature</title><desc>Back-to-back movie night.</desc></programme>
+
+  <programme start="20260412180000 +0000" stop="20260412183000 +0000" channel="channel.7"><title>Pre-Game Live</title><desc>Sports desk and highlights.</desc></programme>
+  <programme start="20260412183000 +0000" stop="20260412203000 +0000" channel="channel.7"><title>Sunday Night Baseball</title><desc>Live game coverage.</desc></programme>
+
+  <programme start="20260412180000 +0000" stop="20260412190000 +0000" channel="channel.9"><title>Cartoon Hour</title><desc>Animated fun block.</desc></programme>
+  <programme start="20260412190000 +0000" stop="20260412200000 +0000" channel="channel.9"><title>Science Kids</title><desc>Learning adventure.</desc></programme>
+
+  <programme start="20260412180000 +0000" stop="20260412190000 +0000" channel="channel.11"><title>Ancient Worlds</title><desc>Documentary series.</desc></programme>
+  <programme start="20260412190000 +0000" stop="20260412200000 +0000" channel="channel.11"><title>On This Day</title><desc>Historic moments.</desc></programme>
+
+  <programme start="20260412180000 +0000" stop="20260412190000 +0000" channel="channel.13"><title>Retro Hits</title><desc>Music video block.</desc></programme>
+  <programme start="20260412190000 +0000" stop="20260412200000 +0000" channel="channel.13"><title>Live Sessions</title><desc>Studio performances.</desc></programme>
+
+  <programme start="20260412180000 +0000" stop="20260412190000 +0000" channel="channel.15"><title>Standup Showcase</title><desc>Comedy block.</desc></programme>
+  <programme start="20260412190000 +0000" stop="20260412200000 +0000" channel="channel.15"><title>Classic Sitcoms</title><desc>Back-to-back episodes.</desc></programme>
+
+  <programme start="20260412180000 +0000" stop="20260412190000 +0000" channel="channel.18"><title>Earth From Orbit</title><desc>Space imagery feed.</desc></programme>
+  <programme start="20260412190000 +0000" stop="20260412200000 +0000" channel="channel.18"><title>Deep Space Window</title><desc>Curated NASA imagery.</desc></programme>
+</tv>
