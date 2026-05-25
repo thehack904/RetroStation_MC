@@ -1,7 +1,7 @@
 services:
-  retro-guide-poc:
+  RetroStation_MC:
     build: .
-    container_name: retro-guide-poc
+    container_name: RetroStation_MC
     ports:
       - "8787:8787"
     volumes:
