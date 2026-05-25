@@ -1,0 +1,26 @@
+{
+  "name": "Classic Cable",
+  "colors": {
+    "background": "#020d1c",
+    "header_bg": "#001060",
+    "header_text": "#ffffff",
+    "footer_bg": "#001060",
+    "footer_text": "#ffffff",
+    "channel_bg": "#001060",
+    "channel_text": "#ffcc00",
+    "grid_line": "#001f80",
+    "time_text": "#ffcc00",
+    "program_bg": "#00135a",
+    "program_bg_movies": "#7a0000",
+    "program_bg_sports": "#005500",
+    "program_outline": "#ffffff",
+    "program_text": "#ffffff",
+    "now_line": "#ffcc00"
+  },
+  "layout": {
+    "header_height": 88,
+    "footer_height": 42,
+    "channel_column_width": 100,
+    "row_height": 42
+  }
+}

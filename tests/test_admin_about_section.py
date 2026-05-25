@@ -13,7 +13,7 @@ class AdminAboutSectionTests(unittest.TestCase):
         self.assertRegex(html, r'<button class="tab-btn" data-tab="about">About</button>')
         self.assertRegex(
             html,
-            r'<div class="tab-panel" id="tab-about">[\s\S]*?RetroStation MC[\s\S]*?v1\.0\.0[\s\S]*?RetroIPTVGuide',
+            r'<div class="tab-panel" id="tab-about">[\s\S]*?RetroStation MC[\s\S]*?v1\.1\.0[\s\S]*?RetroIPTVGuide',
         )
 
 

@@ -12,11 +12,14 @@ DB_PATH = DATA_DIR / "config.db"
 SQLITE_TIMEOUT_SECONDS = 30
 LOCKED_WRITE_RETRIES = 5
 LOCKED_WRITE_RETRY_BASE_SECONDS = 0.05
+MAX_APP_EVENTS_DB_BYTES = 500 * 1024 * 1024  # 500 MB
+APP_EVENTS_KEEP_FRACTION_ON_TRIM = 0.25
+APP_EVENTS_MIN_KEEP_ROWS = 1000
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "playlist_source": str(BASE_DIR / "sample_data" / "channels.m3u"),
     "xmltv_source": str(BASE_DIR / "sample_data" / "xmltv.xml"),
-    "theme": "classic_blue",
+    "theme": "retrostation_mc",
     "resolution": "1280x720",
     "fps": 15,
     "segment_seconds": 6,
@@ -26,8 +29,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "channel_group": "",
     "title": "Guide Channel",
     "timezone": "local",
+    "browser_timezone": "",
     "output_format": "both",
     "transition": "scroll",
+    "guide_logo_mode": "default",  # "default" | "custom" | "disabled"
+    "guide_logo_custom_file": "",
     # Background music settings
     "music_mode": "none",        # "none" | "single" | "playlist"
     "music_loop": False,         # loop the audio
@@ -47,6 +53,7 @@ class ConfigStore:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        self._enforce_event_storage_limit()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=SQLITE_TIMEOUT_SECONDS)
@@ -99,6 +106,36 @@ class ConfigStore:
         if not existing:
             self.save_config(DEFAULT_CONFIG)
 
+    def _event_db_size_bytes(self) -> int:
+        try:
+            return int(self.db_path.stat().st_size)
+        except OSError:
+            return 0
+
+    def _enforce_event_storage_limit(self) -> None:
+        if self._event_db_size_bytes() <= MAX_APP_EVENTS_DB_BYTES:
+            return
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM app_events").fetchone()
+            total = int(row["n"]) if row else 0
+            keep_rows = max(APP_EVENTS_MIN_KEEP_ROWS, int(total * APP_EVENTS_KEEP_FRACTION_ON_TRIM))
+            if keep_rows < total:
+                conn.execute(
+                    """
+                    DELETE FROM app_events
+                    WHERE id NOT IN (
+                        SELECT id FROM app_events ORDER BY id DESC LIMIT ?
+                    )
+                    """,
+                    (keep_rows,),
+                )
+                conn.commit()
+        # VACUUM must run outside any active write transaction; use a fresh
+        # connection after the DELETE commit so SQLite can reclaim disk pages.
+        with self._connect() as conn:
+            conn.execute("VACUUM")
+            conn.commit()
+
     def get_config(self) -> Dict[str, Any]:
         with self._connect() as conn:
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
@@ -131,6 +168,7 @@ class ConfigStore:
             )
 
         self._run_write(_write)
+        self._enforce_event_storage_limit()
 
     def get_recent_events(self, limit: int = 100):
         with self._connect() as conn:

@@ -12,6 +12,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -25,6 +26,21 @@ PROGRAM_TEXT_HIDE_WIDTH = 40
 PROGRAM_TEXT_ABBREV_WIDTH = 90
 DEFAULT_PROGRAM_MERGE_GAP_SECONDS = 90
 DEFAULT_MIN_PIXELS_PER_MINUTE = 6.0
+DEFAULT_PROGRAM_BG = "#21406b"
+
+_SPORTS_GROUP_RE = re.compile(r"\bsports?\b", re.IGNORECASE)
+_MOVIES_GROUP_RE = re.compile(r"\bmovies?\b", re.IGNORECASE)
+
+
+def _resolve_program_cell_fill(colors: dict[str, Any], channel_group: str) -> str:
+    """Return the program-cell fill color, with optional group-specific overrides."""
+    group = channel_group or ""
+    if _SPORTS_GROUP_RE.search(group):
+        return str(colors.get("program_bg_sports", colors.get("program_bg", DEFAULT_PROGRAM_BG)))
+    if _MOVIES_GROUP_RE.search(group):
+        return str(colors.get("program_bg_movies", colors.get("program_bg", DEFAULT_PROGRAM_BG)))
+    return str(colors.get("program_bg", DEFAULT_PROGRAM_BG))
+
 
 class RendererTelemetry:
     def __init__(self, enabled: bool, target_fps: int, log_interval_secs: float = 5.0):
@@ -367,6 +383,24 @@ class GuideRenderer:
         return f"{first}\u2013{last}"
 
     @staticmethod
+    def _apply_display_tz(dt: datetime, tz_setting: str, browser_timezone: str = "") -> datetime:
+        """Convert *dt* to the timezone configured by *tz_setting*.
+
+        ``"utc"`` keeps the time in UTC.  ``"local"`` converts to the IANA
+        timezone detected from the admin browser (stored in *browser_timezone*,
+        e.g. ``"America/New_York"``).  If no browser timezone has been recorded
+        yet the server's OS local timezone is used as a fallback.
+        """
+        if tz_setting == "utc":
+            return dt.astimezone(timezone.utc)
+        if browser_timezone:
+            try:
+                return dt.astimezone(ZoneInfo(browser_timezone))
+            except ZoneInfoNotFoundError:
+                pass
+        return dt.astimezone()
+
+    @staticmethod
     def _timeline_bounds(width: int, layout: dict, total_seconds: float) -> tuple[int, int]:
         """Compute timeline x-bounds while preserving a minimum pixels-per-minute density."""
         guide_minutes = max(1.0, total_seconds / 60.0)
@@ -428,6 +462,8 @@ class GuideRenderer:
         layout: dict,
         start_dt: datetime,
         end_dt: datetime,
+        tz_setting: str = "local",
+        browser_timezone: str = "",
     ) -> Image.Image:
         """Render the static guide content layer for one page.
 
@@ -454,7 +490,7 @@ class GuideRenderer:
             x = int(timeline_x0 + frac * timeline_w)
             if timeline_x0 <= x <= timeline_x1:
                 draw.line([x, 0, x, content_height], fill=colors.get("grid_line", "#2d4a7a"), width=1)
-                label = t.astimezone().strftime("%I:%M %p").lstrip("0")
+                label = self._apply_display_tz(t, tz_setting, browser_timezone).strftime("%I:%M %p").lstrip("0")
                 draw.text((x + 4, 8), label, font=self.font_small, fill=colors.get("time_text", "#d9e6ff"))
             t += timedelta(minutes=30)
 
@@ -462,6 +498,7 @@ class GuideRenderer:
         for channel in page:
             if row_y + row_height > content_height:
                 break
+            program_bg = _resolve_program_cell_fill(colors, str(channel.get("group", "")))
             draw.rectangle([0, row_y, width, row_y + row_height], outline=colors.get("grid_line", "#2d4a7a"), width=1)
             chan_name = abbreviate_channel_name(channel.get('name', 'Unknown'))
             chan_label = f"{channel.get('number', '')}  {chan_name}"
@@ -492,7 +529,7 @@ class GuideRenderer:
                 draw.rounded_rectangle(
                     [cell_x0, cell_y0, cell_x1, cell_y1],
                     radius=min(10, max(2, (cell_y1 - cell_y0) // 2)),
-                    fill=colors.get("program_bg", "#21406b"),
+                    fill=program_bg,
                     outline=colors.get("program_outline", "#7db2ff"),
                     width=1,
                 )
@@ -519,6 +556,8 @@ class GuideRenderer:
         layout: dict,
         start_dt: datetime,
         end_dt: datetime,
+        tz_setting: str = "local",
+        browser_timezone: str = "",
     ) -> Image.Image:
         cache_key = (
             self._cache_generation,
@@ -527,6 +566,8 @@ class GuideRenderer:
             int(layout.get("channel_column_width", 250)),
             int(layout.get("row_height", 68)),
             page_index,
+            tz_setting,
+            browser_timezone,
         )
         cached = self._static_content_cache.get(cache_key)
         if cached is not None:
@@ -541,6 +582,8 @@ class GuideRenderer:
             layout,
             start_dt,
             end_dt,
+            tz_setting,
+            browser_timezone,
         )
         self._static_content_cache[cache_key] = static_content
         self._static_content_cache.move_to_end(cache_key)
@@ -609,6 +652,8 @@ class GuideRenderer:
         page_index = self._current_page_index()
         current_page = pages[page_index] if pages else []
         transition = display.get("transition", "scroll")
+        tz_setting = display.get("timezone", "local")
+        browser_timezone = display.get("browser_timezone", "")
 
         if transition == "scroll" and pages:
             # Dwell-then-scroll: hold each page for most of page_seconds, then
@@ -639,7 +684,7 @@ class GuideRenderer:
             if t_in_cycle < dwell_secs:
                 # Dwell phase: only the current page is visible.
                 static_page = self._get_static_content_layer(
-                    width, content_h, page_idx, pages[page_idx], colors, layout, start_dt, end_dt
+                    width, content_h, page_idx, pages[page_idx], colors, layout, start_dt, end_dt, tz_setting, browser_timezone
                 )
                 content_img = self._render_content_dynamic(
                     static_page, width, content_h, colors, layout, start_dt, end_dt, now
@@ -648,10 +693,10 @@ class GuideRenderer:
                 # Scroll phase: current page scrolls off, next page scrolls in.
                 next_idx = (page_idx + 1) % num_pages
                 curr_static = self._get_static_content_layer(
-                    width, content_h, page_idx, pages[page_idx], colors, layout, start_dt, end_dt
+                    width, content_h, page_idx, pages[page_idx], colors, layout, start_dt, end_dt, tz_setting, browser_timezone
                 )
                 next_static = self._get_static_content_layer(
-                    width, content_h, next_idx, pages[next_idx], colors, layout, start_dt, end_dt
+                    width, content_h, next_idx, pages[next_idx], colors, layout, start_dt, end_dt, tz_setting, browser_timezone
                 )
                 curr_img = self._render_content_dynamic(
                     curr_static, width, content_h, colors, layout, start_dt, end_dt, now
@@ -673,14 +718,14 @@ class GuideRenderer:
         else:
             # Cut transition: render the current page directly.
             static_page = self._get_static_content_layer(
-                width, content_h, page_index, current_page, colors, layout, start_dt, end_dt
+                width, content_h, page_index, current_page, colors, layout, start_dt, end_dt, tz_setting, browser_timezone
             )
             content_img = self._render_content_dynamic(
                 static_page, width, content_h, colors, layout, start_dt, end_dt, now
             )
             img.paste(content_img, (0, content_top))
 
-        clock_text = now.astimezone().strftime("%Y-%m-%d %I:%M:%S %p")
+        clock_text = self._apply_display_tz(now, tz_setting, browser_timezone).strftime("%Y-%m-%d %I:%M:%S %p")
         clock_bbox = draw.textbbox((0, 0), clock_text, font=self.font_medium)
         draw.text((width - (clock_bbox[2] - clock_bbox[0]) - 24, 28), clock_text, font=self.font_medium, fill=colors.get("header_text", "#ffffff"))
 

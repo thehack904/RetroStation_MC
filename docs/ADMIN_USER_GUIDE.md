@@ -33,7 +33,8 @@ Header actions:
 | Playlist Source | Path or HTTP/HTTPS URL to the M3U playlist |
 | XMLTV Source | Path or HTTP/HTTPS URL to the XMLTV file |
 | Channel Group | Optional exact match against the M3U `group-title` attribute |
-| Timezone | UI setting currently exposed as `local` or `utc` |
+| Timezone | `local` displays times in the browser's detected local timezone (IANA name auto-detected on page load, e.g. `America/New_York`); `utc` displays times in UTC |
+| Guide Icon (M3U) | Controls whether `/channel.m3u` exports the default icon from `/data/guide_logo`, a custom uploaded icon, or no icon (`tvg-logo`) |
 
 For a first test, leave the default sample sources in place.
 
@@ -73,6 +74,16 @@ The admin UI displays copyable URLs for:
 | XMLTV Guide | `/channel.xmltv` |
 
 Use `/channel.m3u` for RetroIPTVGuide import.
+
+## Guide icon for RetroIPTVGuide
+
+Use **Guide Icon (M3U)** to choose:
+
+- **Default guide icon** (served from `/data/guide_logo`, typically `default.png`)
+- **Uploaded custom icon**
+- **Disabled** (no icon metadata in exported M3U)
+
+Upload/remove custom icons in the **Custom Guide Icon Upload** section on the admin page.
 
 ## Pipeline Status
 

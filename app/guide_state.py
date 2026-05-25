@@ -57,7 +57,7 @@ def build_state(config: dict, channels: list[dict], programmes: dict[str, list[d
 
     state = {
         "generated_at": now.isoformat(),
-        "theme": config.get("theme", "classic_blue"),
+        "theme": config.get("theme", "retrostation_mc"),
         "title": config.get("title", "Guide Channel"),
         "display": {
             "resolution": config.get("resolution", "1280x720"),
@@ -66,12 +66,14 @@ def build_state(config: dict, channels: list[dict], programmes: dict[str, list[d
             "visible_rows": visible_rows,
             "guide_minutes": int(config.get("guide_minutes", 90)),
             "transition": config.get("transition", "scroll"),
+            "timezone": config.get("timezone", "local"),
+            "browser_timezone": config.get("browser_timezone", ""),
         },
         "time_window": {
             "start": guide_start.isoformat(),
             "end": horizon.isoformat(),
         },
-        "theme_data": load_theme(config.get("theme", "classic_blue")),
+        "theme_data": load_theme(config.get("theme", "retrostation_mc")),
         "pages": pages,
     }
     STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")

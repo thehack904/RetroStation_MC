@@ -58,6 +58,38 @@ class ConfigStoreWriteRetriesTests(unittest.TestCase):
         expected = [call(LOCKED_WRITE_RETRY_BASE_SECONDS * (2 ** attempt)) for attempt in range(LOCKED_WRITE_RETRIES - 1)]
         sleep.assert_has_calls(expected)
 
+    def test_enforce_event_storage_limit_trims_oldest_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = ConfigStore(Path(temp_dir) / "config.db")
+            for idx in range(20):
+                store.add_event(f"2026-01-01T00:00:{idx:02d}+00:00", "INFO", "test", f"event-{idx}")
+
+            with patch("app.config_store.MAX_APP_EVENTS_DB_BYTES", 1):
+                with patch("app.config_store.APP_EVENTS_KEEP_FRACTION_ON_TRIM", 0.25):
+                    with patch("app.config_store.APP_EVENTS_MIN_KEEP_ROWS", 2):
+                        with patch.object(store, "_event_db_size_bytes", return_value=10_000):
+                            store._enforce_event_storage_limit()
+
+            events = store.get_events()
+            self.assertEqual(len(events), 5)
+            self.assertEqual(events[0]["message"], "event-19")
+            self.assertEqual(events[-1]["message"], "event-15")
+
+    def test_init_enforces_event_storage_limit_on_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "config.db"
+            store = ConfigStore(db_path)
+            for idx in range(12):
+                store.add_event(f"2026-01-01T00:01:{idx:02d}+00:00", "INFO", "test", f"boot-{idx}")
+
+            with patch("app.config_store.MAX_APP_EVENTS_DB_BYTES", 1):
+                with patch("app.config_store.APP_EVENTS_KEEP_FRACTION_ON_TRIM", 0.25):
+                    with patch("app.config_store.APP_EVENTS_MIN_KEEP_ROWS", 1):
+                        with patch("app.config_store.ConfigStore._event_db_size_bytes", return_value=10_000):
+                            restarted = ConfigStore(db_path)
+
+            self.assertEqual(restarted.count_events(), 3)
+
 
 if __name__ == "__main__":
     unittest.main()
