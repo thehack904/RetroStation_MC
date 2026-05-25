@@ -85,6 +85,29 @@ Check that XMLTV channel IDs match M3U `tvg-id` values. RetroStation MC groups p
 
 If no programmes overlap the visible time window, the guide will show `No guide data`.
 
+## Hostname-based tuner or EPG URLs fail in Docker
+
+When running in Docker, LAN hostnames may fail even if they resolve on your host machine. For example, `http://iptv.lan:8409/iptv/channels.m3u` might fail while `http://10.7.0.25:8409/iptv/channels.m3u` works.
+
+Try one of these:
+
+1. Use the source IP address directly.
+2. Configure container DNS.
+3. Add Docker `extra_hosts`.
+4. Set `RETROGUIDE_HOST_ALIASES`.
+
+Example:
+
+```bash
+RETROGUIDE_HOST_ALIASES=iptv.lan=10.7.0.25
+```
+
+After aliasing, this source remains valid in app configuration:
+
+```text
+http://iptv.lan:8409/iptv/channels.m3u
+```
+
 ## Channel group filter hides everything
 
 `channel_group` is an exact match against M3U `group-title`. Clear the field to show all channels, or verify spelling and capitalization.

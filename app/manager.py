@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -575,8 +576,20 @@ class GuideManager:
                 self.refresh_state()
                 self.ensure_pipeline_running()
             except Exception as exc:
+                try:
+                    cfg = self.store.get_config()
+                    playlist_source = cfg.get("playlist_source", "")
+                    xmltv_source = cfg.get("xmltv_source", "")
+                except Exception:
+                    playlist_source = ""
+                    xmltv_source = ""
                 self.last_refresh_status = f"error: {exc}"
-                self.logger.error("worker", f"Refresh failed: {exc}")
+                self.logger.error(
+                    "worker",
+                    f"Refresh failed ({exc.__class__.__name__}): {exc}; "
+                    f"playlist_source={playlist_source!r}; xmltv_source={xmltv_source!r}",
+                )
+                self.logger.error("worker.traceback", traceback.format_exc().strip())
             self._stop_event.wait(30)
 
     # ------------------------------------------------------------------
@@ -585,8 +598,17 @@ class GuideManager:
 
     def refresh_state(self) -> None:
         config = self.store.get_config()
-        channels = parse_m3u(config["playlist_source"])
+        playlist_source = config.get("playlist_source", "")
         xmltv_source = config.get("xmltv_source", "")
+        try:
+            channels = parse_m3u(playlist_source)
+        except Exception as exc:
+            self.logger.error(
+                "refresh",
+                f"Playlist load failed ({exc.__class__.__name__}): {exc}; "
+                f"playlist_source={playlist_source!r}",
+            )
+            raise
         # When the configured XMLTV source is the bundled sample file, generate
         # programme data dynamically so the guide always shows current content
         # even after the static file's hardcoded dates have passed.
@@ -597,7 +619,15 @@ class GuideManager:
         if is_sample:
             programmes = _generate_sample_programmes()
         else:
-            programmes = parse_xmltv(xmltv_source)
+            try:
+                programmes = parse_xmltv(xmltv_source)
+            except Exception as exc:
+                self.logger.error(
+                    "refresh",
+                    f"XMLTV load failed ({exc.__class__.__name__}): {exc}; "
+                    f"xmltv_source={xmltv_source!r}",
+                )
+                raise
         build_state(config, channels, programmes)
         self.last_refresh_status = "ok"
         self.logger.info("refresh", f"State rebuilt with {len(channels)} channel(s)")

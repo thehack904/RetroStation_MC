@@ -59,6 +59,12 @@ http://localhost:8787/
 ## Local Python installation
 
 ```bash
+./install-linux.sh
+```
+
+Or run the setup steps manually:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -73,12 +79,36 @@ The app binds to `0.0.0.0:8787` by default.
 |---|---|---|
 | `RETROGUIDE_HOST` | `0.0.0.0` | Flask bind address |
 | `RETROGUIDE_PORT` | `8787` | Flask port |
+| `RETROGUIDE_HOST_ALIASES` | unset | Optional hostname-to-address overrides for playlist/XMLTV URLs (for example `iptv.lan=10.7.0.25`) |
 | `RETRO_TELEMETRY_DEBUG` | disabled | Enables low-frequency structured renderer/HLS telemetry logs when set to `1`, `true`, `yes`, or `on` |
 
 Example:
 
 ```bash
 RETROGUIDE_HOST=127.0.0.1 RETROGUIDE_PORT=8787 python app.py
+```
+
+## Hostname-based tuner or EPG URLs fail in Docker
+
+If `http://10.7.0.25:8409/iptv/channels.m3u` works but `http://iptv.lan:8409/iptv/channels.m3u` fails, the container likely cannot resolve your LAN/router DNS names (`.lan`, `.local`, and similar).
+
+Use one of these fixes:
+
+1. Use the source IP address directly.
+2. Configure DNS for the container runtime.
+3. Add a Docker `extra_hosts` mapping.
+4. Set `RETROGUIDE_HOST_ALIASES` to map hostnames to reachable addresses.
+
+Example:
+
+```bash
+RETROGUIDE_HOST_ALIASES=iptv.lan=10.7.0.25
+```
+
+Then this source can still be used in the app:
+
+```text
+http://iptv.lan:8409/iptv/channels.m3u
 ```
 
 ## Persistent storage

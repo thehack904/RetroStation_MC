@@ -4,6 +4,7 @@ import atexit
 import csv
 import io
 import json
+import traceback
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -38,6 +39,32 @@ store = ConfigStore()
 manager = GuideManager(store)
 manager.start()
 atexit.register(manager.stop)
+
+
+def _error_label(exc: Exception) -> str:
+    """Return a user-safe non-empty error label for exceptions."""
+    return str(exc).strip() or exc.__class__.__name__
+
+
+def _log_route_exception(route: str, action: str, phase: str, exc: Exception, **context) -> None:
+    """Emit structured route-failure diagnostics and traceback details.
+
+    Parameters describe where the failure occurred:
+    * route: HTTP route path (for example ``/config``)
+    * action: logical action from the request context
+    * phase: failure stage inside the route flow
+    * context: optional key/value fields to append for troubleshooting
+    """
+    parts = [
+        f"route={route}",
+        f"action={action}",
+        f"phase={phase}",
+        f"error_type={exc.__class__.__name__}",
+        f"error={_error_label(exc)!r}",
+    ]
+    parts.extend(f"{key}={value!r}" for key, value in context.items() if value not in (None, ""))
+    manager.logger.error("http", " ".join(parts))
+    manager.logger.error("http.traceback", traceback.format_exc().strip())
 
 
 def coerce_form(form) -> dict:
@@ -119,6 +146,7 @@ def index():
 
 @app.post("/config")
 def save_config():
+    action = request.form.get("action", "save")
     try:
         old_config = store.get_config()
         config = coerce_form(request.form)
@@ -126,11 +154,23 @@ def save_config():
         changed = [k for k in config if config[k] != old_config.get(k)]
         if changed:
             manager.logger.info("config", f"Config updated: {', '.join(changed)}")
+    except Exception as exc:
+        _log_route_exception(
+            route="/config",
+            action=action,
+            phase="save_config",
+            exc=exc,
+            playlist_source=request.form.get("playlist_source", "").strip(),
+            xmltv_source=request.form.get("xmltv_source", "").strip(),
+        )
+        flash(f"Failed to save configuration: {_error_label(exc)}", "error")
+        return redirect(url_for("index"))
 
-        action = request.form.get("action", "save")
+    is_first_start = None
+    try:
         if action == "start_restart":
             # Admin explicitly requested start or restart.
-            is_first_start = not manager.status()["pipeline_active"]
+            is_first_start = not manager.status().get("pipeline_active")
             msg = "Guide is Starting..." if is_first_start else "Guide is Restarting..."
             manager.refresh_state()
             manager.start_pipeline(message=msg)
@@ -144,7 +184,17 @@ def save_config():
                 manager.refresh_state()
             flash("Configuration saved.", "success")
     except Exception as exc:
-        flash(f"Failed to save configuration: {exc}", "error")
+        _log_route_exception(
+            route="/config",
+            action=action,
+            phase="start_restart" if action == "start_restart" else "post_save_refresh",
+            exc=exc,
+            is_first_start=is_first_start,
+        )
+        if action == "start_restart":
+            flash(f"Configuration saved, but guide failed to start: {_error_label(exc)}", "error")
+        else:
+            flash(f"Configuration saved, but refresh failed: {_error_label(exc)}", "error")
     return redirect(url_for("index"))
 
 
@@ -174,7 +224,8 @@ def restart_pipeline():
         manager.restart_pipeline()
         flash("Pipeline restarted.", "success")
     except Exception as exc:
-        flash(f"Pipeline restart failed: {exc}", "error")
+        _log_route_exception(route="/restart", action="restart", phase="restart_pipeline", exc=exc)
+        flash(f"Pipeline restart failed: {_error_label(exc)}", "error")
     return redirect(url_for("index"))
 
 

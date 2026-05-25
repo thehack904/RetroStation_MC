@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "config.db"
+SQLITE_TIMEOUT_SECONDS = 30
+LOCKED_WRITE_RETRIES = 5
+LOCKED_WRITE_RETRY_BASE_SECONDS = 0.05
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "playlist_source": str(BASE_DIR / "sample_data" / "channels.m3u"),
@@ -45,9 +49,28 @@ class ConfigStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=SQLITE_TIMEOUT_SECONDS)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _is_locked_error(self, exc: sqlite3.OperationalError) -> bool:
+        error_code = getattr(exc, "sqlite_errorcode", None)
+        if error_code in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+            return True
+        message = str(exc).lower()
+        return "database is locked" in message or "database table is locked" in message
+
+    def _run_write(self, writer: Callable[[sqlite3.Connection], None]) -> None:
+        for attempt in range(LOCKED_WRITE_RETRIES):
+            try:
+                with self._connect() as conn:
+                    writer(conn)
+                    conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                if not self._is_locked_error(exc) or attempt == LOCKED_WRITE_RETRIES - 1:
+                    raise
+                time.sleep(LOCKED_WRITE_RETRY_BASE_SECONDS * (2 ** attempt))
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -90,21 +113,24 @@ class ConfigStore:
     def save_config(self, config: Dict[str, Any]) -> None:
         existing = self.get_config()
         merged = {**DEFAULT_CONFIG, **existing, **config}
-        with self._connect() as conn:
+
+        def _write(conn: sqlite3.Connection) -> None:
             for key, value in merged.items():
                 conn.execute(
                     "REPLACE INTO settings (key, value) VALUES (?, ?)",
                     (key, json.dumps(value)),
                 )
-            conn.commit()
+
+        self._run_write(_write)
 
     def add_event(self, created_at: str, level: str, category: str, message: str) -> None:
-        with self._connect() as conn:
+        def _write(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "INSERT INTO app_events (created_at, level, category, message) VALUES (?, ?, ?, ?)",
                 (created_at, level, category, message),
             )
-            conn.commit()
+
+        self._run_write(_write)
 
     def get_recent_events(self, limit: int = 100):
         with self._connect() as conn:

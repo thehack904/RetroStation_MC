@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import urlopen
+
+from app.source_fetch import read_text_or_file
 
 
 def read_text(source: str) -> str:
-    if source.startswith("http://") or source.startswith("https://"):
-        with urlopen(source, timeout=15) as response:
-            return response.read().decode("utf-8", errors="replace")
-    return Path(source).read_text(encoding="utf-8", errors="replace")
+    return read_text_or_file(source, timeout=15)
 
 
 def parse_extinf(line: str) -> dict:

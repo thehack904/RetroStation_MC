@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
-from pathlib import Path
-from urllib.request import urlopen
+
+from app.source_fetch import read_text_or_file
 
 
 def read_xml(source: str) -> str:
-    if source.startswith("http://") or source.startswith("https://"):
-        with urlopen(source, timeout=20) as response:
-            return response.read().decode("utf-8", errors="replace")
-    return Path(source).read_text(encoding="utf-8", errors="replace")
+    return read_text_or_file(source, timeout=20)
 
 
 def parse_xmltv_dt(value: str) -> datetime:

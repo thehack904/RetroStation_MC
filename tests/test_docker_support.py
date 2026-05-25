@@ -29,6 +29,7 @@ class DockerSupportTests(unittest.TestCase):
         self.assertIn("- ./sample_data:/app/sample_data", compose)
         self.assertIn("- RETROGUIDE_HOST=0.0.0.0", compose)
         self.assertIn("- RETROGUIDE_PORT=8787", compose)
+        self.assertIn("host.docker.internal:host-gateway", compose)
 
     def test_dockerignore_excludes_local_git_and_runtime_state(self) -> None:
         dockerignore = (self.repo_root / ".dockerignore").read_text(encoding="utf-8")
