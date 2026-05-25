@@ -1,0 +1,149 @@
+name: 🚀 Build and Publish RetroStation MC to GHCR and Docker Hub
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 0'
+
+env:
+  REGISTRY: ghcr.io
+  GHCR_IMAGE_NAME: thehack904/retrostation-mc
+  DOCKERHUB_IMAGE_NAME: thehack904/retrostation-mc
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-and-push:
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: 🧾 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔑 Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: 🧱 Build and Push multi-arch image to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.GHCR_IMAGE_NAME }}:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            org.opencontainers.image.description=RetroStation MC Flask + SQLite Web App
+            org.opencontainers.image.licenses=CC-BY-NC-SA-4.0
+
+      - name: 🧹 Cleanup local images
+        run: docker image prune -af || true
+
+      - name: 🐳 Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 🧱 Build and Push single-arch image to Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ env.DOCKERHUB_IMAGE_NAME }}:latest
+            ${{ env.DOCKERHUB_IMAGE_NAME }}:${{ github.ref_name }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            org.opencontainers.image.description=RetroStation MC Flask + SQLite Web App
+            org.opencontainers.image.licenses=CC-BY-NC-SA-4.0
+
+  cleanup-ghcr:
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    name: 🧽 Cleanup old GHCR images
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    permissions:
+      packages: write
+
+    steps:
+      - name: 🧹 Delete old GHCR package versions keep 5
+        uses: actions/delete-package-versions@v5
+        with:
+          owner: thehack904
+          package-name: retrostation-mc
+          package-type: container
+          min-versions-to-keep: 5
+          token: ${{ secrets.GHCR_PAT }}
+        continue-on-error: true
+
+  cleanup-dockerhub:
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    name: 🧽 Cleanup old Docker Hub tags
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    permissions: {}
+
+    env:
+      USER: thehack904
+      REPO: retrostation-mc
+      USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    steps:
+      - name: 🧹 Remove old Docker Hub tags keep 5
+        run: |
+          echo "🔑 Authenticating with Docker Hub API..."
+          AUTH_RESP=$(curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d "{\"username\": \"${USERNAME}\", \"password\": \"${TOKEN}\"}" \
+            https://hub.docker.com/v2/users/login/)
+
+          JWT=$(echo "$AUTH_RESP" | jq -r .token)
+
+          if [ -z "$JWT" ] || [ "$JWT" = "null" ]; then
+            echo "❌ Authentication failed — could not get JWT token."
+            echo "$AUTH_RESP"
+            exit 1
+          fi
+
+          echo "✅ Authenticated successfully."
+
+          TAGS=$(curl -s -H "Authorization: JWT ${JWT}" \
+            "https://hub.docker.com/v2/repositories/${USER}/${REPO}/tags/?page_size=100" |
+            jq -r '.results[].name')
+
+          if [ -z "$TAGS" ]; then
+            echo "⚠️ No tags found — skipping cleanup."
+            exit 0
+          fi
+
+          COUNT=0
+          for TAG in $TAGS; do
+            COUNT=$((COUNT+1))
+            if [ $COUNT -gt 5 ]; then
+              echo "🧹 Deleting $TAG ..."
+              curl -s -X DELETE -H "Authorization: JWT ${JWT}" \
+                "https://hub.docker.com/v2/repositories/${USER}/${REPO}/tags/${TAG}/" >/dev/null
+            fi
+          done
