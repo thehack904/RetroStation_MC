@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/thehack904/RetroStation_MC">
-    <img src="https://img.shields.io/badge/version-v1.0.0-blue?style=for-the-badge" alt="Version">
+    <img src="https://img.shields.io/badge/version-v1.1.0-blue?style=for-the-badge" alt="Version">
   </a>
   <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">
     <img src="https://img.shields.io/badge/license-CC--BY--NC--SA%204.0-lightgrey?style=for-the-badge" alt="License">
@@ -14,7 +14,7 @@
 
 RetroStation MC is an admin-driven retro TV guide channel generator. It ingests an M3U playlist and XMLTV guide data, renders a continuous guide-style video feed, packages that feed as HLS, and exposes a single-channel M3U/XMLTV pair for use in RetroIPTVGuide or another IPTV client.
 
-This repository is versioned as **v1.0.0**.
+This repository is versioned as **v1.1.0**.
 
 ## What it does
 
@@ -145,4 +145,4 @@ Start here:
 
 ## Project status
 
-v1.0.0 is a functional first release. The renderer is intentionally Python/Pillow-based so the rest of the application flow can be validated before replacing the renderer with a lower-level implementation such as SDL, C, Rust, or another real-time rendering stack.
+The renderer is intentionally Python/Pillow-based so the rest of the application flow can be validated before replacing the renderer with a lower-level implementation such as SDL, C, Rust, or another real-time rendering stack.

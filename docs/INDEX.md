@@ -27,5 +27,5 @@ This documentation pack covers RetroStation MC v1.0.0.
 
 - [Security](SECURITY.md) — Local-only threat model and safe deployment guidance.
 - [Roadmap](ROADMAP.md) — Suggested post-v1.0.0 work.
-- [Changelog](CHANGELOG.md) — v1.0.0 initial release notes.
+- [Changelog](../CHANGELOG.md) — v1.0.0 initial release notes.
 - [FAQ](FAQ.md) — Common operator and integration questions.

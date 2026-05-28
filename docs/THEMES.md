@@ -10,16 +10,19 @@ The admin UI lists any directory under `app/themes/` that contains a theme file.
 
 ## Bundled themes
 
-v1.0.0 includes these theme directories:
+v1.1.0 includes these theme directories:
 
 - `classic_blue`
+- `classic_cable`
 - `comcast`
 - `dark`
 - `directv`
+- `ersatztv`
 - `light`
 - `retro_aol`
 - `retro_magazine`
 - `retroiptv`
+- `retrostation_mc`
 - `tvguide_1990`
 
 ## Theme JSON structure
@@ -32,6 +35,8 @@ Themes are JSON files with a `colors` object. The current renderer/admin UI expe
 | `header_bg` | Header bar/background accent |
 | `header_text` | Header text |
 | `program_bg` | Program cell/panel background |
+| `program_bg_movies` | Optional movie-group program cell background override |
+| `program_bg_sports` | Optional sports-group program cell background override |
 | `program_text` | Program text |
 | `channel_bg` | Channel column/status background |
 | `time_text` | Time/header secondary text |

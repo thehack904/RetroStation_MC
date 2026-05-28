@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from app.renderer import GuideRenderer
+from app.renderer import GuideRenderer, _resolve_program_cell_fill
 
 
 def _build_state(title: str = "Guide Channel") -> dict:
@@ -75,6 +75,27 @@ def _build_state(title: str = "Guide Channel") -> dict:
 
 
 class GuideRendererLayerCacheTests(unittest.TestCase):
+    def test_resolve_program_cell_fill_prefers_group_specific_colors(self) -> None:
+        colors = {
+            "program_bg": "#00135a",
+            "program_bg_movies": "#7a0000",
+            "program_bg_sports": "#005500",
+        }
+        self.assertEqual(_resolve_program_cell_fill(colors, "Movies"), "#7a0000")
+        self.assertEqual(_resolve_program_cell_fill(colors, "TV & Movies"), "#7a0000")
+        self.assertEqual(_resolve_program_cell_fill(colors, "Sports"), "#005500")
+        self.assertEqual(_resolve_program_cell_fill(colors, "Sport"), "#005500")
+        self.assertEqual(_resolve_program_cell_fill(colors, "Movie"), "#7a0000")
+        self.assertEqual(_resolve_program_cell_fill(colors, "Local"), "#00135a")
+        self.assertEqual(_resolve_program_cell_fill(colors, "Transportation"), "#00135a")
+        self.assertEqual(_resolve_program_cell_fill(colors, "Motorsports"), "#00135a")
+        self.assertEqual(_resolve_program_cell_fill(colors, "Moviemania"), "#00135a")
+        self.assertEqual(_resolve_program_cell_fill(colors, None), "#00135a")
+
+    def test_resolve_program_cell_fill_falls_back_to_default_when_program_bg_missing(self) -> None:
+        colors = {}
+        self.assertEqual(_resolve_program_cell_fill(colors, "Local"), "#21406b")
+
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.state_path = Path(self.temp_dir.name) / "guide_state.json"

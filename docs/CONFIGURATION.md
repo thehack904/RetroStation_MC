@@ -14,7 +14,7 @@ The `settings` table stores one key per setting. Values are JSON-encoded.
 |---|---:|---|
 | `playlist_source` | `sample_data/channels.m3u` | M3U input path or URL |
 | `xmltv_source` | `sample_data/xmltv.xml` | XMLTV input path or URL |
-| `theme` | `classic_blue` | Theme directory name under `app/themes/` |
+| `theme` | `retrostation_mc` | Theme directory name under `app/themes/` |
 | `resolution` | `1280x720` | Render and encode resolution |
 | `fps` | `15` | Render and encode frame rate |
 | `segment_seconds` | `6` | HLS target segment duration |

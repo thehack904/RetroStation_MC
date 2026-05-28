@@ -95,6 +95,7 @@
                 <option value="{{ value }}" {% if value == config.timezone %}selected{% endif %}>{{ value }}</option>
               {% endfor %}
             </select>
+            <input type="hidden" name="browser_timezone" id="browser-timezone-field" value="{{ config.browser_timezone }}">
           </div>
         </section>
 
@@ -153,13 +154,21 @@
             <label class="field-label">Theme</label>
             <select name="theme" id="theme-select">
               {% for theme in themes %}
-                <option value="{{ theme }}" {% if theme == config.theme %}selected{% endif %}>{{ theme }}</option>
+                <option value="{{ theme }}" {% if theme == config.theme %}selected{% endif %}>{{ theme_labels.get(theme, theme) }}</option>
               {% endfor %}
             </select>
           </div>
           <div class="field-row">
             <label class="field-label">Guide Title</label>
             <input type="text" name="title" value="{{ config.title }}">
+          </div>
+          <div class="field-row" id="guide-logo-section">
+            <label class="field-label">Guide Icon (M3U)</label>
+            <select name="guide_logo_mode">
+              <option value="default" {% if config.guide_logo_mode == 'default' %}selected{% endif %}>Default guide icon</option>
+              <option value="custom" {% if config.guide_logo_mode == 'custom' %}selected{% endif %}>Use uploaded custom icon</option>
+              <option value="disabled" {% if config.guide_logo_mode == 'disabled' %}selected{% endif %}>Disable icon</option>
+            </select>
           </div>
           <div class="theme-preview" id="theme-preview">
             <span class="theme-swatch" id="swatch-bg" title="Guide background"></span>
@@ -178,6 +187,7 @@
         </div>
 
       </form>
+
     </div><!-- /workspace__left -->
 
     <!-- ═══════════  RIGHT COLUMN  ═══════════ -->
@@ -259,6 +269,7 @@
       <button class="tab-btn" data-tab="music">Music</button>
       <button class="tab-btn" data-tab="diagnostics">Diagnostics</button>
       <button class="tab-btn" data-tab="logs">Logs</button>
+      <button class="tab-btn" data-tab="guide-icon">Guide Icon</button>
       <button class="tab-btn" data-tab="about">About</button>
     </div>
 
@@ -394,11 +405,33 @@
       </div>
     </div>
 
+    <!-- Guide Icon Tab -->
+    <div class="tab-panel" id="tab-guide-icon">
+      <form method="post" action="{{ url_for('guide_logo_upload') }}" enctype="multipart/form-data" class="music-upload-form">
+        <div class="music-upload-row">
+          <label class="music-file-label">
+            <span>Upload icon image (PNG, JPG, JPEG, GIF, WEBP, SVG — max 5 MB)</span>
+            <input type="file" name="guide_logo_file" accept=".png,.jpg,.jpeg,.gif,.webp,.svg" style="width:auto">
+          </label>
+          <button type="submit" class="btn btn--sm">Upload Icon</button>
+        </div>
+      </form>
+      {% if guide_logo_custom_file %}
+      <div class="field-row-inline" style="margin-top:10px;gap:8px;align-items:center">
+        <span class="status-bar__item">Current custom icon: <code>{{ guide_logo_custom_file }}</code></span>
+        <a class="btn btn--sm" href="{{ guide_logo_custom_url }}" target="_blank" rel="noopener">Preview</a>
+        <form method="post" action="{{ url_for('guide_logo_remove') }}">
+          <button type="submit" class="btn btn--sm btn--danger">Remove</button>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+
     <!-- About Tab -->
     <div class="tab-panel" id="tab-about">
       <div class="info-grid">
         <div class="info-row"><span class="info-label">Application</span><code>RetroStation MC</code></div>
-        <div class="info-row"><span class="info-label">Version</span><code>v1.0.0</code></div>
+        <div class="info-row"><span class="info-label">Version</span><code>v1.1.0</code></div>
         <div class="info-row"><span class="info-label">Description</span><code>Admin-driven retro guide channel generator for RetroIPTVGuide.</code></div>
       </div>
     </div>
@@ -668,6 +701,20 @@
       document.body.appendChild(form);
       form.submit();
     }
+  </script>
+
+  <!-- Browser timezone detection: keep the hidden field up-to-date so the
+       server uses the client's local timezone when "local" is selected. -->
+  <script>
+    (function () {
+      try {
+        var tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        if (tz) {
+          var field = document.getElementById('browser-timezone-field');
+          if (field) field.value = tz;
+        }
+      } catch (e) { /* Intl not available; server will fall back to OS timezone */ }
+    })();
   </script>
 
 </body>

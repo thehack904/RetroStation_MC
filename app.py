@@ -21,6 +21,7 @@ from app.manager import GuideManager, STANDBY_SEGMENT, STANDBY_DURATION_SECS, MU
 BASE_DIR = Path(__file__).resolve().parent
 THEMES_DIR = BASE_DIR / "app" / "themes"
 OUTPUT_DIR = BASE_DIR / "output"
+GUIDE_LOGO_DIR = BASE_DIR / "data" / "guide_logo"
 GUIDE_DELAY_SEGMENTS = 2
 GUIDE_MIN_BUFFER_SECS = 18.0
 GUIDE_MIN_BUFFER_SEGMENTS = 3
@@ -29,6 +30,9 @@ GUIDE_MIN_VISIBLE_SEGMENTS = 3
 
 ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac"}
 MAX_MUSIC_FILE_BYTES = 100 * 1024 * 1024  # 100 MB
+ALLOWED_GUIDE_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+DEFAULT_GUIDE_LOGO_EXTENSION_ORDER = (".png", ".webp", ".jpg", ".jpeg", ".gif", ".svg")
+MAX_GUIDE_LOGO_BYTES = 5 * 1024 * 1024  # 5 MB
 
 app = Flask(__name__, template_folder="app/templates", static_folder="app/static")
 app.secret_key = "retro-guide-poc-local-only"
@@ -67,6 +71,13 @@ def _log_route_exception(route: str, action: str, phase: str, exc: Exception, **
     manager.logger.error("http.traceback", traceback.format_exc().strip())
 
 
+def _coerce_guide_logo_mode(value: str | None) -> str:
+    mode = (value or DEFAULT_CONFIG["guide_logo_mode"]).strip().lower()
+    if mode not in ("default", "custom", "disabled"):
+        return "default"
+    return mode
+
+
 def coerce_form(form) -> dict:
     cfg = {
         "playlist_source": form.get("playlist_source", DEFAULT_CONFIG["playlist_source"]).strip(),
@@ -81,8 +92,10 @@ def coerce_form(form) -> dict:
         "guide_minutes": int(form.get("guide_minutes", DEFAULT_CONFIG["guide_minutes"])),
         "channel_group": form.get("channel_group", DEFAULT_CONFIG["channel_group"]).strip(),
         "timezone": form.get("timezone", DEFAULT_CONFIG["timezone"]).strip(),
+        "browser_timezone": form.get("browser_timezone", DEFAULT_CONFIG["browser_timezone"]).strip(),
         "output_format": form.get("output_format", DEFAULT_CONFIG["output_format"]).strip(),
         "transition": form.get("transition", DEFAULT_CONFIG["transition"]).strip(),
+        "guide_logo_mode": _coerce_guide_logo_mode(form.get("guide_logo_mode")),
     }
     return cfg
 
@@ -118,14 +131,23 @@ def _read_diag_settings(config: dict) -> dict:
 @app.get("/")
 def index():
     config = {**DEFAULT_CONFIG, **store.get_config()}
+    config["guide_logo_mode"] = _coerce_guide_logo_mode(config.get("guide_logo_mode"))
+    logo_filename = secure_filename(config.get("guide_logo_custom_file", "") or "")
+    logo_path = GUIDE_LOGO_DIR / logo_filename if logo_filename else None
+    if config["guide_logo_mode"] == "custom" and (logo_path is None or not logo_path.is_file()):
+        config["guide_logo_mode"] = "default"
     themes = sorted([p.name for p in THEMES_DIR.iterdir() if p.is_dir()])
     theme_data_all: dict[str, dict] = {}
+    theme_labels: dict[str, str] = {}
     for t in themes:
         try:
             raw = json.loads((THEMES_DIR / t / "theme.json").read_text(encoding="utf-8"))
             theme_data_all[t] = raw.get("colors", {})
+            raw_name = raw.get("name")
+            theme_labels[t] = raw_name if raw_name is not None else t
         except Exception:
             theme_data_all[t] = {}
+            theme_labels[t] = t
     diag = _read_diag_settings(config)
     events = store.get_recent_events(limit=diag["log_tail_lines"])
     music_files = sorted(
@@ -139,8 +161,11 @@ def index():
         events=events,
         events_total=store.count_events(),
         themes=themes,
+        theme_labels=theme_labels,
         theme_data_all=theme_data_all,
         music_files=music_files,
+        guide_logo_custom_file=logo_filename if logo_path and logo_path.is_file() else "",
+        guide_logo_custom_url=url_for("guide_logo_file", filename=logo_filename) if logo_path and logo_path.is_file() else "",
     )
 
 
@@ -318,11 +343,50 @@ def logs_export():
     return response
 
 
-def _build_channel_m3u_content(channel_name: str, stream_url: str, xmltv_url: str) -> str:
+def _channel_logo_url(config: dict, base_url: str) -> str:
+    mode = _coerce_guide_logo_mode(config.get("guide_logo_mode"))
+    if mode == "disabled":
+        return ""
+    if mode == "custom":
+        logo_filename = secure_filename(config.get("guide_logo_custom_file", "") or "")
+        logo_path = GUIDE_LOGO_DIR / logo_filename if logo_filename else None
+        if logo_path and logo_path.is_file():
+            return f"{base_url}/guide-logo/{logo_filename}"
+    default_logo_name = _default_guide_logo_name()
+    if default_logo_name:
+        return f"{base_url}/guide-logo/{default_logo_name}"
+    return ""
+
+
+def _default_guide_logo_name() -> str:
+    preferred_names = [f"default{ext}" for ext in DEFAULT_GUIDE_LOGO_EXTENSION_ORDER]
+    for name in preferred_names:
+        path = GUIDE_LOGO_DIR / name
+        if path.is_file():
+            return name
+    if not GUIDE_LOGO_DIR.is_dir():
+        return ""
+    for path in sorted(GUIDE_LOGO_DIR.iterdir()):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in ALLOWED_GUIDE_LOGO_EXTENSIONS:
+            continue
+        safe_name = secure_filename(path.name)
+        if safe_name != path.name:
+            continue
+        if path.stem.lower() == "custom":
+            continue
+        return safe_name
+    return ""
+
+
+def _build_channel_m3u_content(channel_name: str, stream_url: str, xmltv_url: str, logo_url: str = "") -> str:
     """Return M3U playlist content for the virtual guide channel."""
+    logo_attr = f' tvg-logo="{logo_url}"' if logo_url else ""
     return (
         f'#EXTM3U url-tvg="{xmltv_url}" x-tvg-url="{xmltv_url}"\n'
         f'#EXTINF:-1 tvg-id="retro-guide-channel" tvg-name="{channel_name}"'
+        f"{logo_attr}"
         f' tvg-chno="1"'
         f' group-title="Virtual Channels"'
         f' tvc-stream-vcodec="h264" tvc-stream-acodec="aac"'
@@ -340,7 +404,8 @@ def channel_playlist():
     base_url = request.host_url.rstrip("/")
     stream_url = base_url + "/hls/master.m3u8"
     xmltv_url = base_url + "/channel.xmltv"
-    content = _build_channel_m3u_content(channel_name, stream_url, xmltv_url)
+    logo_url = _channel_logo_url(config, base_url)
+    content = _build_channel_m3u_content(channel_name, stream_url, xmltv_url, logo_url)
     resp = Response(content, mimetype="application/x-mpegURL")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
@@ -354,7 +419,8 @@ def channel_playlist_m3u8():
     base_url = request.host_url.rstrip("/")
     stream_url = base_url + "/hls/master.m3u8"
     xmltv_url = base_url + "/channel.xmltv"
-    content = _build_channel_m3u_content(channel_name, stream_url, xmltv_url)
+    logo_url = _channel_logo_url(config, base_url)
+    content = _build_channel_m3u_content(channel_name, stream_url, xmltv_url, logo_url)
     resp = Response(content, mimetype="application/vnd.apple.mpegurl")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
@@ -635,6 +701,100 @@ def hls_preflight(**_kwargs):
     response.headers["Access-Control-Allow-Headers"] = "Range"
     response.headers["Access-Control-Max-Age"] = "86400"
     return response
+
+
+def _validate_logo_file_content(path: Path, ext: str) -> bool:
+    try:
+        header = path.read_bytes()[:1024]
+    except OSError:
+        return False
+    if ext == ".png":
+        return header.startswith(b"\x89PNG\r\n\x1a\n")
+    if ext in {".jpg", ".jpeg"}:
+        return header.startswith(b"\xff\xd8\xff")
+    if ext == ".gif":
+        return header.startswith((b"GIF87a", b"GIF89a"))
+    if ext == ".webp":
+        return header.startswith(b"RIFF") and header[8:12] == b"WEBP"
+    if ext == ".svg":
+        try:
+            text = header.decode("utf-8", errors="ignore").lower()
+        except UnicodeDecodeError:
+            return False
+        return "<svg" in text
+    return False
+
+
+@app.get("/guide-logo/<path:filename>")
+def guide_logo_file(filename: str):
+    safe_name = secure_filename(filename)
+    if not safe_name:
+        abort(404)
+    response = send_from_directory(GUIDE_LOGO_DIR, safe_name)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
+
+
+@app.post("/guide-logo/upload")
+def guide_logo_upload():
+    file = request.files.get("guide_logo_file")
+    if file is None or not file.filename:
+        flash("No logo file selected.", "error")
+        return redirect(url_for("index") + "#tab-guide-icon")
+    name = secure_filename(file.filename)
+    ext = Path(name).suffix.lower()
+    if ext not in ALLOWED_GUIDE_LOGO_EXTENSIONS:
+        flash(
+            f"Unsupported logo format. Allowed: {', '.join(sorted(ALLOWED_GUIDE_LOGO_EXTENSIONS))}",
+            "error",
+        )
+        return redirect(url_for("index") + "#tab-guide-icon")
+    GUIDE_LOGO_DIR.mkdir(parents=True, exist_ok=True)
+    current_cfg = {**DEFAULT_CONFIG, **store.get_config()}
+    current_name = secure_filename(current_cfg.get("guide_logo_custom_file", "") or "")
+    if current_name:
+        (GUIDE_LOGO_DIR / current_name).unlink(missing_ok=True)
+    # Keep one active custom icon file so M3U logo URLs remain stable.
+    final_name = f"custom{ext}"
+    dest = GUIDE_LOGO_DIR / final_name
+    try:
+        file.save(str(dest))
+        if dest.stat().st_size > MAX_GUIDE_LOGO_BYTES:
+            dest.unlink(missing_ok=True)
+            flash("Logo file is too large. Maximum size is 5 MB.", "error")
+            return redirect(url_for("index") + "#tab-guide-icon")
+        if not _validate_logo_file_content(dest, ext):
+            dest.unlink(missing_ok=True)
+            flash("Uploaded file is not a recognized image format.", "error")
+            return redirect(url_for("index") + "#tab-guide-icon")
+        store.save_config(
+            {
+                **current_cfg,
+                "guide_logo_mode": "custom",
+                "guide_logo_custom_file": final_name,
+            }
+        )
+        flash("Guide logo uploaded. M3U export now uses this custom logo.", "success")
+    except OSError as exc:
+        flash(f"Could not save logo file: {exc}", "error")
+    return redirect(url_for("index") + "#tab-guide-icon")
+
+
+@app.post("/guide-logo/remove")
+def guide_logo_remove():
+    cfg = {**DEFAULT_CONFIG, **store.get_config()}
+    logo_name = secure_filename(cfg.get("guide_logo_custom_file", "") or "")
+    if logo_name:
+        (GUIDE_LOGO_DIR / logo_name).unlink(missing_ok=True)
+    store.save_config(
+        {
+            **cfg,
+            "guide_logo_mode": "default",
+            "guide_logo_custom_file": "",
+        }
+    )
+    flash("Custom guide logo removed. Default logo is active.", "success")
+    return redirect(url_for("index") + "#tab-guide-icon")
 
 
 # ---------------------------------------------------------------------------

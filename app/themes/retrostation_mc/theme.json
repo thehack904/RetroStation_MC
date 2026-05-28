@@ -1,0 +1,26 @@
+{
+  "name": "RetroStation MC",
+  "colors": {
+    "background": "#05070F",
+    "header_bg": "#0FCCFC",
+    "header_text": "#05070F",
+    "footer_bg": "#8E16D4",
+    "footer_text": "#C6C3E2",
+    "channel_bg": "#0C0E29",
+    "channel_text": "#C6C3E2",
+    "grid_line": "#223463",
+    "time_text": "#5AC4F3",
+    "program_bg": "#0C0E29",
+    "program_outline": "#EC32E6",
+    "program_text": "#C6C3E2",
+    "now_line": "#0FCCFC",
+    "now_line_glow": "#5AC4F3",
+    "now_line_shadow": "#682175"
+  },
+  "layout": {
+    "header_height": 88,
+    "footer_height": 42,
+    "channel_column_width": 250,
+    "row_height": 68
+  }
+}

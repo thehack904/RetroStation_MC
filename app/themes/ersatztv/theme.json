@@ -1,0 +1,24 @@
+{
+  "name": "Icon Guide",
+  "colors": {
+    "background": "#13131f",
+    "header_bg": "#1e1e2e",
+    "header_text": "#c0c0e0",
+    "footer_bg": "#1e1e2e",
+    "footer_text": "#c0c0e0",
+    "channel_bg": "#16162a",
+    "channel_text": "#c0c0e0",
+    "grid_line": "#2a2a44",
+    "time_text": "#c0c0e0",
+    "program_bg": "#1e1e2e",
+    "program_outline": "#2e2e4e",
+    "program_text": "#e0e0f0",
+    "now_line": "#e05555"
+  },
+  "layout": {
+    "header_height": 88,
+    "footer_height": 42,
+    "channel_column_width": 250,
+    "row_height": 80
+  }
+}

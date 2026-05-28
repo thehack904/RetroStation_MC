@@ -18,6 +18,9 @@ app_events(created_at, level, category, message)
 
 The admin UI shows the most recent events based on `diag_log_tail_lines`.
 
+To prevent unbounded resource growth, event storage is trimmed automatically when
+`data/config.db` grows beyond 500 MB. The oldest events are dropped first.
+
 ## Logs UI
 
 The Logs tab provides:
