@@ -13,7 +13,7 @@ This project uses a simple release-based changelog format with the following sec
 
 ---
 
-## [v1.1.0] - 2026-05-25 - Beta
+## [v1.1.0] - 2026-05-27
 
 ### Added
 - RetroStation MC as the new default bundled theme.
