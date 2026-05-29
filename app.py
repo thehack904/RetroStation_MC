@@ -16,12 +16,13 @@ from werkzeug.utils import secure_filename
 
 from app.config_store import ConfigStore, DEFAULT_CONFIG
 from app.hls_playlist import trim_playlist_for_delayed_live_edge
-from app.manager import GuideManager, STANDBY_SEGMENT, STANDBY_DURATION_SECS, MUSIC_DIR
+from app.manager import GuideManager, STANDBY_SEGMENT, STATIC_SEGMENT, STANDBY_DURATION_SECS, MUSIC_DIR
 
 BASE_DIR = Path(__file__).resolve().parent
 THEMES_DIR = BASE_DIR / "app" / "themes"
 OUTPUT_DIR = BASE_DIR / "output"
 GUIDE_LOGO_DIR = BASE_DIR / "data" / "guide_logo"
+STANDBY_PATTERN_DIR = BASE_DIR / "data" / "standby_patterns"
 GUIDE_DELAY_SEGMENTS = 2
 GUIDE_MIN_BUFFER_SECS = 18.0
 GUIDE_MIN_BUFFER_SEGMENTS = 3
@@ -33,6 +34,8 @@ MAX_MUSIC_FILE_BYTES = 100 * 1024 * 1024  # 100 MB
 ALLOWED_GUIDE_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 DEFAULT_GUIDE_LOGO_EXTENSION_ORDER = (".png", ".webp", ".jpg", ".jpeg", ".gif", ".svg")
 MAX_GUIDE_LOGO_BYTES = 5 * 1024 * 1024  # 5 MB
+ALLOWED_STANDBY_PATTERN_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+MAX_STANDBY_PATTERN_BYTES = 10 * 1024 * 1024  # 10 MB
 
 app = Flask(__name__, template_folder="app/templates", static_folder="app/static")
 app.secret_key = "retro-guide-poc-local-only"
@@ -78,6 +81,28 @@ def _coerce_guide_logo_mode(value: str | None) -> str:
     return mode
 
 
+def _coerce_bool(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _list_standby_pattern_files() -> list[str]:
+    if not STANDBY_PATTERN_DIR.is_dir():
+        return []
+    return sorted(
+        p.name
+        for p in STANDBY_PATTERN_DIR.iterdir()
+        if p.is_file() and p.suffix.lower() in ALLOWED_STANDBY_PATTERN_EXTENSIONS
+    )
+
+
 def coerce_form(form) -> dict:
     cfg = {
         "playlist_source": form.get("playlist_source", DEFAULT_CONFIG["playlist_source"]).strip(),
@@ -96,6 +121,16 @@ def coerce_form(form) -> dict:
         "output_format": form.get("output_format", DEFAULT_CONFIG["output_format"]).strip(),
         "transition": form.get("transition", DEFAULT_CONFIG["transition"]).strip(),
         "guide_logo_mode": _coerce_guide_logo_mode(form.get("guide_logo_mode")),
+        "standby_overlay_enabled": _coerce_bool(
+            form.get("standby_overlay_enabled"),
+            DEFAULT_CONFIG["standby_overlay_enabled"],
+        ),
+        "standby_overlay_opacity": _coerce_int(
+            form.get("standby_overlay_opacity"),
+            DEFAULT_CONFIG["standby_overlay_opacity"],
+            min_value=0,
+            max_value=100,
+        ),
     }
     return cfg
 
@@ -106,6 +141,63 @@ def _coerce_int(value, default: int, *, min_value: int, max_value: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(min_value, min(max_value, parsed))
+
+
+def _coerce_time_str(value: str | None, default: str) -> str:
+    """Return a validated HH:MM string or *default* if *value* is invalid."""
+    raw = (value or "").strip()
+    parts = raw.split(":")
+    if len(parts) == 2:
+        try:
+            h, m = int(parts[0]), int(parts[1])
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                return f"{h:02d}:{m:02d}"
+        except ValueError:
+            pass
+    return default
+
+
+def _is_off_air(cfg: dict, *, _now: datetime | None = None) -> bool:
+    """Return True if the current local time falls within the configured off-air window.
+
+    The window is defined by *off_air_start* and *off_air_end* as ``HH:MM``
+    strings in local time.  The window can span midnight (e.g. 23:00–06:00).
+    When start equals end the window is treated as empty (never off-air).
+
+    The optional *_now* parameter is used in tests to inject a specific time.
+    """
+    if not _coerce_bool(cfg.get("off_air_enabled"), False):
+        return False
+    start_str = _coerce_time_str(cfg.get("off_air_start"), "00:00")
+    end_str = _coerce_time_str(cfg.get("off_air_end"), "06:00")
+    try:
+        start_h, start_m = int(start_str[:2]), int(start_str[3:])
+        end_h, end_m = int(end_str[:2]), int(end_str[3:])
+    except (ValueError, IndexError):
+        return False
+    now = _now if _now is not None else datetime.now()
+    current = now.hour * 60 + now.minute
+    start = start_h * 60 + start_m
+    end = end_h * 60 + end_m
+    if start == end:
+        return False
+    if start < end:
+        # Daytime window, e.g. 02:00–06:00
+        return start <= current < end
+    # Overnight window, e.g. 23:00–06:00
+    return current >= start or current < end
+
+
+def _off_air_static_enabled(cfg: dict) -> bool:
+    return _coerce_bool(cfg.get("off_air_static_enabled"), DEFAULT_CONFIG["off_air_static_enabled"])
+
+
+def _resolve_standby_segment(cfg: dict, *, off_air_now: bool | None = None) -> Path:
+    if off_air_now is None:
+        off_air_now = _is_off_air(cfg)
+    if off_air_now and _off_air_static_enabled(cfg):
+        return STATIC_SEGMENT
+    return STANDBY_SEGMENT
 
 
 def _read_diag_settings(config: dict) -> dict:
@@ -132,6 +224,16 @@ def _read_diag_settings(config: dict) -> dict:
 def index():
     config = {**DEFAULT_CONFIG, **store.get_config()}
     config["guide_logo_mode"] = _coerce_guide_logo_mode(config.get("guide_logo_mode"))
+    config["standby_overlay_enabled"] = _coerce_bool(
+        config.get("standby_overlay_enabled"),
+        DEFAULT_CONFIG["standby_overlay_enabled"],
+    )
+    config["standby_overlay_opacity"] = _coerce_int(
+        config.get("standby_overlay_opacity"),
+        DEFAULT_CONFIG["standby_overlay_opacity"],
+        min_value=0,
+        max_value=100,
+    )
     logo_filename = secure_filename(config.get("guide_logo_custom_file", "") or "")
     logo_path = GUIDE_LOGO_DIR / logo_filename if logo_filename else None
     if config["guide_logo_mode"] == "custom" and (logo_path is None or not logo_path.is_file()):
@@ -154,10 +256,39 @@ def index():
         p.name for p in MUSIC_DIR.iterdir()
         if p.is_file() and p.suffix.lower() in ALLOWED_AUDIO_EXTENSIONS
     )
+    standby_pattern_files = _list_standby_pattern_files()
+    standby_custom_file = secure_filename(config.get("standby_custom_file", "") or "")
+    if standby_custom_file not in standby_pattern_files:
+        standby_custom_file = ""
+    # Normalize off-air config values for the template
+    config["off_air_enabled"] = _coerce_bool(
+        config.get("off_air_enabled"),
+        DEFAULT_CONFIG["off_air_enabled"],
+    )
+    config["off_air_start"] = _coerce_time_str(
+        config.get("off_air_start"),
+        DEFAULT_CONFIG["off_air_start"],
+    )
+    config["off_air_end"] = _coerce_time_str(
+        config.get("off_air_end"),
+        DEFAULT_CONFIG["off_air_end"],
+    )
+    config["off_air_static_enabled"] = _off_air_static_enabled(config)
+    status = manager.status()
+    status.setdefault(
+        "hls_watchdog",
+        {
+            "healthy": True,
+            "playlist_age_secs": None,
+            "latest_segment": None,
+            "latest_segment_age_secs": None,
+            "warnings": [],
+        },
+    )
     return render_template(
         "index.html",
         config=config,
-        status=manager.status(),
+        status=status,
         events=events,
         events_total=store.count_events(),
         themes=themes,
@@ -166,6 +297,9 @@ def index():
         music_files=music_files,
         guide_logo_custom_file=logo_filename if logo_path and logo_path.is_file() else "",
         guide_logo_custom_url=url_for("guide_logo_file", filename=logo_filename) if logo_path and logo_path.is_file() else "",
+        standby_pattern_files=standby_pattern_files,
+        standby_custom_file=standby_custom_file,
+        off_air_now=_is_off_air(config),
     )
 
 
@@ -498,7 +632,11 @@ def hls_master_playlist():
     # always get a fresh version here.
     st = manager.status()
     version = st.get("stream_version", 0)
-    if st.get("guide_buffered"):
+    cfg = {**DEFAULT_CONFIG, **config}
+    if _is_off_air(cfg):
+        # Off-air window: always serve the standby (static) stream.
+        media_url = f"{base_url}/hls/standby.m3u8?v={version}"
+    elif st.get("guide_buffered"):
         media_url = f"{base_url}/hls/live.m3u8?v={version}"
     else:
         media_url = f"{base_url}/hls/standby.m3u8?v={version}"
@@ -552,18 +690,19 @@ def hls_guide_playlist():
         return _make_live_playlist_response(diag)
 
     # guide.m3u8 not yet ready – serve the standby playlist if the segment exists.
-    if not STANDBY_SEGMENT.exists():
+    if not _resolve_standby_segment(cfg).exists():
         abort(404)
-    return _make_standby_playlist_response(diag)
+    return _make_standby_playlist_response(diag, cfg)
 
 
-def _make_standby_playlist_response(diag: dict) -> Response:
+def _make_standby_playlist_response(diag: dict, cfg: dict, *, off_air_now: bool | None = None) -> Response:
     """Build and return a synthetic standby media playlist response.
 
     Extracted so both ``/hls/guide.m3u8`` (backward compat) and the dedicated
     ``/hls/standby.m3u8`` endpoint can share the same logic without duplication.
     """
     _sdur = STANDBY_DURATION_SECS
+    segment_name = _resolve_standby_segment(cfg, off_air_now=off_air_now).name
     try:
         _live_seg_secs = max(1, int(store.get_config().get("segment_seconds", 6)))
     except (TypeError, ValueError):
@@ -571,7 +710,7 @@ def _make_standby_playlist_response(diag: dict) -> Response:
     seq = int(time.time()) // _live_seg_secs
     _window = diag["standby_window_segments"]
     _seg_entries = "".join(
-        f"#EXT-X-DISCONTINUITY\n#EXTINF:{float(_sdur):.3f},\nstandby.ts?s={seq + i}\n"
+        f"#EXT-X-DISCONTINUITY\n#EXTINF:{float(_sdur):.3f},\n{segment_name}?s={seq + i}\n"
         for i in range(_window)
     )
     playlist = (
@@ -632,23 +771,31 @@ def hls_standby_playlist():
     returns **404** so that clients which were polling it get a network error,
     prompting them to re-fetch ``/hls/master.m3u8`` and discover the new
     ``/hls/live.m3u8`` variant URL.
+
+    During the configured off-air window the standby playlist is always served
+    regardless of whether the live guide is buffered, so viewers see static
+    instead of the guide.
     """
     cfg = {**DEFAULT_CONFIG, **store.get_config()}
     diag = _read_diag_settings(cfg)
     guide_path = OUTPUT_DIR / "guide.m3u8"
-    # 404 when the real guide is ready — forces clients to reload master.m3u8.
-    if (
-        guide_path.exists()
-        and manager.is_guide_buffered(
-            min_secs=float(diag["min_buffer_secs"]),
-            min_segments=diag["min_buffer_segments"],
-        )
-        and manager.status()["pipeline_active"]
-    ):
+    # During the off-air window always serve standby; skip the live-readiness
+    # check so we don't return 404 while the guide pipeline is running.
+    off_air_now = _is_off_air(cfg)
+    if not off_air_now:
+        # 404 when the real guide is ready — forces clients to reload master.m3u8.
+        if (
+            guide_path.exists()
+            and manager.is_guide_buffered(
+                min_secs=float(diag["min_buffer_secs"]),
+                min_segments=diag["min_buffer_segments"],
+            )
+            and manager.status()["pipeline_active"]
+        ):
+            abort(404)
+    if not _resolve_standby_segment(cfg, off_air_now=off_air_now).exists():
         abort(404)
-    if not STANDBY_SEGMENT.exists():
-        abort(404)
-    return _make_standby_playlist_response(diag)
+    return _make_standby_playlist_response(diag, cfg, off_air_now=off_air_now)
 
 
 @app.get("/hls/live.m3u8")
@@ -658,10 +805,14 @@ def hls_live_playlist():
     This endpoint is the "live" variant that ``/hls/master.m3u8`` points to
     once the guide has enough buffer.  It returns 404 while the pipeline is
     still starting (or is stopped) so that clients that somehow reach this URL
-    early get a clean error rather than a partial playlist.
+    early get a clean error rather than a partial playlist.  It also returns
+    404 during the configured off-air window so that clients re-fetch the
+    master playlist and discover the standby variant.
     """
     cfg = {**DEFAULT_CONFIG, **store.get_config()}
     diag = _read_diag_settings(cfg)
+    if _is_off_air(cfg):
+        abort(404)
     guide_path = OUTPUT_DIR / "guide.m3u8"
     if not (
         guide_path.exists()
@@ -795,6 +946,176 @@ def guide_logo_remove():
     )
     flash("Custom guide logo removed. Default logo is active.", "success")
     return redirect(url_for("index") + "#tab-guide-icon")
+
+
+@app.get("/standby-pattern/<path:filename>")
+def standby_pattern_file(filename: str):
+    safe_name = secure_filename(filename)
+    if not safe_name:
+        abort(404)
+    response = send_from_directory(STANDBY_PATTERN_DIR, safe_name)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
+
+
+@app.post("/standby-pattern/upload")
+def standby_pattern_upload():
+    file = request.files.get("standby_pattern_file")
+    if file is None or not file.filename:
+        flash("No standby pattern file selected.", "error")
+        return redirect(url_for("index") + "#tab-standby-pattern")
+    name = secure_filename(file.filename)
+    ext = Path(name).suffix.lower()
+    if ext not in ALLOWED_STANDBY_PATTERN_EXTENSIONS:
+        flash(
+            "Unsupported standby pattern format. "
+            f"Allowed: {', '.join(sorted(ALLOWED_STANDBY_PATTERN_EXTENSIONS))}",
+            "error",
+        )
+        return redirect(url_for("index") + "#tab-standby-pattern")
+
+    STANDBY_PATTERN_DIR.mkdir(parents=True, exist_ok=True)
+    final_name = name
+    dest = STANDBY_PATTERN_DIR / final_name
+    if dest.exists():
+        # For odd filenames like ".png", fallback to a stable stem.
+        stem = Path(name).stem or "pattern"
+        counter = 1
+        while dest.exists():
+            final_name = f"{stem}-{counter}{ext}"
+            dest = STANDBY_PATTERN_DIR / final_name
+            counter += 1
+    try:
+        file.save(str(dest))
+        if dest.stat().st_size > MAX_STANDBY_PATTERN_BYTES:
+            dest.unlink(missing_ok=True)
+            flash(
+                f"Standby pattern file is too large. Maximum size is "
+                f"{MAX_STANDBY_PATTERN_BYTES // (1024 * 1024)} MB.",
+                "error",
+            )
+            return redirect(url_for("index") + "#tab-standby-pattern")
+        if not manager._is_valid_image_file(dest):
+            dest.unlink(missing_ok=True)
+            flash("Uploaded standby pattern is not a recognized image format.", "error")
+            return redirect(url_for("index") + "#tab-standby-pattern")
+        cfg = {**DEFAULT_CONFIG, **store.get_config()}
+        store.save_config({**cfg, "standby_custom_file": final_name})
+        manager._generate_standby_segment(cfg.get("title", DEFAULT_CONFIG["title"]))
+        flash("Standby pattern uploaded and selected.", "success")
+    except OSError as exc:
+        flash(f"Could not save standby pattern file: {exc}", "error")
+    return redirect(url_for("index") + "#tab-standby-pattern")
+
+
+@app.post("/standby-pattern/select")
+def standby_pattern_select():
+    filename = secure_filename(request.form.get("standby_pattern_file", "") or "")
+    cfg = {**DEFAULT_CONFIG, **store.get_config()}
+    if not filename:
+        store.save_config({**cfg, "standby_custom_file": ""})
+        manager._generate_standby_segment(cfg.get("title", DEFAULT_CONFIG["title"]))
+        flash("Using original generated standby pattern.", "success")
+        return redirect(url_for("index") + "#tab-standby-pattern")
+    candidate = STANDBY_PATTERN_DIR / filename
+    if not candidate.is_file():
+        flash("Selected standby pattern file was not found.", "error")
+        return redirect(url_for("index") + "#tab-standby-pattern")
+
+    store.save_config({**cfg, "standby_custom_file": filename})
+    manager._generate_standby_segment(cfg.get("title", DEFAULT_CONFIG["title"]))
+    flash("Standby pattern updated.", "success")
+    return redirect(url_for("index") + "#tab-standby-pattern")
+
+
+@app.post("/standby-pattern/select-default")
+def standby_pattern_select_default():
+    cfg = {**DEFAULT_CONFIG, **store.get_config()}
+    store.save_config({**cfg, "standby_custom_file": ""})
+    manager._generate_standby_segment(cfg.get("title", DEFAULT_CONFIG["title"]))
+    flash("Using original generated standby pattern.", "success")
+    return redirect(url_for("index") + "#tab-standby-pattern")
+
+
+@app.post("/standby-pattern/remove")
+def standby_pattern_remove():
+    filename = secure_filename(request.form.get("standby_pattern_file", "") or "")
+    if not filename:
+        flash("No standby pattern selected for removal.", "error")
+        return redirect(url_for("index") + "#tab-standby-pattern")
+    candidate = STANDBY_PATTERN_DIR / filename
+    candidate.unlink(missing_ok=True)
+
+    cfg = {**DEFAULT_CONFIG, **store.get_config()}
+    update = {**cfg}
+    if secure_filename(cfg.get("standby_custom_file", "") or "") == filename:
+        update["standby_custom_file"] = ""
+        manager._generate_standby_segment(cfg.get("title", DEFAULT_CONFIG["title"]))
+        flash("Standby pattern removed. Using original generated pattern.", "success")
+    else:
+        flash("Standby pattern removed.", "success")
+    store.save_config(update)
+    return redirect(url_for("index") + "#tab-standby-pattern")
+
+
+@app.post("/standby-pattern/settings")
+def standby_pattern_settings():
+    cfg = {**DEFAULT_CONFIG, **store.get_config()}
+    overlay_values = request.form.getlist("standby_overlay_enabled")
+    if overlay_values:
+        overlay_enabled = any(_coerce_bool(value, False) for value in overlay_values)
+    else:
+        overlay_enabled = cfg.get("standby_overlay_enabled", DEFAULT_CONFIG["standby_overlay_enabled"])
+    opacity = _coerce_int(
+        request.form.get("standby_overlay_opacity"),
+        cfg.get("standby_overlay_opacity", DEFAULT_CONFIG["standby_overlay_opacity"]),
+        min_value=0,
+        max_value=100,
+    )
+    store.save_config(
+        {
+            **cfg,
+            "standby_overlay_enabled": overlay_enabled,
+            "standby_overlay_opacity": opacity,
+        }
+    )
+    manager._generate_standby_segment(cfg.get("title", DEFAULT_CONFIG["title"]))
+    flash("Standby overlay settings updated.", "success")
+    return redirect(url_for("index") + "#tab-standby-pattern")
+
+
+@app.post("/off-air/settings")
+def off_air_settings():
+    """Save the off-air schedule configuration."""
+    cfg = {**DEFAULT_CONFIG, **store.get_config()}
+    off_air_values = request.form.getlist("off_air_enabled")
+    if off_air_values:
+        off_air_enabled = any(_coerce_bool(value, False) for value in off_air_values)
+    else:
+        off_air_enabled = cfg.get("off_air_enabled", DEFAULT_CONFIG["off_air_enabled"])
+    off_air_start = _coerce_time_str(request.form.get("off_air_start"), cfg.get("off_air_start", DEFAULT_CONFIG["off_air_start"]))
+    off_air_end = _coerce_time_str(request.form.get("off_air_end"), cfg.get("off_air_end", DEFAULT_CONFIG["off_air_end"]))
+    off_air_static_values = request.form.getlist("off_air_static_enabled")
+    if off_air_static_values:
+        off_air_static_enabled = any(_coerce_bool(value, False) for value in off_air_static_values)
+    else:
+        off_air_static_enabled = cfg.get("off_air_static_enabled", DEFAULT_CONFIG["off_air_static_enabled"])
+    store.save_config(
+        {
+            **cfg,
+            "off_air_enabled": off_air_enabled,
+            "off_air_start": off_air_start,
+            "off_air_end": off_air_end,
+            "off_air_static_enabled": off_air_static_enabled,
+        }
+    )
+    manager.logger.info(
+        "config",
+        f"Off-air schedule updated: enabled={off_air_enabled}, "
+        f"start={off_air_start}, end={off_air_end}, static={off_air_static_enabled}",
+    )
+    flash("Off-air schedule saved.", "success")
+    return redirect(url_for("index") + "#tab-off-air")
 
 
 # ---------------------------------------------------------------------------

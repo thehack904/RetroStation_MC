@@ -62,6 +62,19 @@ http://localhost:8787/
 ./install-linux.sh
 ```
 
+The installer creates and owns the app under the dedicated `iptv` system user at `/home/iptv/retrostation-mc`.
+It also creates and starts the `retrostation-mc` systemd service.
+
+```bash
+sudo systemctl status retrostation-mc
+```
+
+To remove that install and (when `/home/iptv` has no other files) the `iptv` user/group:
+
+```bash
+./uninstall-linux.sh
+```
+
 Or run the setup steps manually:
 
 ```bash

@@ -12,6 +12,7 @@ from app import guide_state
 class DefaultStreamTuningTests(unittest.TestCase):
     def test_default_config_uses_stability_profile(self) -> None:
         self.assertEqual(DEFAULT_CONFIG["theme"], "retrostation_mc")
+        self.assertEqual(DEFAULT_CONFIG["ffmpeg_profile"], "software_default")
         self.assertEqual(DEFAULT_CONFIG["resolution"], "1280x720")
         self.assertEqual(DEFAULT_CONFIG["fps"], 15)
         self.assertEqual(DEFAULT_CONFIG["segment_seconds"], 6)

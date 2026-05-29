@@ -13,7 +13,19 @@ This project uses a simple release-based changelog format with the following sec
 
 ---
 
-## [v1.1.0] - 2026-05-27
+## [v1.2.0] - Unreleased
+
+### Added
+- Off-air schedule feature: admins can configure a daily time window during which the stream shows the standby test pattern (static) instead of the live guide, mimicking classic TV channels that went off air overnight.
+- New `off_air_enabled`, `off_air_start`, and `off_air_end` configuration keys.
+- New **Off Air** admin tab with enable checkbox, start time, and end time inputs, plus a live status indicator.
+- `_is_off_air()` helper used by HLS endpoints to honor the off-air window.
+- During the off-air window: `/hls/master.m3u8` routes to the standby variant; `/hls/live.m3u8` returns 404; `/hls/standby.m3u8` always serves even when the guide pipeline is buffered.
+- Unit tests for time-string coercion and all off-air boundary conditions.
+
+---
+
+## [v1.1.0] - 2026-05-25 - Beta
 
 ### Added
 - RetroStation MC as the new default bundled theme.
