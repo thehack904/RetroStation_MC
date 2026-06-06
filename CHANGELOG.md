@@ -13,19 +13,106 @@ This project uses a simple release-based changelog format with the following sec
 
 ---
 
-## [v1.2.0] - Unreleased
+## [v1.2.0] - 2026-06-06
 
 ### Added
-- Off-air schedule feature: admins can configure a daily time window during which the stream shows the standby test pattern (static) instead of the live guide, mimicking classic TV channels that went off air overnight.
-- New `off_air_enabled`, `off_air_start`, and `off_air_end` configuration keys.
-- New **Off Air** admin tab with enable checkbox, start time, and end time inputs, plus a live status indicator.
-- `_is_off_air()` helper used by HLS endpoints to honor the off-air window.
-- During the off-air window: `/hls/master.m3u8` routes to the standby variant; `/hls/live.m3u8` returns 404; `/hls/standby.m3u8` always serves even when the guide pipeline is buffered.
-- Unit tests for time-string coercion and all off-air boundary conditions.
+
+- Added an **Off Air** admin tab for scheduling a daily off-air window.
+- Added off-air configuration keys:
+  - `off_air_enabled`, `off_air_start`, `off_air_end`, `off_air_static_enabled`
+- Added off-air HLS behavior:
+  - `/hls/master.m3u8` routes viewers to standby during the off-air window.
+  - `/hls/live.m3u8` returns `404` while off-air.
+  - `/hls/standby.m3u8` remains available while off-air, even if the live guide pipeline is buffered.
+- Added optional **TV static noise** output during off-air windows.
+- Added static segment generation as `output/static.ts`.
+- Added a **Standby Pattern** admin tab.
+- Added standby pattern image upload support.
+- Added standby pattern preview, selection, default reset, and removal controls.
+- Added support for custom standby pattern formats:
+  - PNG, JPG / JPEG, GIF, WEBP, BMP
+- Added standby pattern upload validation:
+  - sanitized filenames
+  - allowed extensions only
+  - 10 MB maximum file size
+  - image parse/verification check
+- Added configurable standby text overlay controls:
+  - enable/disable overlay
+  - overlay opacity from 0% to 100%
+- Added `standby_custom_file`, `standby_overlay_enabled`, and `standby_overlay_opacity` configuration keys.
+- Added HLS continuity watchdog diagnostics.
+- Added HLS watchdog status display in the **Diagnostics** tab:
+  - HLS continuity health
+  - playlist age
+  - latest segment
+  - latest segment age
+  - watchdog warnings
+- Added watchdog detection for:
+  - missing/unreadable playlists
+  - stalled playlist updates
+  - empty playlist windows
+  - missing latest segments
+  - stalled segment generation
+  - stale playlist windows
+- Added throttled watchdog warning logs under `hls.watchdog`.
+- Added FFmpeg profile abstraction through new `app/ffmpeg_profiles.py`.
+- Added default `software_default` FFmpeg profile.
+- Added placeholder hardware acceleration provider definitions for:
+  - NVIDIA, Intel, AMD, VAAPI
+- Added `ffmpeg_profile` configuration key.
+- Added profile-based FFmpeg command generation for video codec, audio codec, resolution, preset, bitrate, and HLS segment length.
+- Added `uninstall-linux.sh`.
+- Added `docs/ADDITIONAL_ROADMAP.md`.
+- Added new test coverage for:
+  - FFmpeg profile resolution and command generation
+  - HLS watchdog health/degraded states
+  - off-air schedule boundary handling
+  - standby pattern upload/selection/settings
+  - standby overlay behavior
+  - Linux installer/uninstaller behavior
+
+### Changed
+
+- Updated the Admin **About** tab version from `v1.1.0` to `v1.2.0`.
+- Refactored FFmpeg command construction out of the main pipeline start logic into a dedicated helper.
+- Updated audio FFmpeg argument generation to use the selected profile audio codec instead of hardcoding AAC.
+- Updated standby generation so a custom uploaded pattern can replace the generated SMPTE-style pattern.
+- Updated standby playlist generation so it can serve either `standby.ts` or `static.ts`.
+- Updated pipeline start/stop behavior to generate both standby and static segments.
+- Updated stale output cleanup to preserve both `standby.ts` and `static.ts`.
+- Updated Docker Compose service and container names from `RetroStation_MC` to lowercase `retrostation-mc`.
+- Reworked `install-linux.sh` into a root/systemd installer that:
+  - requires root/sudo
+  - creates/uses an `iptv` system user
+  - installs to `/home/iptv/retrostation-mc`
+  - creates a Python virtual environment
+  - installs requirements
+  - creates and starts a `retrostation-mc` systemd service
+- Updated README and installation documentation with the new Linux uninstall flow.
+- Updated architecture, configuration, HLS pipeline, and admin user documentation for the new off-air, standby pattern, watchdog, and installer behavior.
+
+### Fixed
+
+- Improved HLS observability by surfacing stalled playlist/segment conditions directly in diagnostics.
+- Improved standby/live switching behavior during scheduled off-air windows.
+- Improved standby pattern robustness by validating uploaded image content before use.
+- Improved FFmpeg configurability by centralizing codec/profile settings instead of scattering hardcoded values.
+
+### Security / Hardening
+
+- Added validation and sanitization for standby pattern uploads.
+- Added file size limits for standby pattern uploads.
+- Added no-cache headers for served standby pattern files.
+- Hardened Linux install path handling by refusing unexpected staging locations.
+- Added uninstall logic that preserves the `iptv` user when `/home/iptv` still contains other files.
+
+### Known Issues / Notes
+
+- The hardware acceleration providers are currently placeholders; only the default software FFmpeg profile is implemented.
 
 ---
 
-## [v1.1.0] - 2026-05-25 - Beta
+## [v1.1.0] - 2026-05-27
 
 ### Added
 - RetroStation MC as the new default bundled theme.
