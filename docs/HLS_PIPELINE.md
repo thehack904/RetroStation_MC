@@ -17,6 +17,8 @@ RetroStation MC uses FFmpeg to produce HLS media and Flask to serve client-facin
 
 ## Default HLS profile
 
+The default FFmpeg profile is `software_default`.
+
 | Setting | Default |
 |---|---:|
 | Resolution | `1280x720` |
@@ -27,6 +29,9 @@ RetroStation MC uses FFmpeg to produce HLS media and Flask to serve client-facin
 | Minimum live buffer age | `18` seconds |
 | Minimum live segment count | `3` |
 | Standby playlist window | `3` synthetic entries |
+
+The internal profile registry also includes placeholder hardware-acceleration
+providers for NVIDIA, Intel, AMD, and VAAPI for future encoder work.
 
 ## FFmpeg video strategy
 

@@ -85,6 +85,22 @@ Use **Guide Icon (M3U)** to choose:
 
 Upload/remove custom icons in the **Custom Guide Icon Upload** section on the admin page.
 
+## Standby test pattern graphics
+
+In the **Standby Pattern** tab, you can upload multiple standby test pattern image files and choose which pattern is active from a dropdown.
+
+- The dropdown includes **Default generated pattern** so you can switch back without an uploaded file.
+- The active uploaded file is used as the standby background image.
+- **Show standby text overlay** lets you disable the title/subtitle and text band so only the graphic is shown.
+- **Overlay transparency** controls the black standby text band opacity (used only when a custom standby image is active).
+
+## Off-air display mode
+
+In the **Off Air** tab, enable a daily off-air schedule and choose what viewers see during that window:
+
+- **Play static noise while off-air** enabled: serves a TV static clip.
+- **Play static noise while off-air** disabled: serves the standby test pattern.
+
 ## Pipeline Status
 
 The status panel reports whether the renderer and FFmpeg processes are running, whether the pipeline is active, and whether the guide has enough HLS buffer to switch from standby to live guide playback.

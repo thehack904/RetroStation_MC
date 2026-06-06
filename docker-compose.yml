@@ -1,7 +1,7 @@
 services:
-  RetroStation_MC:
+  retrostation-mc:
     build: .
-    container_name: RetroStation_MC
+    container_name: retrostation-mc
     ports:
       - "8787:8787"
     volumes:

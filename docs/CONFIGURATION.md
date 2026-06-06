@@ -26,6 +26,13 @@ The `settings` table stores one key per setting. Values are JSON-encoded.
 | `timezone` | `local` | Exposed UI option; parser normalizes XMLTV times to UTC internally |
 | `output_format` | `both` | UI output preference field |
 | `transition` | `scroll` | Page transition mode: `scroll` or `cut` |
+| `standby_custom_file` | empty | Active uploaded standby pattern filename (empty uses generated default) |
+| `standby_overlay_enabled` | `true` | Whether custom standby images render the standby text band/title overlay |
+| `standby_overlay_opacity` | `50` | Black standby text-band opacity percent when custom standby image is active |
+| `off_air_enabled` | `false` | Enable the daily off-air time window |
+| `off_air_start` | `00:00` | Local `HH:MM` time when the channel goes off-air |
+| `off_air_end` | `06:00` | Local `HH:MM` time when the channel returns on-air |
+| `off_air_static_enabled` | `false` | When off-air, play static noise instead of the standby test pattern |
 | `music_mode` | `none` | `none`, `single`, or `playlist` |
 | `music_loop` | `false` | Whether selected music loops |
 | `music_single_file` | empty | Selected filename for single-track mode |

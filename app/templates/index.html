@@ -180,6 +180,7 @@
         </section>
 
         <div class="form-actions">
+          <input type="hidden" name="standby_overlay_opacity" value="{{ config.standby_overlay_opacity }}">
           <button type="submit" name="action" value="save" class="btn">Save Config</button>
           <button type="submit" name="action" value="start_restart" class="btn btn--primary">
             {% if status.pipeline_active %}Save &amp; Restart{% else %}Save &amp; Start{% endif %}
@@ -270,6 +271,8 @@
       <button class="tab-btn" data-tab="diagnostics">Diagnostics</button>
       <button class="tab-btn" data-tab="logs">Logs</button>
       <button class="tab-btn" data-tab="guide-icon">Guide Icon</button>
+      <button class="tab-btn" data-tab="standby-pattern">Standby Pattern</button>
+      <button class="tab-btn" data-tab="off-air">Off Air</button>
       <button class="tab-btn" data-tab="about">About</button>
     </div>
 
@@ -353,6 +356,16 @@
 
     <!-- Diagnostics Tab -->
     <div class="tab-panel" id="tab-diagnostics">
+      <div class="info-grid" style="margin-bottom:14px">
+        <div class="info-row">
+          <span class="info-label">HLS Continuity</span>
+          <code>{{ 'Healthy' if status.hls_watchdog.healthy else 'Degraded' }}</code>
+        </div>
+        <div class="info-row"><span class="info-label">Playlist Age</span><code>{{ status.hls_watchdog.playlist_age_secs if status.hls_watchdog.playlist_age_secs is not none else '—' }}s</code></div>
+        <div class="info-row"><span class="info-label">Latest Segment</span><code>{{ status.hls_watchdog.latest_segment or '—' }}</code></div>
+        <div class="info-row"><span class="info-label">Segment Age</span><code>{{ status.hls_watchdog.latest_segment_age_secs if status.hls_watchdog.latest_segment_age_secs is not none else '—' }}s</code></div>
+        <div class="info-row"><span class="info-label">Watchdog Warnings</span><code>{{ status.hls_watchdog.warnings | join(', ') if status.hls_watchdog.warnings else 'none' }}</code></div>
+      </div>
       <form method="post" action="{{ url_for('diagnostics_settings') }}">
         <div class="field-row">
           <label class="field-label">Delayed Edge (segments)</label>
@@ -427,11 +440,120 @@
       {% endif %}
     </div>
 
+    <!-- Standby Pattern Tab -->
+    <div class="tab-panel" id="tab-standby-pattern">
+      <form method="post" action="{{ url_for('standby_pattern_upload') }}" enctype="multipart/form-data" class="music-upload-form">
+        <div class="music-upload-row">
+          <label class="music-file-label">
+            <span>Upload standby test pattern (PNG, JPG, JPEG, GIF, WEBP, BMP — max 10 MB)</span>
+            <input type="file" name="standby_pattern_file" accept=".png,.jpg,.jpeg,.gif,.webp,.bmp" style="width:auto">
+          </label>
+          <button type="submit" class="btn btn--sm">Upload Pattern</button>
+        </div>
+      </form>
+
+      <form method="post" action="{{ url_for('standby_pattern_select') }}" class="field-row-inline" style="margin-top:12px;gap:8px;align-items:center;flex-wrap:wrap">
+        <label class="field-label" style="min-width:160px">Active standby pattern</label>
+        <select name="standby_pattern_file" style="min-width:260px">
+          <option value="" {% if not standby_custom_file %}selected{% endif %}>Default generated pattern</option>
+          {% for pattern_file in standby_pattern_files %}
+          <option value="{{ pattern_file }}" {% if standby_custom_file == pattern_file %}selected{% endif %}>{{ pattern_file }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="btn btn--sm">Apply Selection</button>
+      </form>
+
+      <form method="post" action="{{ url_for('standby_pattern_settings') }}" class="field-row-inline" style="margin-top:10px;gap:8px;align-items:center;flex-wrap:wrap">
+        <label class="inline-check" style="min-width:160px">
+          <input type="hidden" name="standby_overlay_enabled" value="0">
+          <input type="checkbox" name="standby_overlay_enabled" value="1" {% if config.standby_overlay_enabled %}checked{% endif %}>
+          Show standby text overlay
+        </label>
+        <label class="field-label" style="min-width:160px">Overlay opacity</label>
+        <select name="standby_overlay_opacity" style="width:180px">
+          {% for value in [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100] %}
+          <option value="{{ value }}" {% if value == config.standby_overlay_opacity %}selected{% endif %}>{{ value }}%</option>
+          {% endfor %}
+        </select>
+        <span class="status-bar__item" style="opacity:0.85">Lower % = more transparent, higher % = less transparent. Used only when a custom standby image is active.</span>
+        <button type="submit" class="btn btn--sm">Save Overlay Settings</button>
+      </form>
+
+      {% if standby_pattern_files %}
+      <div class="music-list" style="margin-top:12px">
+        {% for pattern_file in standby_pattern_files %}
+        <div class="music-item">
+          <div class="music-name"><code>{{ pattern_file }}</code>{% if standby_custom_file == pattern_file %} <strong>(active)</strong>{% endif %}</div>
+          <div class="music-actions">
+            <a class="btn btn--sm" href="{{ url_for('standby_pattern_file', filename=pattern_file) }}" target="_blank" rel="noopener">Preview</a>
+            <form method="post" action="{{ url_for('standby_pattern_remove') }}">
+              <input type="hidden" name="standby_pattern_file" value="{{ pattern_file }}">
+              <button type="submit" class="btn btn--sm btn--danger">Remove</button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p style="opacity:0.7;margin-top:12px">No standby pattern graphics uploaded yet.</p>
+      {% endif %}
+    </div>
+
+    <!-- Off Air Tab -->
+    <div class="tab-panel" id="tab-off-air">
+      {% set off_air_active = config.off_air_enabled and off_air_now %}
+      <p style="margin-bottom:12px;opacity:0.85">
+        Set a daily off-air window during which the stream shows either the standby test pattern or static noise instead of the guide.
+        This mimics classic TV channels that went off-air overnight.
+        {% if config.off_air_enabled %}
+          <strong style="color:{{ '#e07070' if off_air_active else '#70c070' }}">
+            Status: {{ 'Off Air now' if off_air_active else 'On Air now' }}
+          </strong>
+        {% endif %}
+      </p>
+      <form method="post" action="{{ url_for('off_air_settings') }}">
+        <div class="field-row-inline" style="margin-bottom:12px;gap:8px;align-items:center">
+          <label class="inline-check">
+            <input type="hidden" name="off_air_enabled" value="0">
+            <input type="checkbox" name="off_air_enabled" value="1" {% if config.off_air_enabled %}checked{% endif %}
+              id="off-air-enabled-checkbox">
+            Enable off-air schedule
+          </label>
+        </div>
+        <div id="off-air-times" style="{{ '' if config.off_air_enabled else 'opacity:0.5;pointer-events:none' }}">
+          <div class="field-row">
+            <label class="field-label">Off-air start (HH:MM)</label>
+            <input type="time" name="off_air_start" value="{{ config.off_air_start }}" style="width:120px">
+            <span style="opacity:0.7;font-size:0.9em;margin-left:8px">Channel goes off-air at this local time</span>
+          </div>
+          <div class="field-row">
+            <label class="field-label">On-air return (HH:MM)</label>
+            <input type="time" name="off_air_end" value="{{ config.off_air_end }}" style="width:120px">
+            <span style="opacity:0.7;font-size:0.9em;margin-left:8px">Channel returns on-air at this local time</span>
+          </div>
+          <div class="field-row">
+            <label class="inline-check">
+              <input type="hidden" name="off_air_static_enabled" value="0">
+              <input type="checkbox" name="off_air_static_enabled" value="1" {% if config.off_air_static_enabled %}checked{% endif %}>
+              Play static noise while off-air (instead of standby test pattern)
+            </label>
+          </div>
+          <p style="opacity:0.65;font-size:0.85em;margin-top:6px">
+            The window can span midnight (e.g. 23:00 – 06:00).
+            When off-air, clients see either the standby test pattern or static noise based on this setting.
+          </p>
+        </div>
+        <div class="form-actions" style="margin-top:14px">
+          <button type="submit" class="btn">Save Off-Air Settings</button>
+        </div>
+      </form>
+    </div>
+
     <!-- About Tab -->
     <div class="tab-panel" id="tab-about">
       <div class="info-grid">
         <div class="info-row"><span class="info-label">Application</span><code>RetroStation MC</code></div>
-        <div class="info-row"><span class="info-label">Version</span><code>v1.1.0</code></div>
+        <div class="info-row"><span class="info-label">Version</span><code>v1.2.0</code></div>
         <div class="info-row"><span class="info-label">Description</span><code>Admin-driven retro guide channel generator for RetroIPTVGuide.</code></div>
       </div>
     </div>
@@ -714,6 +836,21 @@
           if (field) field.value = tz;
         }
       } catch (e) { /* Intl not available; server will fall back to OS timezone */ }
+    })();
+  </script>
+
+  <!-- Off-air schedule: toggle time fields based on the enable checkbox -->
+  <script>
+    (function () {
+      var cb = document.getElementById('off-air-enabled-checkbox');
+      var times = document.getElementById('off-air-times');
+      if (!cb || !times) return;
+      function syncTimes() {
+        times.style.opacity = cb.checked ? '1' : '0.5';
+        times.style.pointerEvents = cb.checked ? '' : 'none';
+      }
+      cb.addEventListener('change', syncTimes);
+      syncTimes();
     })();
   </script>
 

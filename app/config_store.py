@@ -20,6 +20,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "playlist_source": str(BASE_DIR / "sample_data" / "channels.m3u"),
     "xmltv_source": str(BASE_DIR / "sample_data" / "xmltv.xml"),
     "theme": "retrostation_mc",
+    "ffmpeg_profile": "software_default",
     "resolution": "1280x720",
     "fps": 15,
     "segment_seconds": 6,
@@ -34,6 +35,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "transition": "scroll",
     "guide_logo_mode": "default",  # "default" | "custom" | "disabled"
     "guide_logo_custom_file": "",
+    "standby_custom_file": "",
+    "standby_overlay_enabled": True,
+    "standby_overlay_opacity": 50,
+    # Off-air schedule settings
+    "off_air_enabled": False,   # enable the off-air time window
+    "off_air_start": "00:00",   # HH:MM local time when the channel goes off-air
+    "off_air_end": "06:00",     # HH:MM local time when the channel returns on-air
+    "off_air_static_enabled": False,  # play static noise instead of test pattern while off-air
     # Background music settings
     "music_mode": "none",        # "none" | "single" | "playlist"
     "music_loop": False,         # loop the audio

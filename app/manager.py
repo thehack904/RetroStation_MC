@@ -12,7 +12,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from werkzeug.utils import secure_filename
+
 from .config_store import ConfigStore
+from .ffmpeg_profiles import FFmpegProfile, resolve_ffmpeg_profile
 from .guide_state import STATE_PATH, build_state
 from .logging_utils import AppLogger
 from .m3u_parser import parse_m3u
@@ -27,6 +30,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 
 STANDBY_SEGMENT = OUTPUT_DIR / "standby.ts"
+STATIC_SEGMENT = OUTPUT_DIR / "static.ts"
+STANDBY_PATTERN_DIR = DATA_DIR / "standby_patterns"
 
 # Path to the bundled sample XMLTV file.  When this file is the configured
 # source, programme data is generated dynamically so the guide always shows
@@ -290,12 +295,11 @@ def _load_font_for_standby(size: int):
 
 
 def _build_standby_image(width: int, height: int, title: str) -> "Image.Image":
-    """Return a PIL Image with SMPTE-style colour bars and a 'Please Stand By' overlay."""
+    """Return a PIL Image with SMPTE-style colour bars and overlay text."""
     from PIL import Image, ImageDraw
 
     img = Image.new("RGB", (width, height), (0, 0, 0))
     draw = ImageDraw.Draw(img)
-
     # SMPTE 75 % colour bars across the upper 75 % of the frame
     bars = [
         (191, 191, 191),  # 75 % white
@@ -313,8 +317,33 @@ def _build_standby_image(width: int, height: int, title: str) -> "Image.Image":
         x1 = x0 + bar_w if i < len(bars) - 1 else width
         draw.rectangle([x0, 0, x1 - 1, bar_h - 1], fill=color)
 
-    # Dark strip below the bars for the text message
-    draw.rectangle([0, bar_h, width - 1, height - 1], fill=(15, 15, 15))
+    _draw_standby_overlay(img, width, height, title, bar_h, band_opacity_percent=100)
+    return img
+
+
+def _draw_standby_overlay(
+    img,
+    width: int,
+    height: int,
+    title: str,
+    bar_h: int,
+    *,
+    band_opacity_percent: int = 100,
+) -> None:
+    """Draw the standby title/subtitle text block over the lower band area."""
+    from PIL import Image, ImageDraw
+
+    opacity = max(0, min(100, int(band_opacity_percent)))
+    if opacity >= 100:
+        draw = ImageDraw.Draw(img)
+        draw.rectangle([0, bar_h, width - 1, height - 1], fill=(15, 15, 15))
+    else:
+        alpha = int(255 * (opacity / 100.0))
+        base = img.convert("RGBA")
+        overlay = Image.new("RGBA", (width, max(1, height - bar_h)), (15, 15, 15, alpha))
+        base.alpha_composite(overlay, dest=(0, bar_h))
+        img.paste(base.convert("RGB"))
+        draw = ImageDraw.Draw(img)
 
     sub_text = "Please Stand By"
     font_title = _load_font_for_standby(max(24, height // 18))
@@ -341,14 +370,46 @@ def _build_standby_image(width: int, height: int, title: str) -> "Image.Image":
     draw.text((x2 + 2, y + 2), sub_text, font=font_sub, fill=(0, 0, 0))
     draw.text((x2, y), sub_text, font=font_sub, fill=(255, 220, 50))
 
+
+def _build_custom_standby_image(
+    path: Path,
+    width: int,
+    height: int,
+    title: str,
+    *,
+    overlay_enabled: bool = True,
+    overlay_opacity_percent: int = 50,
+) -> "Image.Image":
+    """Build a standby frame from a custom image and apply the standard overlay."""
+    from PIL import Image, ImageOps
+
+    with Image.open(path) as src:
+        img = ImageOps.fit(src.convert("RGB"), (width, height), method=Image.Resampling.LANCZOS)
+    if overlay_enabled:
+        _draw_standby_overlay(
+            img,
+            width,
+            height,
+            title,
+            int(height * 0.75),
+            band_opacity_percent=overlay_opacity_percent,
+        )
     return img
+
+
+def _build_static_noise_image(width: int, height: int) -> "Image.Image":
+    """Return a PIL Image containing grayscale TV static noise."""
+    from PIL import Image, ImageOps
+
+    noise = Image.effect_noise((width, height), 72.0).convert("L")
+    return ImageOps.autocontrast(noise).convert("RGB")
 
 
 # ---------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------
 
-def _build_audio_ffmpeg_args(config: dict) -> tuple[list[str], list[str], list[str]]:
+def _build_audio_ffmpeg_args(config: dict, audio_codec: str) -> tuple[list[str], list[str], list[str]]:
     """Return (input_args, codec_args, map_args) for the audio portion of the
     ffmpeg pipeline based on the music configuration in *config*.
 
@@ -365,7 +426,7 @@ def _build_audio_ffmpeg_args(config: dict) -> tuple[list[str], list[str], list[s
     - *map_args*    – ``-map`` / ``-filter_complex`` selectors.
     """
     silence_input = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
-    silence_codec = ["-c:a", "aac", "-b:a", "32k"]
+    silence_codec = ["-c:a", audio_codec, "-b:a", "32k"]
     silence_map = ["-map", "0:v", "-map", "1:a"]
 
     music_mode = config.get("music_mode", "none")
@@ -379,7 +440,7 @@ def _build_audio_ffmpeg_args(config: dict) -> tuple[list[str], list[str], list[s
                 if music_loop:
                     return (
                         ["-stream_loop", "-1", "-i", str(file_path)],
-                        ["-c:a", "aac", "-b:a", "128k"],
+                        ["-c:a", audio_codec, "-b:a", "128k"],
                         ["-map", "0:v", "-map", "1:a"],
                     )
                 else:
@@ -391,7 +452,7 @@ def _build_audio_ffmpeg_args(config: dict) -> tuple[list[str], list[str], list[s
                     # anullsrc contributes, producing clean silence).
                     return (
                         silence_input + ["-i", str(file_path)],
-                        ["-c:a", "aac", "-b:a", "128k"],
+                        ["-c:a", audio_codec, "-b:a", "128k"],
                         [
                             "-filter_complex",
                             "[2:a][1:a]amix=inputs=2:duration=longest:normalize=0[outa]",
@@ -423,14 +484,14 @@ def _build_audio_ffmpeg_args(config: dict) -> tuple[list[str], list[str], list[s
             if music_loop:
                 return (
                     ["-stream_loop", "-1"] + concat_input,
-                    ["-c:a", "aac", "-b:a", "128k"],
+                    ["-c:a", audio_codec, "-b:a", "128k"],
                     ["-map", "0:v", "-map", "1:a"],
                 )
             else:
                 # See normalize=0 comment above for the same pattern.
                 return (
                     silence_input + concat_input,
-                    ["-c:a", "aac", "-b:a", "128k"],
+                    ["-c:a", audio_codec, "-b:a", "128k"],
                     [
                         "-filter_complex",
                         "[2:a][1:a]amix=inputs=2:duration=longest:normalize=0[outa]",
@@ -473,6 +534,85 @@ def _start_stderr_reader(
     return t
 
 
+def _build_ffmpeg_command(
+    profile: FFmpegProfile,
+    fps: str,
+    audio_input_args: list[str],
+    audio_codec_args: list[str],
+    audio_map_args: list[str],
+    start_number: str,
+    playlist_path: Path,
+) -> list[str]:
+    segment_seconds = str(profile.hls_segment_length)
+    # GOP size in frames. A 2-second keyframe interval keeps each segment
+    # populated with multiple IDR points so segment boundaries can start cleanly
+    # and avoid "grey frame" stalls in stricter IPTV clients.
+    gop_frames = int(fps) * HLS_KEYFRAME_INTERVAL_SECS
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-s", profile.resolution,
+        "-r", fps,
+        "-i", "-",
+        *audio_input_args,
+        "-c:v", profile.video_codec,
+    ]
+    if profile.preset:
+        ffmpeg_cmd.extend(["-preset", profile.preset])
+    ffmpeg_cmd.extend([
+        "-tune", "zerolatency",
+        # GOP / keyframe strategy mirrors ErsatzTV's OutputFormatHls:
+        # -g / -keyint_min pin the GOP to exactly KeyframeIntervalSeconds
+        # so ffmpeg never stretches it on scene-change detection.
+        # -force_key_frames guarantees a keyframe at every Ns wall-clock
+        # boundary regardless of content, making segment cuts always clean.
+        # -sc_threshold 0 disables scene-change forced keyframes so only
+        # the -force_key_frames expression controls IDR placement.
+        "-g", str(gop_frames),
+        "-keyint_min", str(gop_frames),
+        # ffmpeg expression vars: t=elapsed seconds, n_forced=count so far.
+        "-force_key_frames", f"expr:gte(t,n_forced*{HLS_KEYFRAME_INTERVAL_SECS})",
+        "-sc_threshold", "0",
+    ])
+    if profile.bitrate:
+        ffmpeg_cmd.extend(["-b:v", profile.bitrate])
+    ffmpeg_cmd.extend([
+        "-pix_fmt", "yuv420p",
+        *audio_codec_args,
+        *audio_map_args,
+        "-f", "hls",
+        "-hls_time", segment_seconds,
+        # Explicit segment container (ErsatzTV OutputFormatConcatHls).
+        "-hls_segment_type", "mpegts",
+        # Keep a 10-segment window (~60 s at 6 s/segment). With delayed
+        # live-edge trimming, visible_segments = hls_list_size -
+        # diag_delay_segments, so a slightly larger window preserves
+        # playable history while staying off the true live edge.
+        "-hls_list_size", "10",
+        # +live tells the muxer to manage the sliding window properly for a
+        # live stream (ErsatzTV OutputFormatConcatHls uses segment_list_flags).
+        "-segment_list_flags", "+live",
+        # Flags (ErsatzTV OutputFormatConcatHls):
+        #   delete_segments   – remove expired .ts files to avoid disk fill
+        #   program_date_time – EXT-X-PROGRAM-DATE-TIME tags for DVR seek
+        #   omit_endlist      – never write EXT-X-ENDLIST; keeps the stream
+        #                       live even on clean ffmpeg shutdown
+        #   discont_start     – EXT-X-DISCONTINUITY at the first segment so
+        #                       players handle a pipeline restart gracefully
+        #   independent_segments – all segments start on a keyframe (IDR)
+        "-hls_flags", "delete_segments+program_date_time+omit_endlist+discont_start+independent_segments",
+        # Epoch-based start number keeps EXT-X-MEDIA-SEQUENCE strictly
+        # increasing across pipeline restarts so clients never stall waiting
+        # for a sequence they already consumed.
+        "-start_number", start_number,
+        "-hls_segment_filename", str(OUTPUT_DIR / "guide_%d.ts"),
+        str(playlist_path),
+    ])
+    return ffmpeg_cmd
+
+
 class GuideManager:
     def __init__(self, store: ConfigStore):
         self.store = store
@@ -505,6 +645,8 @@ class GuideManager:
         self._telemetry_debug = os.getenv("RETRO_TELEMETRY_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
         self._hls_telemetry_thread: Optional[threading.Thread] = None
         self._hls_telemetry_stop = threading.Event()
+        self._last_hls_watchdog_warning_at: float | None = None
+        self._last_hls_watchdog_warning_key: tuple[str, ...] = ()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -546,6 +688,7 @@ class GuideManager:
             # guide pipeline.
             self.refresh_state()
             self._generate_standby_segment()
+            self._generate_static_segment()
             self.logger.info(
                 "system",
                 "No existing pipeline found; standby playlist active — "
@@ -765,13 +908,23 @@ class GuideManager:
         risk of the new playlist being mistaken for stale content.
         """
         for path in OUTPUT_DIR.iterdir():
-            if path == STANDBY_SEGMENT:
+            if path in {STANDBY_SEGMENT, STATIC_SEGMENT}:
                 continue
             if path.suffix in (".ts", ".m3u8"):
                 try:
                     path.unlink()
                 except OSError as exc:
                     self.logger.warning("pipeline", f"Could not remove stale output file {path}: {exc}")
+
+    def _is_valid_image_file(self, path: Path) -> bool:
+        """Return True when *path* points to an image PIL can parse successfully."""
+        try:
+            from PIL import Image
+            with Image.open(path) as img:
+                img.verify()
+            return True
+        except Exception:
+            return False
 
     def _generate_standby_segment(self, title: str = "Guide is Loading...") -> None:
         """Encode a looping 'Please Stand By' segment into ``standby.ts``.
@@ -794,7 +947,25 @@ class GuideManager:
             width, height = 1280, 720
 
         try:
-            img = _build_standby_image(width, height, title)
+            custom_name = secure_filename(config.get("standby_custom_file", "") or "")
+            custom_path = STANDBY_PATTERN_DIR / custom_name if custom_name else None
+            overlay_enabled_raw = config.get("standby_overlay_enabled", True)
+            if isinstance(overlay_enabled_raw, str):
+                overlay_enabled = overlay_enabled_raw.strip().lower() in {"1", "true", "yes", "on"}
+            else:
+                overlay_enabled = bool(overlay_enabled_raw)
+            overlay_opacity = max(0, min(100, int(config.get("standby_overlay_opacity", 50))))
+            if custom_path and custom_path.is_file():
+                img = _build_custom_standby_image(
+                    custom_path,
+                    width,
+                    height,
+                    title,
+                    overlay_enabled=overlay_enabled,
+                    overlay_opacity_percent=overlay_opacity,
+                )
+            else:
+                img = _build_standby_image(width, height, title)
         except Exception as exc:
             self.logger.warning("pipeline", f"Could not build standby image: {exc}")
             return
@@ -835,6 +1006,60 @@ class GuideManager:
             if tmp_path:
                 Path(tmp_path).unlink(missing_ok=True)
 
+    def _generate_static_segment(self) -> None:
+        """Encode a looping TV static segment into ``static.ts``."""
+        import tempfile
+
+        config = self.store.get_config()
+        resolution = config.get("resolution", "1280x720")
+        fps = int(config.get("fps", 15))
+        gop_size = fps * int(config.get("segment_seconds", 6))
+
+        try:
+            width, height = [int(x) for x in resolution.lower().split("x", 1)]
+        except ValueError:
+            width, height = 1280, 720
+
+        try:
+            img = _build_static_noise_image(width, height)
+        except Exception as exc:
+            self.logger.warning("pipeline", f"Could not build static image: {exc}")
+            return
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp_path = tmp.name
+            img.save(tmp_path)
+
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-loop", "1",
+                "-framerate", str(fps),
+                "-i", tmp_path,
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+                "-pix_fmt", "yuv420p",
+                "-g", str(gop_size),
+                "-keyint_min", str(gop_size),
+                "-sc_threshold", "0",
+                "-c:a", "aac", "-b:a", "32k",
+                "-map", "0:v", "-map", "1:a",
+                "-t", str(STANDBY_DURATION_SECS),
+                str(STATIC_SEGMENT),
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=60)
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="replace").strip()
+                self.logger.warning("pipeline", f"Static segment encode failed (exit {result.returncode}): {stderr}")
+            else:
+                self.logger.info("pipeline", f"Static segment written to {STATIC_SEGMENT}")
+        except Exception as exc:
+            self.logger.warning("pipeline", f"Could not generate static segment: {exc}")
+        finally:
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
+
     def start_pipeline(self, message: str = "Guide is Loading...") -> None:
         # Mark the pipeline as intentionally active so the background worker
         # will restart it automatically if it ever crashes.
@@ -847,15 +1072,17 @@ class GuideManager:
         # running pipeline so that standby.ts is ready the moment guide.m3u8
         # disappears.  Done outside the lock; FFmpeg can take a second or two.
         self._generate_standby_segment(message)
+        self._generate_static_segment()
 
         with self._lock:
             self._stop_pipeline_locked()
             self._clean_output_dir()
 
             config = self.store.get_config()
-            resolution = config.get("resolution", "1280x720")
+            profile = resolve_ffmpeg_profile(config)
+            resolution = profile.resolution
             fps = str(config.get("fps", 15))
-            segment_seconds = str(config.get("segment_seconds", 6))
+            segment_seconds = str(profile.hls_segment_length)
             playlist_path = OUTPUT_DIR / "guide.m3u8"
 
             # Use an epoch-time-based segment start number so that
@@ -875,66 +1102,18 @@ class GuideManager:
             if self._telemetry_debug:
                 renderer_cmd.append("--telemetry")
 
-            audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(config)
-            # GOP size in frames. A 2-second keyframe interval keeps each 6-second
-            # segment populated with multiple IDR points so segment boundaries can
-            # start cleanly and avoid "grey frame" stalls in stricter IPTV clients.
-            gop_frames = int(fps) * HLS_KEYFRAME_INTERVAL_SECS
-            ffmpeg_cmd = [
-                "ffmpeg",
-                "-hide_banner", "-loglevel", "error", "-y",
-                "-f", "rawvideo",
-                "-pix_fmt", "rgb24",
-                "-s", resolution,
-                "-r", fps,
-                "-i", "-",
-                *audio_input_args,
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-tune", "zerolatency",
-                # GOP / keyframe strategy mirrors ErsatzTV's OutputFormatHls:
-                # -g / -keyint_min pin the GOP to exactly KeyframeIntervalSeconds
-                # so ffmpeg never stretches it on scene-change detection.
-                # -force_key_frames guarantees a keyframe at every Ns wall-clock
-                # boundary regardless of content, making segment cuts always clean.
-                # -sc_threshold 0 disables scene-change forced keyframes so only
-                # the -force_key_frames expression controls IDR placement.
-                "-g", str(gop_frames),
-                "-keyint_min", str(gop_frames),
-                # ffmpeg expression vars: t=elapsed seconds, n_forced=count so far.
-                "-force_key_frames", f"expr:gte(t,n_forced*{HLS_KEYFRAME_INTERVAL_SECS})",
-                "-sc_threshold", "0",
-                "-pix_fmt", "yuv420p",
-                *audio_codec_args,
-                *audio_map_args,
-                "-f", "hls",
-                "-hls_time", segment_seconds,
-                # Explicit segment container (ErsatzTV OutputFormatConcatHls).
-                "-hls_segment_type", "mpegts",
-                # Keep a 10-segment window (~60 s at 6 s/segment). With delayed
-                # live-edge trimming, visible_segments = hls_list_size -
-                # diag_delay_segments, so a slightly larger window preserves
-                # playable history while staying off the true live edge.
-                "-hls_list_size", "10",
-                # +live tells the muxer to manage the sliding window properly for a
-                # live stream (ErsatzTV OutputFormatConcatHls uses segment_list_flags).
-                "-segment_list_flags", "+live",
-                # Flags (ErsatzTV OutputFormatConcatHls):
-                #   delete_segments   – remove expired .ts files to avoid disk fill
-                #   program_date_time – EXT-X-PROGRAM-DATE-TIME tags for DVR seek
-                #   omit_endlist      – never write EXT-X-ENDLIST; keeps the stream
-                #                       live even on clean ffmpeg shutdown
-                #   discont_start     – EXT-X-DISCONTINUITY at the first segment so
-                #                       players handle a pipeline restart gracefully
-                #   independent_segments – all segments start on a keyframe (IDR)
-                "-hls_flags", "delete_segments+program_date_time+omit_endlist+discont_start+independent_segments",
-                # Epoch-based start number keeps EXT-X-MEDIA-SEQUENCE strictly
-                # increasing across pipeline restarts so clients never stall waiting
-                # for a sequence they already consumed.
-                "-start_number", start_number,
-                "-hls_segment_filename", str(OUTPUT_DIR / "guide_%d.ts"),
-                str(playlist_path),
-            ]
+            audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
+                config, profile.audio_codec
+            )
+            ffmpeg_cmd = _build_ffmpeg_command(
+                profile,
+                fps,
+                audio_input_args,
+                audio_codec_args,
+                audio_map_args,
+                start_number,
+                playlist_path,
+            )
 
             try:
                 renderer_popen = subprocess.Popen(
@@ -1024,6 +1203,7 @@ class GuideManager:
         config = self.store.get_config()
         title = (config.get("title") or "").strip() or "Retro Guide"
         self._generate_standby_segment(title)
+        self._generate_static_segment()
         self.logger.info("pipeline", "Pipeline stopped; standby mode active")
 
     def restart_pipeline(self) -> None:
@@ -1124,6 +1304,127 @@ class GuideManager:
         }
         return any(old_config.get(k) != new_config.get(k) for k in pipeline_keys)
 
+    def _hls_watchdog_status(self, config: dict) -> dict:
+        """Return HLS continuity diagnostics for status()/diagnostics UI.
+
+        Keys include health/state, playlist and latest-segment timestamps/ages,
+        stale threshold, warning codes, and restart hook readiness signals.
+        """
+        guide_path = OUTPUT_DIR / "guide.m3u8"
+        try:
+            segment_target = max(1.0, float(config.get("segment_seconds", 6)))
+        except (TypeError, ValueError):
+            segment_target = 6.0
+        stale_threshold = round(segment_target * 3.0, 3)
+        now = time.time()
+
+        if not self._pipeline_active:
+            return {
+                "healthy": True,
+                "state": "idle",
+                "playlist_updated_at": None,
+                "playlist_age_secs": None,
+                "latest_segment": None,
+                "latest_segment_updated_at": None,
+                "latest_segment_age_secs": None,
+                "stale_threshold_secs": stale_threshold,
+                "warnings": [],
+                "restart_hook_ready": True,
+                "restart_recommended": False,
+            }
+
+        try:
+            playlist_stat = guide_path.stat()
+            playlist_updated_at = datetime.fromtimestamp(playlist_stat.st_mtime, tz=timezone.utc).isoformat()
+            playlist_age = max(0.0, now - playlist_stat.st_mtime)
+            lines = guide_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            warnings = ["playlist_missing_or_unreadable"]
+            return {
+                "healthy": False,
+                "state": "degraded",
+                "playlist_updated_at": None,
+                "playlist_age_secs": None,
+                "latest_segment": None,
+                "latest_segment_updated_at": None,
+                "latest_segment_age_secs": None,
+                "stale_threshold_secs": stale_threshold,
+                "warnings": warnings,
+                "restart_hook_ready": True,
+                "restart_recommended": True,
+            }
+
+        segment_name: str | None = None
+        for raw in lines:
+            line = raw.strip()
+            if line and not line.startswith("#"):
+                # Keep the most recent segment entry in the active playlist window.
+                segment_name = line.split("?", 1)[0]
+
+        segment_updated_at = None
+        segment_age = None
+        if segment_name:
+            segment_path = OUTPUT_DIR / Path(segment_name).name
+            try:
+                segment_stat = segment_path.stat()
+                segment_updated_at = datetime.fromtimestamp(segment_stat.st_mtime, tz=timezone.utc).isoformat()
+                segment_age = max(0.0, now - segment_stat.st_mtime)
+            except OSError:
+                segment_age = None
+
+        warnings: list[str] = []
+        if playlist_age > stale_threshold:
+            warnings.append("playlist_updates_stalled")
+        if not segment_name:
+            warnings.append("playlist_window_empty")
+        elif segment_age is None:
+            warnings.append("latest_segment_missing")
+        elif segment_age > stale_threshold:
+            warnings.append("segment_generation_stalled")
+        if playlist_age > (stale_threshold * 2.0):
+            warnings.append("playlist_window_stale")
+
+        if warnings:
+            warning_key = tuple(warnings)
+            throttle_check_time = time.monotonic()
+            should_log = (
+                warning_key != self._last_hls_watchdog_warning_key
+                or self._last_hls_watchdog_warning_at is None
+                or (throttle_check_time - self._last_hls_watchdog_warning_at) >= stale_threshold
+            )
+            if should_log:
+                self._last_hls_watchdog_warning_key = warning_key
+                self._last_hls_watchdog_warning_at = throttle_check_time
+                self.logger.warning(
+                    "hls.watchdog",
+                    json.dumps(
+                        {
+                            "type": "hls_watchdog_warning",
+                            "warnings": warnings,
+                            "playlist_age_secs": round(playlist_age, 3),
+                            "latest_segment_age_secs": round(segment_age, 3) if segment_age is not None else None,
+                            "stale_threshold_secs": stale_threshold,
+                        },
+                        sort_keys=True,
+                    ),
+                )
+        else:
+            self._last_hls_watchdog_warning_key = ()
+
+        return {
+            "healthy": not warnings,
+            "state": "healthy" if not warnings else "degraded",
+            "playlist_updated_at": playlist_updated_at,
+            "playlist_age_secs": round(playlist_age, 3),
+            "latest_segment": segment_name,
+            "latest_segment_updated_at": segment_updated_at,
+            "latest_segment_age_secs": round(segment_age, 3) if segment_age is not None else None,
+            "stale_threshold_secs": stale_threshold,
+            "warnings": warnings,
+            "restart_hook_ready": True,
+            "restart_recommended": bool(warnings),
+        }
+
     def status(self) -> dict:
         config = self.store.get_config()
         # Compute buffered state using config-based thresholds (same values that
@@ -1145,6 +1446,7 @@ class GuideManager:
                 self._stream_version += 1
                 self._last_was_buffered = now_buffered
             version = self._stream_version
+        hls_watchdog = self._hls_watchdog_status(config)
         return {
             "renderer_running": self._renderer_pid is not None and _pid_alive(self._renderer_pid),
             "ffmpeg_running": self._ffmpeg_pid is not None and _pid_alive(self._ffmpeg_pid),
@@ -1163,4 +1465,5 @@ class GuideManager:
             # stream_url now points to the master playlist so both the admin
             # preview and IPTV clients use the same two-level HLS hierarchy.
             "stream_url": "/hls/master.m3u8",
+            "hls_watchdog": hls_watchdog,
         }
