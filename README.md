@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/thehack904/RetroStation_MC">
-    <img src="https://img.shields.io/badge/version-v1.2.0-blue?style=for-the-badge" alt="Version">
+    <img src="https://img.shields.io/badge/version-v1.3.0-blue?style=for-the-badge" alt="Version">
   </a>
   <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">
     <img src="https://img.shields.io/badge/license-CC--BY--NC--SA%204.0-lightgrey?style=for-the-badge" alt="License">
@@ -12,9 +12,9 @@
   <img src="docs/screenshots/Admin_Page-Guide_Online.jpg" width="900">
 </p>
 
-RetroStation MC is an admin-driven retro TV guide channel generator. It ingests an M3U playlist and XMLTV guide data, renders a continuous guide-style video feed, packages that feed as HLS, and exposes a single-channel M3U/XMLTV pair for use in RetroIPTVGuide or another IPTV client.
+RetroStation MC is an admin-driven retro TV guide channel generator. It ingests an M3U playlist and XMLTV guide data, renders a continuous guide-style video feed, packages that feed as HLS, and exposes M3U/XMLTV outputs for use in RetroIPTVGuide or another IPTV client.
 
-This repository is versioned as **v1.2.0**.
+This repository is versioned as **v1.3.0**.
 
 ## What it does
 
@@ -42,7 +42,7 @@ The output is designed to behave like a live virtual TV channel. The app renders
 - SQLite-backed settings and application event log
 - Local file path or HTTP/HTTPS M3U playlist input
 - Local file path or HTTP/HTTPS XMLTV input
-- Built-in single-channel M3U and XMLTV outputs
+- Built-in M3U and XMLTV outputs for the guide plus enabled virtual channels
 - HLS master playlist with standby-to-live switching
 - FFmpeg H.264 video and AAC audio output
 - Silent AAC track by default for IPTV client compatibility
@@ -117,7 +117,7 @@ For RetroIPTVGuide, add the RetroStation MC playlist endpoint as a tuner/source:
 http://YOUR_SERVER:8787/channel.m3u
 ```
 
-That playlist contains one virtual channel. The stream URL points to `/hls/master.m3u8`, and the EPG URL points to `/channel.xmltv`.
+That playlist always contains the guide channel and can also include enabled virtual channels such as Weather. The guide entry points to `/hls/master.m3u8`, and the EPG URL is `/channel.xmltv`.
 
 ## Documentation
 

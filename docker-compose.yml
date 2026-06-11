@@ -15,4 +15,4 @@ services:
       - RETROGUIDE_PORT=8787
       # Optional: map LAN hostnames that the container cannot resolve.
       # Example:
-      # RETROGUIDE_HOST_ALIASES=iptv.lan=10.7.0.25,epg.lan=10.7.0.26
+      # RETROGUIDE_HOST_ALIASES=iptv.lan=10..0.25,epg.lan=10.7.0.26

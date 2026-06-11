@@ -154,7 +154,7 @@ Check the admin UI:
 curl -I http://localhost:8787/
 ```
 
-Check the single-channel playlist:
+Check the exported channel playlist:
 
 ```bash
 curl http://localhost:8787/channel.m3u

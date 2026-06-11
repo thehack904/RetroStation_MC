@@ -67,6 +67,22 @@ class HlsWatchdogTests(unittest.TestCase):
         self.assertFalse(result["healthy"])
         self.manager.logger.warning.assert_called()
 
+    def test_status_includes_gpu_capabilities(self) -> None:
+        self.manager._pipeline_active = False
+        self.manager._renderer_pid = None
+        self.manager._ffmpeg_pid = None
+        with patch.object(self.manager, "_hls_watchdog_status", return_value={"healthy": True, "warnings": []}), patch(
+            "app.manager.detect_gpu_capabilities",
+            return_value={"message": "No hardware acceleration detected; software fallback is active."},
+        ):
+            status = self.manager.status()
+
+        self.assertIn("gpu_capabilities", status)
+        self.assertEqual(
+            status["gpu_capabilities"]["message"],
+            "No hardware acceleration detected; software fallback is active.",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

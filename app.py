@@ -4,19 +4,27 @@ import atexit
 import csv
 import io
 import json
+import logging
 import traceback
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from pathlib import Path
+
+import requests as _requests
 
 from flask import Flask, Response, abort, flash, jsonify, redirect, render_template, send_from_directory, url_for
 from flask import request
 from werkzeug.utils import secure_filename
 
 from app.config_store import ConfigStore, DEFAULT_CONFIG
+from app.ffmpeg_profiles import normalize_hardware_acceleration_mode
 from app.hls_playlist import trim_playlist_for_delayed_live_edge
-from app.manager import GuideManager, STANDBY_SEGMENT, STATIC_SEGMENT, STANDBY_DURATION_SECS, MUSIC_DIR
+from app.manager import (
+    GuideManager, WeatherChannelManager,
+    STANDBY_SEGMENT, STATIC_SEGMENT, STANDBY_DURATION_SECS, MUSIC_DIR,
+    WEATHER_PLAYLIST,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 THEMES_DIR = BASE_DIR / "app" / "themes"
@@ -46,6 +54,12 @@ store = ConfigStore()
 manager = GuideManager(store)
 manager.start()
 atexit.register(manager.stop)
+
+# weather_manager is initialized later in this module after the weather helper
+# functions (_build_weather_payload etc.) have been defined.  Route handlers
+# reference this module-level name at *call* time (after full module load) so
+# late assignment is safe.
+weather_manager: "WeatherChannelManager | None" = None
 
 
 def _error_label(exc: Exception) -> str:
@@ -104,12 +118,16 @@ def _list_standby_pattern_files() -> list[str]:
 
 
 def coerce_form(form) -> dict:
+    weather_channel_values = form.getlist("weather_channel_enabled") if hasattr(form, "getlist") else [form.get("weather_channel_enabled")]
     cfg = {
         "playlist_source": form.get("playlist_source", DEFAULT_CONFIG["playlist_source"]).strip(),
         "xmltv_source": form.get("xmltv_source", DEFAULT_CONFIG["xmltv_source"]).strip(),
         "theme": form.get("theme", DEFAULT_CONFIG["theme"]).strip(),
         "title": form.get("title", DEFAULT_CONFIG["title"]).strip(),
         "resolution": form.get("resolution", DEFAULT_CONFIG["resolution"]).strip(),
+        "hardware_acceleration_mode": normalize_hardware_acceleration_mode(
+            form.get("hardware_acceleration_mode")
+        ),
         "fps": int(form.get("fps", DEFAULT_CONFIG["fps"])),
         "segment_seconds": int(form.get("segment_seconds", DEFAULT_CONFIG["segment_seconds"])),
         "page_seconds": int(form.get("page_seconds", DEFAULT_CONFIG["page_seconds"])),
@@ -121,6 +139,7 @@ def coerce_form(form) -> dict:
         "output_format": form.get("output_format", DEFAULT_CONFIG["output_format"]).strip(),
         "transition": form.get("transition", DEFAULT_CONFIG["transition"]).strip(),
         "guide_logo_mode": _coerce_guide_logo_mode(form.get("guide_logo_mode")),
+        "weather_channel_enabled": any(_coerce_bool(value, False) for value in weather_channel_values),
         "standby_overlay_enabled": _coerce_bool(
             form.get("standby_overlay_enabled"),
             DEFAULT_CONFIG["standby_overlay_enabled"],
@@ -274,6 +293,13 @@ def index():
         DEFAULT_CONFIG["off_air_end"],
     )
     config["off_air_static_enabled"] = _off_air_static_enabled(config)
+    config["hardware_acceleration_mode"] = normalize_hardware_acceleration_mode(
+        config.get("hardware_acceleration_mode")
+    )
+    config["weather_channel_enabled"] = _coerce_bool(
+        config.get("weather_channel_enabled"),
+        DEFAULT_CONFIG["weather_channel_enabled"],
+    )
     status = manager.status()
     status.setdefault(
         "hls_watchdog",
@@ -283,6 +309,25 @@ def index():
             "latest_segment": None,
             "latest_segment_age_secs": None,
             "warnings": [],
+        },
+    )
+    status.setdefault(
+        "gpu_capabilities",
+        {
+            "running_in_docker": False,
+            "hardware_available": False,
+            "detected_hardware_providers": [],
+            "docker_visible_providers": [],
+            "ffmpeg_available": False,
+            "ffmpeg_error": "",
+            "ffmpeg_detected_encoders": [],
+            "providers": {},
+            "software_fallback": {
+                "available": True,
+                "label": "software",
+                "reason": "Software fallback is always available (libx264).",
+            },
+            "message": "No hardware acceleration detected; software fallback is active.",
         },
     )
     return render_template(
@@ -529,17 +574,76 @@ def _build_channel_m3u_content(channel_name: str, stream_url: str, xmltv_url: st
     )
 
 
+def _sanitize_m3u_text(value: str | None, default: str) -> str:
+    raw = (value or default).strip() or default
+    # Extended M3U attribute values are double-quoted but do not consistently
+    # support backslash escaping across IPTV clients, so normalize any
+    # user-provided double quotes to single quotes.
+    # Commas are also removed because many IPTV clients split EXTINF lines on
+    # the first comma, which causes attribute text to bleed into the displayed
+    # channel name when the location or title contains "City, State" style text.
+    return raw.replace("\r", "").replace("\n", "").replace('"', "'").replace(",", "")
+
+
+def _sanitize_xmltv_text(value: str | None, default: str) -> str:
+    raw = (value or default).strip() or default
+    return raw.replace("\r", "").replace("\n", "")
+
+
+def _weather_channel_display_name(config: dict) -> str:
+    location = _sanitize_xmltv_text(config.get("weather_location_name"), "").strip()
+    return f"Weather Channel - {location}" if location else "Weather Channel"
+
+
+def _build_virtual_channel_entries(config: dict, base_url: str) -> list[dict]:
+    entries = [
+        {
+            "id": "retro-guide-channel",
+            "name": _sanitize_xmltv_text(config.get("title"), "Channel Guide"),
+            "stream_url": base_url + "/hls/master.m3u8",
+            "logo_url": _channel_logo_url(config, base_url),
+            "channel_number": 1,
+            "description": "Retro-style TV guide channel.",
+        }
+    ]
+    if _coerce_bool(config.get("weather_channel_enabled"), DEFAULT_CONFIG["weather_channel_enabled"]):
+        entries.append(
+            {
+                "id": "retro-weather-channel",
+                "name": _weather_channel_display_name(config),
+                "stream_url": base_url + "/hls/weather.m3u8",
+                "logo_url": "",
+                "channel_number": 2,
+                "description": "Retro-style local weather channel.",
+            }
+        )
+    return entries
+
+
+def _build_channels_m3u_content(channels: list[dict], xmltv_url: str) -> str:
+    lines = [f'#EXTM3U url-tvg="{xmltv_url}" x-tvg-url="{xmltv_url}"']
+    for channel in channels:
+        logo_url = channel.get("logo_url") or ""
+        logo_attr = f' tvg-logo="{logo_url}"' if logo_url else ""
+        channel_name = _sanitize_m3u_text(channel.get("name"), "Virtual Channel")
+        lines.append(
+            f'#EXTINF:-1 tvg-id="{channel["id"]}" tvg-name="{channel_name}"'
+            f"{logo_attr}"
+            f' tvg-chno="{channel["channel_number"]}"'
+            f' group-title="Virtual Channels"'
+            f' tvc-stream-vcodec="h264" tvc-stream-acodec="aac"'
+            f",{channel_name}"
+        )
+        lines.append(str(channel["stream_url"]))
+    return "\n".join(lines) + "\n"
+
+
 @app.get("/channel.m3u")
 def channel_playlist():
-    config = store.get_config()
-    raw_name = config.get("title", "Channel Guide") or "Channel Guide"
-    # Strip newlines and escape double-quotes to keep the M3U line well-formed.
-    channel_name = raw_name.replace("\r", "").replace("\n", "").replace('"', '\\"')
+    config = {**DEFAULT_CONFIG, **store.get_config()}
     base_url = request.host_url.rstrip("/")
-    stream_url = base_url + "/hls/master.m3u8"
     xmltv_url = base_url + "/channel.xmltv"
-    logo_url = _channel_logo_url(config, base_url)
-    content = _build_channel_m3u_content(channel_name, stream_url, xmltv_url, logo_url)
+    content = _build_channels_m3u_content(_build_virtual_channel_entries(config, base_url), xmltv_url)
     resp = Response(content, mimetype="application/x-mpegURL")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
@@ -547,14 +651,10 @@ def channel_playlist():
 
 @app.get("/channel.m3u8")
 def channel_playlist_m3u8():
-    config = store.get_config()
-    raw_name = config.get("title", "Channel Guide") or "Channel Guide"
-    channel_name = raw_name.replace("\r", "").replace("\n", "").replace('"', '\\"')
+    config = {**DEFAULT_CONFIG, **store.get_config()}
     base_url = request.host_url.rstrip("/")
-    stream_url = base_url + "/hls/master.m3u8"
     xmltv_url = base_url + "/channel.xmltv"
-    logo_url = _channel_logo_url(config, base_url)
-    content = _build_channel_m3u_content(channel_name, stream_url, xmltv_url, logo_url)
+    content = _build_channels_m3u_content(_build_virtual_channel_entries(config, base_url), xmltv_url)
     resp = Response(content, mimetype="application/vnd.apple.mpegurl")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
@@ -598,12 +698,41 @@ def _build_xmltv_content(channel_name: str) -> str:
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(tv, encoding="unicode")
 
 
+def _build_channels_xmltv_content(channels: list[dict]) -> str:
+    now = datetime.now(timezone.utc)
+    slot_start = now.replace(minute=0, second=0, microsecond=0)
+    slot_start = slot_start.replace(hour=(slot_start.hour // 4) * 4)
+    total_slots = 6 * 7
+
+    tv = ET.Element("tv", {"generator-info-name": "retro-guide-poc"})
+    for channel in channels:
+        channel_el = ET.SubElement(tv, "channel", {"id": channel["id"]})
+        ET.SubElement(channel_el, "display-name").text = _sanitize_xmltv_text(channel.get("name"), "Virtual Channel")
+
+    for channel in channels:
+        entry_start = slot_start
+        for _ in range(total_slots):
+            slot_end = entry_start + timedelta(hours=4)
+            prog = ET.SubElement(
+                tv,
+                "programme",
+                {
+                    "start": entry_start.strftime("%Y%m%d%H%M%S +0000"),
+                    "stop": slot_end.strftime("%Y%m%d%H%M%S +0000"),
+                    "channel": channel["id"],
+                },
+            )
+            ET.SubElement(prog, "title").text = _sanitize_xmltv_text(channel.get("name"), "Virtual Channel")
+            ET.SubElement(prog, "desc").text = _sanitize_xmltv_text(channel.get("description"), "Virtual channel.")
+            entry_start = slot_end
+
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(tv, encoding="unicode")
+
+
 @app.get("/channel.xmltv")
 def channel_xmltv():
-    config = store.get_config()
-    raw_name = config.get("title", "Channel Guide") or "Channel Guide"
-    channel_name = raw_name.replace("\r", "").replace("\n", "")
-    content = _build_xmltv_content(channel_name)
+    config = {**DEFAULT_CONFIG, **store.get_config()}
+    content = _build_channels_xmltv_content(_build_virtual_channel_entries(config, request.host_url.rstrip("/")))
     resp = Response(content, mimetype="application/xml")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
@@ -824,6 +953,49 @@ def hls_live_playlist():
     ):
         abort(404)
     return _make_live_playlist_response(diag)
+
+
+@app.get("/hls/weather.m3u8")
+def hls_weather_playlist():
+    """Weather virtual channel HLS entrypoint.
+
+    Serves the live HLS media playlist produced by the WeatherChannelManager
+    pipeline (``output/weather.m3u8``) once it has buffered enough segments.
+    Falls back to the standby playlist while the weather pipeline is starting
+    or when the weather channel is disabled.
+    """
+    cfg = {**DEFAULT_CONFIG, **store.get_config()}
+    diag = _read_diag_settings(cfg)
+
+    # Serve the live weather stream when the pipeline has buffered segments.
+    if (
+        weather_manager is not None
+        and weather_manager.status()["pipeline_active"]
+        and weather_manager.is_weather_buffered()
+        and WEATHER_PLAYLIST.exists()
+    ):
+        try:
+            playlist_text = WEATHER_PLAYLIST.read_text(encoding="utf-8")
+            lines = playlist_text.splitlines()
+            lines = [line for line in lines if not line.startswith("#EXT-X-PROGRAM-DATE-TIME:")]
+            playlist_text = "\n".join(lines) + "\n"
+        except OSError:
+            abort(404)
+        response = Response(playlist_text, mimetype="application/vnd.apple.mpegurl")
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Range"
+        return response
+
+    # Fall back to the standby/test-pattern playlist while warming up.
+    off_air_now = _is_off_air(cfg)
+    segment = _resolve_standby_segment(cfg, off_air_now=off_air_now)
+    if not segment.exists():
+        abort(404)
+    return _make_standby_playlist_response(diag, cfg, off_air_now=off_air_now)
 
 
 @app.get("/hls/<path:filename>")
@@ -1259,6 +1431,606 @@ def music_settings():
         flash("Music settings saved. Restart the pipeline to apply.", "success")
 
     return redirect(url_for("index") + "#music-section")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Virtual Channels — Weather Channel
+# ─────────────────────────────────────────────────────────────────────────────
+
+_WEATHER_CONFIG_KEYS = (
+    "lat", "lon", "location_name", "units",
+    "seconds_per_segment", "bg_condition_override",
+)
+_WEATHER_SECONDS_PER_SEGMENT_DEFAULT = 300  # 5 minutes
+_WEATHER_SEGMENT_LABELS = ("current", "forecast", "radar", "alerts")
+
+_WEATHER_BG_VALID_CONDITIONS = (
+    "", "sunny", "partly_cloudy", "cloudy", "rain", "drizzle",
+    "showers", "snow", "thunderstorm", "foggy", "windy",
+)
+
+# WMO weather interpretation codes → (human label, icon key)
+_WMO_MAP: dict[int, tuple[str, str]] = {
+    0:  ("Sunny",           "sunny"),
+    1:  ("Mostly Clear",    "sunny"),
+    2:  ("Partly Cloudy",   "partly_cloudy"),
+    3:  ("Overcast",        "cloudy"),
+    45: ("Foggy",           "foggy"),
+    48: ("Icy Fog",         "foggy"),
+    51: ("Light Drizzle",   "drizzle"),
+    53: ("Drizzle",         "drizzle"),
+    55: ("Heavy Drizzle",   "drizzle"),
+    61: ("Light Rain",      "rain"),
+    63: ("Rain",            "rain"),
+    65: ("Heavy Rain",      "rain"),
+    71: ("Light Snow",      "snow"),
+    73: ("Snow",            "snow"),
+    75: ("Heavy Snow",      "snow"),
+    77: ("Snow Grains",     "snow"),
+    80: ("Showers",         "showers"),
+    81: ("Showers",         "showers"),
+    82: ("Heavy Showers",   "showers"),
+    85: ("Snow Showers",    "snow"),
+    86: ("Heavy Snow Shwr", "snow"),
+    95: ("T-Storms",        "thunderstorm"),
+    96: ("T-Storms",        "thunderstorm"),
+    99: ("T-Storms",        "thunderstorm"),
+}
+
+_NIGHT_ICON_MAP: dict[str, str] = {
+    "sunny":         "partly_cloudy_night",
+    "partly_cloudy": "partly_cloudy_night",
+    "cloudy":        "cloudy_night",
+}
+
+_WIND_DIRS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+               "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+
+_WINDY_BG_THRESHOLD_MPH = 25
+_WINDY_BG_THRESHOLD_KMH = 40
+
+_RADAR_URL_CONUS = (
+    "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_raw/ows"
+    "?service=WMS&version=1.3.0&request=GetMap&layers=conus_bref_raw"
+    "&bbox=-126,24,-66,50&width=800&height=450"
+    "&crs=EPSG:4326&format=image/png"
+)
+_RADAR_LAT_OFFSET = 5.0
+_RADAR_LON_OFFSET = 8.0
+
+
+def _wmo_label(code: int) -> str:
+    return _WMO_MAP.get(code, ("Unknown", "cloudy"))[0]
+
+
+def _wmo_icon(code: int) -> str:
+    return _WMO_MAP.get(code, ("Unknown", "cloudy"))[1]
+
+
+def _to_night_icon(day_icon: str) -> str:
+    return _NIGHT_ICON_MAP.get(day_icon, day_icon)
+
+
+def _wind_dir(degrees: float) -> str:
+    try:
+        return _WIND_DIRS[round(float(degrees) / 22.5) % 16]
+    except Exception:
+        return ""
+
+
+def _build_radar_url(lat: str, lon: str) -> str:
+    if not lat or not lon:
+        return _RADAR_URL_CONUS
+    try:
+        flat, flon = float(lat), float(lon)
+        min_lat = round(flat - _RADAR_LAT_OFFSET, 2)
+        max_lat = round(flat + _RADAR_LAT_OFFSET, 2)
+        min_lon = round(flon - _RADAR_LON_OFFSET, 2)
+        max_lon = round(flon + _RADAR_LON_OFFSET, 2)
+        return (
+            "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_raw/ows"
+            f"?service=WMS&version=1.3.0&request=GetMap&layers=conus_bref_raw"
+            f"&bbox={min_lon},{min_lat},{max_lon},{max_lat}"
+            f"&width=800&height=450&crs=EPSG:4326&format=image/png"
+        )
+    except (TypeError, ValueError):
+        return _RADAR_URL_CONUS
+
+
+def _get_weather_config() -> dict:
+    """Return weather configuration from the config store."""
+    cfg = store.get_config()
+    return {
+        "lat":                    cfg.get("weather_lat", ""),
+        "lon":                    cfg.get("weather_lon", ""),
+        "location_name":          cfg.get("weather_location_name", ""),
+        "units":                  cfg.get("weather_units", "F"),
+        "seconds_per_segment":    str(cfg.get("weather_seconds_per_segment",
+                                              str(_WEATHER_SECONDS_PER_SEGMENT_DEFAULT))),
+        "bg_condition_override":  cfg.get("weather_bg_condition_override", ""),
+        "enabled":                cfg.get("weather_channel_enabled", False),
+    }
+
+
+def _save_weather_config(config_dict: dict) -> None:
+    """Validate and persist weather configuration via the config store."""
+    cleaned: dict = {}
+    for key in _WEATHER_CONFIG_KEYS:
+        val = str(config_dict.get(key, "")).strip()
+        if key in ("lat", "lon") and val:
+            try:
+                float(val)
+            except ValueError:
+                raise ValueError(f"Invalid value for {key}: {val!r}. Must be a number.")
+        if key == "units" and val not in ("F", "C", ""):
+            raise ValueError(f"Invalid units: {val!r}. Must be 'F' or 'C'.")
+        if key == "bg_condition_override" and val not in _WEATHER_BG_VALID_CONDITIONS:
+            val = ""
+        if key == "seconds_per_segment" and val:
+            try:
+                sps = int(val)
+            except ValueError:
+                raise ValueError(f"Invalid seconds_per_segment: {val!r}.")
+            if not (30 <= sps <= 600):
+                raise ValueError(f"seconds_per_segment must be between 30 and 600, got {sps}.")
+        cleaned[key] = val
+
+    # Map from weather config dict keys to config store keys
+    store_update = {
+        "weather_lat":                    cleaned.get("lat", ""),
+        "weather_lon":                    cleaned.get("lon", ""),
+        "weather_location_name":          cleaned.get("location_name", ""),
+        "weather_units":                  cleaned.get("units", "F"),
+        "weather_seconds_per_segment":    cleaned.get("seconds_per_segment",
+                                                       str(_WEATHER_SECONDS_PER_SEGMENT_DEFAULT)),
+        "weather_bg_condition_override":  cleaned.get("bg_condition_override", ""),
+    }
+    enabled = config_dict.get("enabled")
+    if enabled is not None:
+        store_update["weather_channel_enabled"] = bool(enabled)
+
+    cfg = store.get_config()
+    store.save_config({**cfg, **store_update})
+
+
+def _fetch_nws_alerts(lat: str, lon: str) -> list[dict]:
+    """Fetch active NWS weather alerts (US only). Returns empty list on any failure."""
+    try:
+        url = f"https://api.weather.gov/alerts/active?point={lat},{lon}"
+        resp = _requests.get(url, timeout=10, headers={
+            "User-Agent": "RetroStation-MC/1.0",
+            "Accept": "application/geo+json",
+        })
+        resp.raise_for_status()
+        features = resp.json().get("features", [])
+        alerts = []
+        for feat in features:
+            props = feat.get("properties", {})
+            alerts.append({
+                "event":       props.get("event", ""),
+                "headline":    props.get("headline", ""),
+                "description": props.get("description", ""),
+                "severity":    props.get("severity", "Unknown"),
+                "urgency":     props.get("urgency", "Unknown"),
+                "certainty":   props.get("certainty", "Unknown"),
+                "onset":       props.get("onset", ""),
+                "expires":     props.get("expires", ""),
+            })
+        return alerts
+    except Exception:
+        logging.exception("_fetch_nws_alerts failed for lat=%s lon=%s", lat, lon)
+        return []
+
+
+def _fetch_open_meteo(lat: str, lon: str, units: str) -> dict | None:
+    """Fetch current + hourly + daily weather from open-meteo. Returns dict or None."""
+    temp_unit = "fahrenheit" if units != "C" else "celsius"
+    wind_unit = "mph" if units != "C" else "kmh"
+    url = (
+        "https://api.open-meteo.com/v1/forecast"
+        f"?latitude={lat}&longitude={lon}"
+        "&current=temperature_2m,apparent_temperature,relative_humidity_2m,"
+        "weather_code,wind_speed_10m,wind_direction_10m"
+        "&hourly=temperature_2m,weather_code"
+        "&daily=temperature_2m_max,temperature_2m_min,weather_code,sunrise,sunset"
+        f"&temperature_unit={temp_unit}&wind_speed_unit={wind_unit}"
+        "&forecast_days=5&timezone=auto"
+    )
+    try:
+        resp = _requests.get(url, timeout=10, headers={"User-Agent": "RetroStation-MC/1.0"})
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        logging.exception("_fetch_open_meteo failed for lat=%s lon=%s", lat, lon)
+        return None
+
+
+def _build_weather_payload(cfg: dict) -> dict:
+    """Build the full weather payload from open-meteo data (or stub when unconfigured)."""
+    now_utc = datetime.now(timezone.utc)
+    updated_str = now_utc.isoformat()
+    lat = cfg.get("lat", "")
+    lon = cfg.get("lon", "")
+    location_name = cfg.get("location_name") or "Local Weather"
+    units = cfg.get("units") or "F"
+    bg_override = cfg.get("bg_condition_override", "").strip()
+
+    raw = None
+    nws_alerts: list = []
+    if lat and lon:
+        raw = _fetch_open_meteo(lat, lon, units)
+        nws_alerts = _fetch_nws_alerts(lat, lon)
+
+    if raw:
+        cur = raw.get("current", {})
+        cur_vars = raw.get("current_units", {})
+        hourly = raw.get("hourly", {})
+        daily = raw.get("daily", {})
+
+        temp = cur.get("temperature_2m")
+        feels = cur.get("apparent_temperature")
+        humidity = cur.get("relative_humidity_2m")
+        wcode = cur.get("weather_code", 0)
+        wind_spd = cur.get("wind_speed_10m")
+        wind_deg = cur.get("wind_direction_10m", 0)
+        wind_str = (
+            f"{_wind_dir(wind_deg)} {round(wind_spd)} {cur_vars.get('wind_speed_10m', 'mph')}"
+            if wind_spd is not None else ""
+        )
+
+        now_info = {
+            "temp": round(temp) if temp is not None else None,
+            "condition": _wmo_label(wcode),
+            "humidity": round(humidity) if humidity is not None else None,
+            "wind": wind_str,
+            "feels_like": round(feels) if feels is not None else None,
+            "icon": _wmo_icon(wcode),
+        }
+
+        h_times = hourly.get("time", [])
+        h_temps = hourly.get("temperature_2m", [])
+        h_wcodes = hourly.get("weather_code", [])
+        today_str = now_utc.strftime("%Y-%m-%d")
+
+        def _period_avg(start_h: int, end_h: int) -> tuple[int | None, int]:
+            temps_l: list[float] = []
+            codes_l: list[int] = []
+            for i, t in enumerate(h_times):
+                if t.startswith(today_str):
+                    try:
+                        h = int(t[11:13])
+                    except Exception:
+                        continue
+                    if start_h <= h < end_h:
+                        if i < len(h_temps) and h_temps[i] is not None:
+                            temps_l.append(h_temps[i])
+                        if i < len(h_wcodes) and h_wcodes[i] is not None:
+                            codes_l.append(h_wcodes[i])
+            avg_t = round(sum(temps_l) / len(temps_l)) if temps_l else None
+            dominant = max(set(codes_l), key=codes_l.count) if codes_l else 0
+            return avg_t, dominant
+
+        m_temp, m_code = _period_avg(6, 12)
+        a_temp, a_code = _period_avg(12, 18)
+        e_temp, e_code = _period_avg(18, 23)
+
+        today_forecast = [
+            {"label": "MORNING",   "temp": m_temp, "condition": _wmo_label(m_code), "icon": _wmo_icon(m_code)},
+            {"label": "AFTERNOON", "temp": a_temp, "condition": _wmo_label(a_code), "icon": _wmo_icon(a_code)},
+            {"label": "EVENING",   "temp": e_temp, "condition": _wmo_label(e_code), "icon": _to_night_icon(_wmo_icon(e_code))},
+        ]
+
+        d_times  = daily.get("time", [])
+        d_maxes  = daily.get("temperature_2m_max", [])
+        d_mins   = daily.get("temperature_2m_min", [])
+        d_wcodes = daily.get("weather_code", [])
+        extended = []
+        five_day = []
+        for i in range(min(5, len(d_times))):
+            try:
+                dow = "TODAY" if i == 0 else date.fromisoformat(d_times[i]).strftime("%a").upper()
+            except Exception:
+                dow = "TODAY" if i == 0 else d_times[i][-5:]
+            hi  = round(d_maxes[i])  if i < len(d_maxes)  and d_maxes[i]  is not None else None
+            lo  = round(d_mins[i])   if i < len(d_mins)   and d_mins[i]   is not None else None
+            wc  = d_wcodes[i]        if i < len(d_wcodes)                              else 0
+            five_day.append({"dow": dow, "hi": hi, "lo": lo,
+                             "condition": _wmo_label(wc), "icon": _wmo_icon(wc)})
+            if i > 0:
+                extended.append({"dow": dow, "hi": hi, "lo": lo,
+                                  "condition": _wmo_label(wc), "icon": _wmo_icon(wc)})
+
+        ticker: list[str] = []
+        if nws_alerts:
+            ticker = [a["headline"] or a["event"] for a in nws_alerts if a["headline"] or a["event"]]
+        else:
+            if wcode in (95, 96, 99):
+                ticker.append("Severe Thunderstorms Possible")
+            if wcode in (71, 73, 75, 77, 85, 86):
+                ticker.append("Winter Weather Advisory in Effect")
+
+        windy_threshold = _WINDY_BG_THRESHOLD_KMH if units == "C" else _WINDY_BG_THRESHOLD_MPH
+        auto_bg = now_info["icon"]
+        if wind_spd is not None and wind_spd >= windy_threshold and auto_bg in ("sunny", "partly_cloudy", "cloudy"):
+            auto_bg = "windy"
+        bg_condition = bg_override if bg_override in _WEATHER_BG_VALID_CONDITIONS and bg_override else auto_bg
+
+        return {
+            "updated":              updated_str,
+            "location":             location_name,
+            "now":                  now_info,
+            "today":                today_forecast,
+            "extended":             extended,
+            "five_day":             five_day,
+            "ticker":               ticker,
+            "alerts":               nws_alerts,
+            "radar_url":            _build_radar_url(lat, lon),
+            "bg_condition":         bg_condition,
+            "bg_condition_override": bg_override,
+        }
+
+    # Stub / demo data when no coordinates configured
+    bg_condition = bg_override if bg_override in _WEATHER_BG_VALID_CONDITIONS and bg_override else "cloudy"
+    return {
+        "updated":  updated_str,
+        "location": location_name,
+        "now": {
+            "temp": None, "condition": "Not Configured", "humidity": None,
+            "wind": "", "feels_like": None, "icon": "cloudy",
+        },
+        "today": [
+            {"label": "MORNING",   "temp": None, "condition": "--", "icon": "cloudy"},
+            {"label": "AFTERNOON", "temp": None, "condition": "--", "icon": "cloudy"},
+            {"label": "EVENING",   "temp": None, "condition": "--", "icon": "cloudy_night"},
+        ],
+        "extended":  [],
+        "five_day":  [],
+        "ticker":    [],
+        "alerts":    [],
+        "radar_url": _build_radar_url("", ""),
+        "bg_condition":          bg_condition,
+        "bg_condition_override": bg_override,
+    }
+
+
+# ── Weather channel renderer data provider ────────────────────────────────────
+# Initialise the WeatherChannelManager here (after all weather helper functions
+# are defined) and register its lifecycle with atexit.
+
+def _get_weather_data_for_renderer() -> dict | None:
+    """Return current weather payload for the weather channel renderer."""
+    try:
+        cfg     = _get_weather_config()
+        payload = _build_weather_payload(cfg)
+        return payload
+    except Exception:
+        logging.exception("_get_weather_data_for_renderer failed")
+        return None
+
+
+weather_manager = WeatherChannelManager(store, data_fetcher=_get_weather_data_for_renderer)
+weather_manager.start()
+atexit.register(weather_manager.stop)
+
+
+def _lookup_zip_city(postal_code: str, country_code: str = "us") -> dict:
+    """Look up city, state, lat, lon for a postal code via Nominatim (no key required).
+
+    Raises ValueError when the lookup fails or no results are found.
+    """
+    postal_code = (postal_code or "").strip()
+    if not postal_code:
+        raise ValueError("Postal code must not be empty.")
+    if len(postal_code) > 20:
+        raise ValueError("Postal code is too long.")
+    country_code = (country_code or "us").strip().lower()[:2]
+
+    _US_STATE_ABBR = {
+        "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR",
+        "California": "CA", "Colorado": "CO", "Connecticut": "CT", "Delaware": "DE",
+        "Florida": "FL", "Georgia": "GA", "Hawaii": "HI", "Idaho": "ID",
+        "Illinois": "IL", "Indiana": "IN", "Iowa": "IA", "Kansas": "KS",
+        "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD",
+        "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN", "Mississippi": "MS",
+        "Missouri": "MO", "Montana": "MT", "Nebraska": "NE", "Nevada": "NV",
+        "New Hampshire": "NH", "New Jersey": "NJ", "New Mexico": "NM", "New York": "NY",
+        "North Carolina": "NC", "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK",
+        "Oregon": "OR", "Pennsylvania": "PA", "Rhode Island": "RI", "South Carolina": "SC",
+        "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX", "Utah": "UT",
+        "Vermont": "VT", "Virginia": "VA", "Washington": "WA", "West Virginia": "WV",
+        "Wisconsin": "WI", "Wyoming": "WY", "District of Columbia": "DC",
+    }
+
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {
+        "postalcode": postal_code,
+        "countrycodes": country_code,
+        "format": "json",
+        "addressdetails": "1",
+        "limit": "1",
+    }
+    headers = {
+        "User-Agent": "RetroStation-MC/1.0 (weather zip lookup; no tracking)",
+        "Accept-Language": "en",
+    }
+    try:
+        resp = _requests.get(url, params=params, headers=headers, timeout=10)
+        resp.raise_for_status()
+        results = resp.json()
+    except Exception as exc:
+        logging.warning("_lookup_zip_city: Nominatim request failed: %s", exc)
+        raise ValueError("Postal code lookup service unavailable. Enter city details manually.") from exc
+
+    if not results:
+        raise ValueError(f'No results found for postal code "{postal_code}".')
+
+    item = results[0]
+    lat = round(float(item.get("lat", 0)), 4)
+    lon = round(float(item.get("lon", 0)), 4)
+    address = item.get("address", {})
+    city = (
+        address.get("city")
+        or address.get("town")
+        or address.get("village")
+        or address.get("county")
+        or ""
+    )
+    state_raw = address.get("state", "")
+    state = _US_STATE_ABBR.get(state_raw, state_raw)
+    name = f"{city}, {state}" if city and state else city or state or postal_code
+    return {"name": name, "state": state, "lat": lat, "lon": lon}
+
+
+# ─── Virtual Channels Admin Page ─────────────────────────────────────────────
+
+@app.get("/virtual-channels")
+def virtual_channels_page():
+    """Admin page for virtual channels configuration."""
+    wx_cfg = _get_weather_config()
+    return render_template(
+        "virtual_channels.html",
+        weather=wx_cfg,
+    )
+
+
+@app.post("/virtual-channels/weather/config")
+def virtual_channels_weather_config():
+    """Save Weather Channel configuration."""
+    try:
+        enabled_vals = request.form.getlist("weather_channel_enabled")
+        enabled = "1" in enabled_vals
+
+        weather_cfg = {
+            "lat":                   request.form.get("weather_lat", "").strip(),
+            "lon":                   request.form.get("weather_lon", "").strip(),
+            "location_name":         request.form.get("weather_location_name", "").strip(),
+            "units":                 request.form.get("weather_units", "F").strip(),
+            "seconds_per_segment":   request.form.get("weather_seconds_per_segment", "300").strip(),
+            "bg_condition_override": "",
+            "enabled":               enabled,
+        }
+        _save_weather_config(weather_cfg)
+        flash("Weather Channel settings saved.", "success")
+
+        # Restart (or stop) the weather HLS pipeline to pick up the new config.
+        if weather_manager is not None:
+            if enabled:
+                weather_manager.start_pipeline()
+            else:
+                weather_manager._stop_pipeline()  # noqa: SLF001
+    except ValueError as exc:
+        flash(f"Invalid weather settings: {exc}", "error")
+    except Exception as exc:
+        flash(f"Could not save weather settings: {exc}", "error")
+    return redirect(url_for("virtual_channels_page"))
+
+
+# ─── Weather Channel Display ──────────────────────────────────────────────────
+
+@app.get("/weather")
+def weather_page():
+    """Weather Channel display page (the TV output)."""
+    return render_template("weather.html")
+
+
+# ─── Weather API endpoints ────────────────────────────────────────────────────
+
+@app.get("/api/weather")
+def api_weather():
+    """Weather overlay data endpoint.
+
+    Returns current conditions, today's forecast, extended outlook, 5-day
+    forecast, radar URL, and ticker text.
+
+    The channel cycles through 4 segments wall-clock aligned:
+      0 – Current Conditions
+      1 – 5-Day Forecast
+      2 – Regional Radar
+      3 – Severe Weather Alerts
+    """
+    cfg = _get_weather_config()
+    payload = _build_weather_payload(cfg)
+
+    try:
+        seconds_per_segment = max(
+            30, min(600, int(cfg.get("seconds_per_segment") or _WEATHER_SECONDS_PER_SEGMENT_DEFAULT))
+        )
+    except (TypeError, ValueError):
+        seconds_per_segment = _WEATHER_SECONDS_PER_SEGMENT_DEFAULT
+
+    _cycle_seconds = 4 * seconds_per_segment
+    _now_ts = datetime.now(timezone.utc).timestamp()
+    _cycle_pos = _now_ts % _cycle_seconds
+    segment = int(_cycle_pos / seconds_per_segment)
+    ms_until_next = int((seconds_per_segment - (_cycle_pos % seconds_per_segment)) * 1000)
+
+    payload["segment"] = segment
+    payload["segment_label"] = _WEATHER_SEGMENT_LABELS[segment]
+    payload["seconds_per_segment"] = seconds_per_segment
+    payload["ms_until_next"] = ms_until_next
+    return jsonify(payload)
+
+
+@app.route("/api/weather/bg_override", methods=["GET", "POST", "DELETE"])
+def api_weather_bg_override():
+    """Admin endpoint to get/set/clear the animated-background condition override.
+
+    GET    → {"condition": "<current override or ''>"}
+    POST   → body JSON {"condition": "<value>"}  sets override; "" or "auto" clears it.
+    DELETE → clears the override.
+    """
+    if request.method == "GET":
+        cfg = _get_weather_config()
+        return jsonify({"condition": cfg.get("bg_condition_override", "")})
+
+    if request.method == "DELETE":
+        try:
+            wcfg = _get_weather_config()
+            wcfg["bg_condition_override"] = ""
+            _save_weather_config(wcfg)
+            return jsonify({"ok": True, "condition": ""})
+        except Exception as exc:
+            logging.exception("api_weather_bg_override DELETE failed: %s", exc)
+            return jsonify({"ok": False, "error": "Internal server error"}), 500
+
+    # POST
+    data = request.get_json(silent=True) or {}
+    condition = str(data.get("condition", "")).strip()
+    if condition == "auto":
+        condition = ""
+    if condition not in _WEATHER_BG_VALID_CONDITIONS:
+        return jsonify({"ok": False, "error": f"Invalid condition: {condition!r}"}), 400
+    try:
+        wcfg = _get_weather_config()
+        wcfg["bg_condition_override"] = condition
+        _save_weather_config(wcfg)
+        return jsonify({"ok": True, "condition": condition})
+    except Exception as exc:
+        logging.exception("api_weather_bg_override POST failed: %s", exc)
+        return jsonify({"ok": False, "error": "Internal server error"}), 500
+
+
+@app.get("/api/weather/zip-lookup")
+def api_weather_zip_lookup():
+    """US zip code → lat/lon/city lookup (Nominatim, no API key required).
+
+    Query params:
+      zip     — 5-digit US postal code (required)
+    Returns JSON: {ok: true, name, state, lat, lon} or {ok: false, error}.
+    """
+    postal_code = request.args.get("zip", "").strip()
+    if not postal_code:
+        return jsonify({"ok": False, "error": "zip parameter is required"}), 400
+    try:
+        info = _lookup_zip_city(postal_code)
+        return jsonify({"ok": True, **info})
+    except ValueError as exc:
+        # All ValueErrors from _lookup_zip_city are controlled, user-safe messages.
+        msg = exc.args[0] if exc.args else "Invalid postal code or lookup failed."
+        return jsonify({"ok": False, "error": msg}), 404
+    except Exception as exc:
+        logging.exception("api_weather_zip_lookup failed: %s", exc)
+        return jsonify({"ok": False, "error": "Internal server error"}), 500
 
 
 if __name__ == "__main__":

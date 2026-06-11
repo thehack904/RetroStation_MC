@@ -15,6 +15,7 @@ The `settings` table stores one key per setting. Values are JSON-encoded.
 | `playlist_source` | `sample_data/channels.m3u` | M3U input path or URL |
 | `xmltv_source` | `sample_data/xmltv.xml` | XMLTV input path or URL |
 | `theme` | `retrostation_mc` | Theme directory name under `app/themes/` |
+| `hardware_acceleration_mode` | `software_fallback` | Encoding mode: `software_fallback` or `hardware_if_available` |
 | `resolution` | `1280x720` | Render and encode resolution |
 | `fps` | `15` | Render and encode frame rate |
 | `segment_seconds` | `6` | HLS target segment duration |
@@ -50,6 +51,7 @@ The manager treats these as FFmpeg-level settings:
 - `resolution`
 - `fps`
 - `segment_seconds`
+- `hardware_acceleration_mode`
 - `music_mode`
 - `music_loop`
 - `music_single_file`

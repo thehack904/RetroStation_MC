@@ -50,6 +50,7 @@ For a first test, leave the default sample sources in place.
 | Page Dwell | Seconds each page remains visible; default is `12` |
 | Transition | `cut` or vertical `scroll` transition between pages |
 | Output Format | Exposed option for M3U/XMLTV preference; v1.0.0 still provides the built-in output endpoints |
+| Weather Channel | Adds the Weather virtual channel as its own entry in `/channel.m3u` and `/channel.xmltv` when enabled |
 
 Use lower FPS and 720p when testing on limited hardware.
 
@@ -60,8 +61,8 @@ The theme dropdown lists directories under `app/themes/`. Selecting a theme upda
 The guide title controls:
 
 - Rendered title in the guide video
-- Channel name in `/channel.m3u`
-- Display name and programme title in `/channel.xmltv`
+- Guide channel name in `/channel.m3u`
+- Guide channel display name and programme title in `/channel.xmltv`
 
 ## Stream Outputs
 
@@ -73,7 +74,7 @@ The admin UI displays copyable URLs for:
 | M3U Playlist | `/channel.m3u` |
 | XMLTV Guide | `/channel.xmltv` |
 
-Use `/channel.m3u` for RetroIPTVGuide import.
+Use `/channel.m3u` for RetroIPTVGuide import. When **Weather Channel** is enabled on the main admin page, both exports include a second Weather entry.
 
 ## Guide icon for RetroIPTVGuide
 

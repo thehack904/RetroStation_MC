@@ -1,6 +1,6 @@
 # RetroIPTVGuide Integration
 
-RetroStation MC is intended to be imported into RetroIPTVGuide as a single virtual channel.
+RetroStation MC is intended to be imported into RetroIPTVGuide as a playlist containing the guide channel plus any enabled virtual channels.
 
 ## Recommended source URL
 
@@ -10,11 +10,11 @@ Add this URL as the tuner/source in RetroIPTVGuide:
 http://YOUR_SERVER:8787/channel.m3u
 ```
 
-Do not import `/hls/live.m3u8`, `/hls/standby.m3u8`, or individual HLS segment URLs as tuner sources. Use the single-channel playlist.
+Do not import `/hls/live.m3u8`, `/hls/standby.m3u8`, or individual HLS segment URLs as tuner sources. Use the exported playlist.
 
 ## What `/channel.m3u` contains
 
-The generated M3U contains exactly one channel entry:
+The generated M3U always contains the guide channel entry:
 
 - `tvg-id="retro-guide-channel"`
 - `tvg-name` from the configured title
@@ -22,6 +22,12 @@ The generated M3U contains exactly one channel entry:
 - `group-title="Virtual Channels"`
 - stream URL pointing to `/hls/master.m3u8`
 - XMLTV URL advertised through `url-tvg` and `x-tvg-url`
+
+If the Weather Channel toggle is enabled on the main admin page, the playlist also includes:
+
+- `tvg-id="retro-weather-channel"`
+- `tvg-chno="2"`
+- stream URL pointing to `/weather?embedded=1`
 
 ## XMLTV output
 
@@ -31,7 +37,7 @@ RetroStation MC publishes a simple XMLTV file at:
 http://YOUR_SERVER:8787/channel.xmltv
 ```
 
-The output contains one channel and four-hour programme blocks covering seven days. This creates a readable EPG entry in IPTV clients and represents the guide channel as a continuous virtual channel.
+The output contains four-hour programme blocks covering seven days for the guide channel and any enabled virtual channels. This creates readable EPG entries in IPTV clients for each exported channel.
 
 ## HLS stream path
 

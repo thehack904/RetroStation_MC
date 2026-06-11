@@ -18,7 +18,7 @@ http://YOUR_SERVER:8787/channel.m3u
 
 ## Why not use `/hls/master.m3u8` directly as the source?
 
-`/hls/master.m3u8` is the stream URL. `/channel.m3u` is the IPTV playlist wrapper that defines the single virtual channel and points to the stream.
+`/hls/master.m3u8` is the guide stream URL. `/channel.m3u` is the IPTV playlist wrapper that defines the guide channel and any enabled virtual channels.
 
 ## Why does the HLS stream include audio?
 

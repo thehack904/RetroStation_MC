@@ -1,0 +1,1185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RetroStation MC — Weather Channel</title>
+  <style>
+    /* ── Reset & Base ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      background: #0a1a6e;
+      color: #fff;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    /* ── Outer frame ─────────────────────────────────────────────── */
+    .wx-frame {
+      width: min(1280px, 100vw, calc(100vh * 16 / 9));
+      aspect-ratio: 16 / 9;
+      background: linear-gradient(160deg, #1030c8 0%, #0a1a80 40%, #081060 100%);
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* subtle scanline vignette */
+    .wx-frame::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background:
+        repeating-linear-gradient(
+          0deg,
+          transparent,
+          transparent 3px,
+          rgba(0,0,0,0.06) 3px,
+          rgba(0,0,0,0.06) 4px
+        );
+      pointer-events: none;
+      z-index: 10;
+    }
+    /* Keep all weather content above background layer */
+    .wx-frame > :not(.wx-bg-anim) {
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ── Animated Background Layer ─────────────────────────────── */
+    .wx-bg-anim {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      overflow: hidden;
+    }
+    .wx-bg-anim.wx-bg-sunny {
+      background:
+        radial-gradient(ellipse 110% 55% at 50% -8%, rgba(255,210,0,.25) 0%, transparent 55%),
+        linear-gradient(180deg, #1838cc 0%, #0a1a80 50%, #081060 100%);
+    }
+    .wx-bg-anim.wx-bg-sunny::before {
+      content: '';
+      position: absolute;
+      top: -18%; left: 32%;
+      width: 36%; height: 55%;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(255,210,0,.28) 0%, transparent 65%);
+      animation: wx-sun-pulse 5s ease-in-out infinite;
+    }
+    @keyframes wx-sun-pulse {
+      0%,100% { opacity:.5; transform:scale(1); }
+      50%     { opacity:1;  transform:scale(1.12); }
+    }
+    .wx-bg-anim.wx-bg-partly-cloudy {
+      background:
+        radial-gradient(ellipse 85% 45% at 62% -10%, rgba(255,200,0,.18) 0%, transparent 55%),
+        linear-gradient(180deg, #1535cc 0%, #0a1a80 55%, #081060 100%);
+    }
+    .wx-bg-anim.wx-bg-partly-cloudy::before {
+      content: '';
+      position: absolute;
+      top: 3%; left: -2%;
+      width: 65%; height: 28%;
+      background: radial-gradient(ellipse 50% 60% at 38% 50%, rgba(155,175,225,.14) 0%, transparent 70%);
+      animation: wx-cloud-slow1 13s ease-in-out infinite alternate;
+    }
+    .wx-bg-anim.wx-bg-cloudy {
+      background: linear-gradient(180deg, #1a2258 0%, #0d1440 55%, #090e30 100%);
+    }
+    .wx-bg-anim.wx-bg-cloudy::before {
+      content: '';
+      position: absolute;
+      top: 0%; left: -5%;
+      width: 80%; height: 42%;
+      background:
+        radial-gradient(ellipse 55% 55% at 35% 40%, rgba(140,155,210,.18) 0%, transparent 65%),
+        radial-gradient(ellipse 40% 40% at 78% 28%, rgba(120,140,200,.12) 0%, transparent 55%);
+      animation: wx-cloud-slow1 14s ease-in-out infinite alternate;
+    }
+    .wx-bg-anim.wx-bg-cloudy::after {
+      content: '';
+      position: absolute;
+      top: 6%; right: -12%;
+      width: 62%; height: 36%;
+      background: radial-gradient(ellipse 50% 50% at 60% 55%, rgba(130,150,210,.11) 0%, transparent 60%);
+      animation: wx-cloud-slow2 19s ease-in-out infinite alternate;
+    }
+    @keyframes wx-cloud-slow1 { from { transform:translateX(0); } to { transform:translateX(5%); } }
+    @keyframes wx-cloud-slow2 { from { transform:translateX(0); } to { transform:translateX(-6%); } }
+    .wx-bg-anim.wx-bg-thunderstorm {
+      background: linear-gradient(180deg, #0e1530 0%, #070d20 65%, #050910 100%);
+    }
+    .wx-bg-anim.wx-bg-thunderstorm::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse 80% 50% at 50% 18%, rgba(80,90,130,.22) 0%, transparent 65%);
+    }
+    .wx-lightning-flash {
+      position: absolute;
+      inset: 0;
+      background: rgba(200,210,255,.06);
+      animation: wx-lightning-flash 7s steps(1) infinite;
+    }
+    @keyframes wx-lightning-flash {
+      0%,88%,90.6%,92.6%,94%,100% { opacity:0; }
+      89%,90%   { opacity:1; }
+      91%,92%   { opacity:.7; }
+      93%,93.6% { opacity:.4; }
+    }
+    .wx-bg-anim.wx-bg-foggy {
+      background: linear-gradient(180deg, #18202e 0%, #0e1620 65%, #080e18 100%);
+    }
+    .wx-bg-anim.wx-bg-foggy::before {
+      content: '';
+      position: absolute;
+      top: 8%; left: -12%;
+      width: 125%; height: 32%;
+      background: linear-gradient(90deg, transparent 0%, rgba(155,170,200,.12) 25%, rgba(160,175,205,.16) 55%, rgba(155,170,200,.12) 78%, transparent 100%);
+      border-radius: 50%;
+      animation: wx-fog-drift1 22s linear infinite alternate;
+    }
+    .wx-bg-anim.wx-bg-foggy::after {
+      content: '';
+      position: absolute;
+      top: 42%; left: -18%;
+      width: 135%; height: 28%;
+      background: linear-gradient(90deg, transparent 0%, rgba(140,155,185,.09) 22%, rgba(148,163,192,.13) 55%, rgba(140,155,185,.09) 82%, transparent 100%);
+      border-radius: 50%;
+      animation: wx-fog-drift2 30s linear infinite alternate;
+    }
+    @keyframes wx-fog-drift1 { from { transform:translateX(0); } to { transform:translateX(12%); } }
+    @keyframes wx-fog-drift2 { from { transform:translateX(0); } to { transform:translateX(-10%); } }
+    .wx-bg-anim.wx-bg-rain,
+    .wx-bg-anim.wx-bg-snow,
+    .wx-bg-anim.wx-bg-windy {
+      background: linear-gradient(180deg, #0e1a48 0%, #081030 55%, #050820 100%);
+    }
+    .wx-bg-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .wx-bg-anim,
+      .wx-bg-anim::before,
+      .wx-bg-anim::after,
+      .wx-lightning-flash { animation: none !important; }
+      .wx-bg-canvas { display: none; }
+    }
+
+    /* ── Header bar ─────────────────────────────────────────────── */
+    .wx-header {
+      background: linear-gradient(90deg, #0d2aaa 0%, #1640d4 50%, #0d2aaa 100%);
+      border-bottom: 3px solid #4a70ff;
+      padding: 0.6em 1.2em;
+      display: flex;
+      align-items: center;
+      gap: 1em;
+      flex-shrink: 0;
+    }
+
+    .wx-header-title {
+      font-size: clamp(22px, 3.5vw, 46px);
+      font-weight: 900;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      gap: 0.3em;
+    }
+
+    .wx-header-title .wx-icon-header {
+      font-size: 1.1em;
+    }
+
+    .wx-header-subtitle {
+      font-size: clamp(18px, 2.8vw, 38px);
+      font-weight: 900;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #fff;
+      margin-left: auto;
+    }
+
+    .wx-updated {
+      font-size: clamp(11px, 1.5vw, 18px);
+      font-weight: 700;
+      color: #ffd700;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.2em 1.2em 0;
+      flex-shrink: 0;
+    }
+
+    /* ── Main content area ──────────────────────────────────────── */
+    .wx-body {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 2.2fr;
+      grid-template-rows: 1fr auto;
+      gap: 0.5em;
+      padding: 0.5em 0.7em 0.3em;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    /* ── Section box ─────────────────────────────────────────────── */
+    .wx-box {
+      background: rgba(10, 40, 170, 0.75);
+      border: 2px solid #3058d8;
+      border-radius: 4px;
+      padding: 0.5em 0.7em;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 2px 8px rgba(0,0,0,0.5);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .wx-box-title {
+      font-size: clamp(11px, 1.4vw, 17px);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #c8d8ff;
+      border-bottom: 1px solid #3058d8;
+      padding-bottom: 0.3em;
+      margin-bottom: 0.4em;
+    }
+
+    /* ── Current Conditions (left column) ──────────────────────── */
+    .wx-current {
+      grid-column: 1;
+      grid-row: 1;
+    }
+
+    .wx-current-icon {
+      font-size: clamp(48px, 7vw, 90px);
+      line-height: 1;
+      text-align: center;
+      margin: 0.1em 0;
+    }
+
+    .wx-current-temp {
+      font-size: clamp(36px, 5.5vw, 72px);
+      font-weight: 900;
+      text-align: center;
+      line-height: 1;
+      margin: 0.1em 0;
+    }
+
+    .wx-current-cond {
+      font-size: clamp(13px, 1.6vw, 22px);
+      font-weight: 700;
+      text-align: center;
+      margin-bottom: 0.4em;
+    }
+
+    .wx-current-details {
+      font-size: clamp(10px, 1.2vw, 15px);
+      line-height: 1.7;
+      color: #d0e0ff;
+      margin-top: auto;
+    }
+
+    /* ── Today's Forecast (right column, top) ─────────────────── */
+    .wx-today {
+      grid-column: 2;
+      grid-row: 1;
+    }
+
+    .wx-today-cols {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      flex: 1;
+      gap: 0;
+      height: 100%;
+    }
+
+    .wx-period {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0.2em 0.4em;
+    }
+
+    .wx-period + .wx-period {
+      border-left: 1px solid #3058d8;
+    }
+
+    .wx-period-label {
+      font-size: clamp(10px, 1.35vw, 17px);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #c8d8ff;
+      margin-bottom: 0.2em;
+    }
+
+    .wx-period-icon {
+      font-size: clamp(32px, 4.5vw, 60px);
+      line-height: 1;
+      margin: 0.15em 0;
+    }
+
+    .wx-period-temp {
+      font-size: clamp(26px, 3.8vw, 52px);
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .wx-period-cond {
+      font-size: clamp(10px, 1.2vw, 14px);
+      font-weight: 700;
+      text-align: center;
+      margin-top: 0.2em;
+      color: #d0e0ff;
+    }
+
+    /* ── Extended Outlook (bottom row, spans full width) ────────── */
+    .wx-extended {
+      grid-column: 1 / -1;
+      grid-row: 2;
+    }
+
+    .wx-extended .wx-box-title {
+      color: #40c0ff;
+    }
+
+    .wx-ext-cols {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
+    }
+
+    .wx-ext-day {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0.2em 0.4em;
+    }
+
+    .wx-ext-day + .wx-ext-day {
+      border-left: 1px solid #3058d8;
+    }
+
+    .wx-ext-dow {
+      font-size: clamp(11px, 1.5vw, 18px);
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #c8d8ff;
+    }
+
+    .wx-ext-icon {
+      font-size: clamp(24px, 3.2vw, 44px);
+      line-height: 1;
+      margin: 0.1em 0;
+    }
+
+    .wx-ext-temps {
+      font-size: clamp(12px, 1.6vw, 20px);
+      font-weight: 900;
+    }
+
+    .wx-ext-cond {
+      font-size: clamp(9px, 1.1vw, 13px);
+      font-weight: 700;
+      color: #d0e0ff;
+      text-align: center;
+    }
+
+    /* ── Breaking News Ticker ───────────────────────────────────── */
+    .wx-ticker-bar {
+      background: #0a0e2a;
+      border-top: 2px solid #4a70ff;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+      flex-shrink: 0;
+      height: clamp(28px, 4vw, 46px);
+    }
+
+    .wx-ticker-label {
+      background: #ffd700;
+      color: #0a0e2a;
+      font-size: clamp(10px, 1.4vw, 17px);
+      font-weight: 900;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 0 0.7em;
+      white-space: nowrap;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+
+    .wx-ticker-scroll {
+      overflow: hidden;
+      flex: 1;
+      height: 100%;
+      display: flex;
+      align-items: center;
+    }
+
+    .wx-ticker-track {
+      display: inline-block;
+      white-space: nowrap;
+      font-size: clamp(10px, 1.35vw, 16px);
+      font-weight: 700;
+      color: #ffd700;
+      animation: wx-scroll 28s linear infinite;
+      padding-left: 100%;
+    }
+
+    @keyframes wx-scroll {
+      from { transform: translateX(0); }
+      to   { transform: translateX(-100%); }
+    }
+
+    /* ── 5-Day Forecast (segment 1) ────────────────────────────── */
+    .wx-seg-forecast {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 0.5em;
+      padding: 0.5em 0.7em;
+      min-height: 0;
+    }
+
+    .wx-fc-day {
+      background: rgba(10, 40, 170, 0.75);
+      border: 2px solid #3058d8;
+      border-radius: 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0.6em 0.4em;
+      gap: 0.25em;
+    }
+
+    .wx-fc-day.wx-fc-today {
+      border-color: #4a90ff;
+      background: rgba(20, 60, 200, 0.85);
+    }
+
+    .wx-fc-dow {
+      font-size: clamp(10px, 1.5vw, 18px);
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #c8d8ff;
+    }
+
+    .wx-fc-icon { line-height: 1; margin: 0.15em 0; }
+
+    .wx-fc-hi {
+      font-size: clamp(20px, 2.8vw, 36px);
+      font-weight: 900;
+    }
+
+    .wx-fc-lo {
+      font-size: clamp(14px, 1.8vw, 24px);
+      font-weight: 700;
+      opacity: 0.65;
+    }
+
+    .wx-fc-cond {
+      font-size: clamp(9px, 1.1vw, 14px);
+      font-weight: 700;
+      color: #d0e0ff;
+      text-align: center;
+      margin-top: auto;
+    }
+
+    /* ── Regional Radar (segment 2) ─────────────────────────────── */
+    .wx-seg-radar {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 0.5em 0.7em;
+      gap: 0.4em;
+      min-height: 0;
+    }
+
+    .wx-radar-img-wrap {
+      flex: 1;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+      position: relative;
+    }
+
+    .wx-radar-img {
+      max-width: 100%;
+      max-height: 100%;
+      border: 2px solid #3058d8;
+      border-radius: 4px;
+      object-fit: contain;
+    }
+
+    .wx-radar-err {
+      color: #90a8f0;
+      font-size: clamp(13px, 1.8vw, 22px);
+      font-weight: 700;
+      text-align: center;
+      display: none;
+    }
+
+    .wx-radar-caption {
+      font-size: clamp(9px, 1.1vw, 13px);
+      color: #6080b0;
+      flex-shrink: 0;
+    }
+
+    /* ── Severe Weather Alerts (segment 3) ──────────────────────── */
+    .wx-seg-alerts {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 0.5em 0.7em;
+      gap: 0.4em;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .wx-alert-item {
+      background: rgba(180, 20, 20, 0.35);
+      border: 2px solid #ff5050;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      gap: 0.6em;
+      padding: 0.5em 0.8em;
+    }
+
+    .wx-alert-icon {
+      font-size: clamp(18px, 2.5vw, 30px);
+      flex-shrink: 0;
+    }
+
+    .wx-alert-text {
+      font-size: clamp(11px, 1.5vw, 18px);
+      font-weight: 700;
+    }
+
+    .wx-no-alerts {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5em;
+      text-align: center;
+    }
+
+    .wx-no-alerts-icon { line-height: 1; }
+
+    .wx-no-alerts-title {
+      font-size: clamp(14px, 2vw, 26px);
+      font-weight: 900;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #40d0a0;
+    }
+
+    .wx-no-alerts-sub {
+      font-size: clamp(10px, 1.2vw, 15px);
+      color: #8098c0;
+    }
+
+    /* ── Loading / error state ──────────────────────────────────── */
+    .wx-loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      font-size: clamp(14px, 2vw, 24px);
+      color: #90a8f0;
+      letter-spacing: 0.1em;
+    }
+
+    /* ── Weather icon SVGs (inline, reused via CSS class) ─────── */
+    .wx-svg { display: inline-block; vertical-align: middle; }
+  </style>
+</head>
+<body>
+<div class="wx-frame" id="wxFrame">
+  <div class="wx-loading" id="wxLoading">Loading weather…</div>
+</div>
+
+<!-- Inline SVG icon definitions (referenced by id) -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <!-- Sun -->
+    <symbol id="icon-sunny" viewBox="0 0 64 64">
+      <circle cx="32" cy="32" r="13" fill="#ffd700" stroke="#ffb300" stroke-width="1.5"/>
+      <g stroke="#ffd700" stroke-width="2.5" stroke-linecap="round">
+        <line x1="32" y1="4"  x2="32" y2="11"/>
+        <line x1="32" y1="53" x2="32" y2="60"/>
+        <line x1="4"  y1="32" x2="11" y2="32"/>
+        <line x1="53" y1="32" x2="60" y2="32"/>
+        <line x1="12" y1="12" x2="17" y2="17"/>
+        <line x1="47" y1="47" x2="52" y2="52"/>
+        <line x1="52" y1="12" x2="47" y2="17"/>
+        <line x1="17" y1="47" x2="12" y2="52"/>
+      </g>
+    </symbol>
+    <!-- Partly Cloudy (sun + cloud) -->
+    <symbol id="icon-partly_cloudy" viewBox="0 0 64 64">
+      <circle cx="24" cy="22" r="11" fill="#ffd700" stroke="#ffb300" stroke-width="1.5"/>
+      <g stroke="#ffd700" stroke-width="2" stroke-linecap="round">
+        <line x1="24" y1="4"  x2="24" y2="9"/>
+        <line x1="24" y1="35" x2="24" y2="38"/>
+        <line x1="6"  y1="22" x2="11" y2="22"/>
+        <line x1="37" y1="22" x2="42" y2="22"/>
+        <line x1="10" y1="10" x2="14" y2="14"/>
+        <line x1="34" y1="30" x2="38" y2="34"/>
+        <line x1="38" y1="10" x2="34" y2="14"/>
+        <line x1="14" y1="30" x2="10" y2="34"/>
+      </g>
+      <rect x="14" y="36" width="36" height="14" rx="7" fill="#d0deff"/>
+      <rect x="22" y="28" width="24" height="14" rx="7" fill="#e8eeff"/>
+      <rect x="14" y="36" width="36" height="14" rx="7" fill="#c0d0f0"/>
+    </symbol>
+    <!-- Cloudy -->
+    <symbol id="icon-cloudy" viewBox="0 0 64 64">
+      <rect x="8"  y="32" width="48" height="18" rx="9" fill="#c0d0f0"/>
+      <rect x="16" y="22" width="32" height="18" rx="9" fill="#d8e4ff"/>
+      <rect x="8"  y="32" width="48" height="18" rx="9" fill="#b0c4e8"/>
+    </symbol>
+    <!-- Night (moon + cloud) -->
+    <symbol id="icon-partly_cloudy_night" viewBox="0 0 64 64">
+      <path d="M34 8 C24 10 18 20 22 30 C26 40 38 42 46 36 C40 40 28 38 24 28 C20 18 28 8 34 8Z" fill="#c8b44a" stroke="#a89030" stroke-width="1"/>
+      <rect x="14" y="36" width="36" height="14" rx="7" fill="#d0deff"/>
+      <rect x="22" y="28" width="24" height="14" rx="7" fill="#e8eeff"/>
+      <rect x="14" y="36" width="36" height="14" rx="7" fill="#c0d0f0"/>
+    </symbol>
+    <!-- Cloudy night -->
+    <symbol id="icon-cloudy_night" viewBox="0 0 64 64">
+      <path d="M28 6 C18 8 12 18 16 28 C20 38 32 40 40 34 C34 38 22 36 18 26 C14 16 22 6 28 6Z" fill="#c8b44a" stroke="#a89030" stroke-width="1"/>
+      <rect x="8"  y="32" width="48" height="18" rx="9" fill="#b0c4e8"/>
+      <rect x="16" y="22" width="32" height="18" rx="9" fill="#c8d8f8"/>
+    </symbol>
+    <!-- Rain -->
+    <symbol id="icon-rain" viewBox="0 0 64 64">
+      <rect x="8"  y="18" width="48" height="16" rx="8" fill="#b0c4e8"/>
+      <rect x="16" y="10" width="32" height="16" rx="8" fill="#c8d8f8"/>
+      <g stroke="#4488cc" stroke-width="2.5" stroke-linecap="round">
+        <line x1="20" y1="40" x2="18" y2="52"/>
+        <line x1="32" y1="40" x2="30" y2="52"/>
+        <line x1="44" y1="40" x2="42" y2="52"/>
+      </g>
+    </symbol>
+    <!-- Showers -->
+    <symbol id="icon-showers" viewBox="0 0 64 64">
+      <circle cx="24" cy="16" r="9"  fill="#ffd700" stroke="#ffb300" stroke-width="1.5"/>
+      <rect x="18" y="24" width="32" height="14" rx="7" fill="#b0c4e8"/>
+      <rect x="26" y="16" width="20" height="12" rx="6" fill="#c8d8f8"/>
+      <g stroke="#4488cc" stroke-width="2.5" stroke-linecap="round">
+        <line x1="24" y1="44" x2="22" y2="56"/>
+        <line x1="36" y1="44" x2="34" y2="56"/>
+        <line x1="48" y1="44" x2="46" y2="56"/>
+      </g>
+    </symbol>
+    <!-- Thunderstorm -->
+    <symbol id="icon-thunderstorm" viewBox="0 0 64 64">
+      <rect x="8"  y="12" width="48" height="16" rx="8" fill="#8090b0"/>
+      <rect x="16" y="6"  width="32" height="14" rx="7" fill="#a0b0c8"/>
+      <polygon points="34,28 26,44 32,44 28,58 42,38 36,38" fill="#ffd700"/>
+    </symbol>
+    <!-- Drizzle -->
+    <symbol id="icon-drizzle" viewBox="0 0 64 64">
+      <rect x="8"  y="18" width="48" height="16" rx="8" fill="#b0c4e8"/>
+      <rect x="16" y="10" width="32" height="16" rx="8" fill="#c8d8f8"/>
+      <g stroke="#88aadd" stroke-width="2" stroke-linecap="round">
+        <line x1="20" y1="40" x2="19" y2="48"/>
+        <line x1="28" y1="42" x2="27" y2="50"/>
+        <line x1="36" y1="40" x2="35" y2="48"/>
+        <line x1="44" y1="42" x2="43" y2="50"/>
+      </g>
+    </symbol>
+    <!-- Snow -->
+    <symbol id="icon-snow" viewBox="0 0 64 64">
+      <rect x="8"  y="14" width="48" height="16" rx="8" fill="#b0c4e8"/>
+      <rect x="16" y="6"  width="32" height="16" rx="8" fill="#c8d8f8"/>
+      <g fill="#d0e8ff">
+        <circle cx="20" cy="46" r="3"/>
+        <circle cx="32" cy="44" r="3"/>
+        <circle cx="44" cy="46" r="3"/>
+        <circle cx="26" cy="54" r="2.5"/>
+        <circle cx="38" cy="54" r="2.5"/>
+      </g>
+    </symbol>
+    <!-- Foggy -->
+    <symbol id="icon-foggy" viewBox="0 0 64 64">
+      <rect x="8"  y="12" width="48" height="10" rx="5" fill="#b0bcd0" opacity="0.8"/>
+      <rect x="12" y="26" width="40" height="8"  rx="4" fill="#a8b8cc" opacity="0.8"/>
+      <rect x="8"  y="38" width="48" height="8"  rx="4" fill="#98a8bc" opacity="0.7"/>
+      <rect x="14" y="50" width="36" height="8"  rx="4" fill="#8898ac" opacity="0.6"/>
+    </symbol>
+  </defs>
+</svg>
+
+<script>
+(function () {
+  'use strict';
+
+  // Icon key → SVG symbol id
+  const ICON_MAP = {
+    sunny:               'icon-sunny',
+    partly_cloudy:       'icon-partly_cloudy',
+    partly_cloudy_night: 'icon-partly_cloudy_night',
+    cloudy:              'icon-cloudy',
+    cloudy_night:        'icon-cloudy_night',
+    rain:                'icon-rain',
+    showers:             'icon-showers',
+    thunderstorm:        'icon-thunderstorm',
+    drizzle:             'icon-drizzle',
+    snow:                'icon-snow',
+    foggy:               'icon-foggy',
+  };
+
+  const BG_CSS_CLASS = {
+    sunny:               'wx-bg-sunny',
+    partly_cloudy:       'wx-bg-partly-cloudy',
+    partly_cloudy_night: 'wx-bg-partly-cloudy',
+    cloudy:              'wx-bg-cloudy',
+    cloudy_night:        'wx-bg-cloudy',
+    thunderstorm:        'wx-bg-thunderstorm',
+    foggy:               'wx-bg-foggy',
+    rain:                'wx-bg-rain',
+    drizzle:             'wx-bg-rain',
+    showers:             'wx-bg-rain',
+    snow:                'wx-bg-snow',
+    windy:               'wx-bg-windy',
+  };
+  const BG_CANVAS_CONDITIONS = new Set(['rain', 'drizzle', 'showers', 'snow', 'windy']);
+  const BG_PARTICLE_COUNT_SNOW = 55;
+  const BG_PARTICLE_COUNT_WINDY = 35;
+  const BG_PARTICLE_COUNT_DRIZZLE = 45;
+  const BG_PARTICLE_COUNT_RAIN = 65;
+  let _bgRafId = null;
+
+  function prefersReducedMotion() {
+    try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+    catch (e) { return false; }
+  }
+
+  function cancelBgAnim() {
+    if (_bgRafId !== null) { cancelAnimationFrame(_bgRafId); _bgRafId = null; }
+  }
+
+  function _runCanvasBg(canvas, condition) {
+    if (prefersReducedMotion()) return;
+    const isSnow = condition === 'snow';
+    const isWindy = condition === 'windy';
+    const isDrizzle = condition === 'drizzle';
+    const COUNT = isSnow ? BG_PARTICLE_COUNT_SNOW
+                         : isWindy ? BG_PARTICLE_COUNT_WINDY
+                         : isDrizzle ? BG_PARTICLE_COUNT_DRIZZLE
+                         : BG_PARTICLE_COUNT_RAIN;
+    const particles = [];
+    function initP(p) {
+      if (!p) p = {};
+      p.x = Math.random();
+      p.y = isSnow ? Math.random() : (Math.random() - 0.05);
+      if (isSnow) {
+        p.r = Math.random() * 2.2 + 0.9;
+        p.vy = Math.random() * 0.00075 + 0.0003;
+        p.vx = (Math.random() - 0.5) * 0.00025;
+        p.a = Math.random() * 0.45 + 0.2;
+        p.wb = Math.random() * Math.PI * 2;
+        p.ws = Math.random() * 0.018 + 0.007;
+      } else if (isWindy) {
+        p.r = Math.random() * 1.4 + 0.7;
+        p.vx = Math.random() * 0.0022 + 0.0009;
+        p.vy = (Math.random() - 0.5) * 0.0004;
+        p.a = Math.random() * 0.35 + 0.15;
+        p.len = Math.random() * 0.04 + 0.018;
+      } else {
+        p.r = isDrizzle ? Math.random() * 0.5 + 0.4 : Math.random() * 0.75 + 0.5;
+        p.len = isDrizzle ? Math.random() * 0.04 + 0.03 : Math.random() * 0.065 + 0.05;
+        p.vy = Math.random() * 0.003 + (isDrizzle ? 0.0012 : 0.0026);
+        p.vx = isDrizzle ? -0.00025 : -0.00075;
+        p.a = Math.random() * 0.32 + (isDrizzle ? 0.12 : 0.2);
+      }
+      return p;
+    }
+    for (let i = 0; i < COUNT; i++) particles.push(initP(null));
+    function draw() {
+      const el = canvas.parentElement;
+      if (!el) return;
+      const w = el.offsetWidth, h = el.offsetHeight;
+      if (!w || !h) { _bgRafId = requestAnimationFrame(draw); return; }
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, w, h);
+      for (let i = 0; i < particles.length; i++) {
+        const p = particles[i];
+        const px = p.x * w, py = p.y * h;
+        ctx.globalAlpha = p.a;
+        if (isSnow) {
+          p.wb += p.ws;
+          ctx.fillStyle = '#d0e4ff';
+          ctx.beginPath();
+          ctx.arc(px + Math.sin(p.wb) * 3, py, p.r, 0, Math.PI * 2);
+          ctx.fill();
+          p.x += p.vx; p.y += p.vy;
+          if (p.y > 1.04) { p.x = Math.random(); p.y = -0.02; }
+          if (p.x < -0.02 || p.x > 1.02) p.x = Math.random();
+        } else if (isWindy) {
+          ctx.strokeStyle = 'rgba(190, 215, 255, 0.75)';
+          ctx.lineWidth = p.r * 0.5;
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(px - p.len * w, py + p.vy * h * 18);
+          ctx.stroke();
+          p.x += p.vx; p.y += p.vy;
+          if (p.x > 1.06) { p.x = -0.04; p.y = Math.random(); }
+          if (p.y < 0 || p.y > 1) p.y = Math.random();
+        } else {
+          ctx.strokeStyle = 'rgba(155, 188, 240, 0.8)';
+          ctx.lineWidth = p.r;
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.lineTo(px + p.vx * w * 12, py + p.len * h);
+          ctx.stroke();
+          p.x += p.vx; p.y += p.vy;
+          if (p.y > 1.08) { p.x = Math.random(); p.y = -0.05; }
+          if (p.x < -0.06) { p.x = 1.02; p.y = Math.random(); }
+        }
+      }
+      ctx.globalAlpha = 1;
+      _bgRafId = requestAnimationFrame(draw);
+    }
+    cancelBgAnim();
+    _bgRafId = requestAnimationFrame(draw);
+  }
+
+  function _applyWeatherBackground(frame, condition) {
+    cancelBgAnim();
+    const bgDiv = document.createElement('div');
+    bgDiv.className = 'wx-bg-anim';
+    const cls = BG_CSS_CLASS[condition];
+    if (cls) bgDiv.classList.add(cls);
+    if (condition === 'thunderstorm') {
+      const flash = document.createElement('div');
+      flash.className = 'wx-lightning-flash';
+      bgDiv.appendChild(flash);
+    }
+    if (BG_CANVAS_CONDITIONS.has(condition)) {
+      const canvas = document.createElement('canvas');
+      canvas.className = 'wx-bg-canvas';
+      canvas.style.opacity = condition === 'windy' ? '0.5' : '0.45';
+      bgDiv.appendChild(canvas);
+      requestAnimationFrame(function () { _runCanvasBg(canvas, condition); });
+    }
+    frame.insertBefore(bgDiv, frame.firstChild);
+  }
+
+  function iconSvg(key, size) {
+    const sym = ICON_MAP[key] || 'icon-cloudy';
+    return `<svg class="wx-svg" width="${size}" height="${size}"><use href="#${sym}"/></svg>`;
+  }
+
+  function tempStr(t) {
+    return (t != null) ? `${t}°` : '--°';
+  }
+
+  function formatLocalTime(isoStr) {
+    try {
+      return new Date(isoStr).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    } catch (e) { return isoStr; }
+  }
+
+  function headerHtml(subtitle) {
+    const fw = (document.getElementById('wxFrame') || {}).offsetWidth || 960;
+    return `
+      <div class="wx-header">
+        <div class="wx-header-title">
+          <span>RetroStation MC</span>
+          <span class="wx-icon-header">${iconSvg('partly_cloudy', Math.round(fw * 0.055))}</span>
+          <span>Weather</span>
+        </div>
+        <div class="wx-header-subtitle">${subtitle}</div>
+      </div>`;
+  }
+
+  function updatedBarHtml(data) {
+    return `<div class="wx-updated">
+      <span>${data.location || ''}</span>
+      <span>UPDATED: ${data.updated ? formatLocalTime(data.updated) : ''}</span>
+    </div>`;
+  }
+
+  function tickerBarHtml(ticks) {
+    const tickText = (ticks && ticks.length)
+      ? ticks.join(' \u2022 ') + ' \u2022 '
+      : 'No active weather alerts \u2022 ';
+    return `
+      <div class="wx-ticker-bar">
+        <div class="wx-ticker-label">Breaking News:</div>
+        <div class="wx-ticker-scroll">
+          <span class="wx-ticker-track">${tickText.repeat(3)}</span>
+        </div>
+      </div>`;
+  }
+
+  function buildCurrent(data, frame) {
+    const now   = data.now   || {};
+    const today = Array.isArray(data.today)    ? data.today    : [];
+    const ext   = Array.isArray(data.extended) ? data.extended : [];
+    const ticks = Array.isArray(data.ticker)   ? data.ticker   : [];
+
+    const fw = frame.offsetWidth || 960;
+    const iconLg  = Math.round(fw * 0.07);
+    const iconMd  = Math.round(fw * 0.06);
+    const iconSm  = Math.round(fw * 0.04);
+
+    const periodCols = today.map(p => `
+      <div class="wx-period">
+        <div class="wx-period-label">${p.label || ''}</div>
+        <div class="wx-period-icon">${iconSvg(p.icon, iconMd)}</div>
+        <div class="wx-period-temp">${tempStr(p.temp)}</div>
+        <div class="wx-period-cond">${p.condition || ''}</div>
+      </div>`).join('');
+
+    const extCols = ext.map(d => `
+      <div class="wx-ext-day">
+        <div class="wx-ext-dow">${d.dow || ''}</div>
+        <div class="wx-ext-icon">${iconSvg(d.icon, iconSm)}</div>
+        <div class="wx-ext-temps">${tempStr(d.hi)} <span style="opacity:.7">${tempStr(d.lo)}</span></div>
+        <div class="wx-ext-cond">${d.condition || ''}</div>
+      </div>`).join('');
+
+    const details = [];
+    if (now.humidity != null) details.push(`- Humid: ${now.humidity}%`);
+    if (now.wind)              details.push(`- Wind: ${now.wind}`);
+    if (now.feels_like != null) details.push(`- Feels Like: ${now.feels_like}°`);
+
+    frame.innerHTML =
+      headerHtml('Current Conditions') +
+      updatedBarHtml(data) +
+      `<div class="wx-body">
+        <div class="wx-box wx-current">
+          <div class="wx-box-title">Current Conditions</div>
+          <div class="wx-current-icon">${iconSvg(now.icon || 'cloudy', iconLg)}</div>
+          <div class="wx-current-temp">${tempStr(now.temp)}</div>
+          <div class="wx-current-cond">${now.condition || ''}</div>
+          <div class="wx-current-details">${details.join('<br>')}</div>
+        </div>
+        <div class="wx-box wx-today">
+          <div class="wx-box-title">Today's Forecast</div>
+          <div class="wx-today-cols">${periodCols}</div>
+        </div>
+        <div class="wx-box wx-extended">
+          <div class="wx-box-title">Extended Outlook</div>
+          <div class="wx-ext-cols">${extCols || '<div style="color:#90a8f0;padding:.4em">No extended forecast available.</div>'}</div>
+        </div>
+      </div>` +
+      tickerBarHtml(ticks);
+  }
+
+  function buildForecast(data, frame) {
+    const five  = Array.isArray(data.five_day) ? data.five_day : [];
+    const ticks = Array.isArray(data.ticker)   ? data.ticker   : [];
+
+    const fw = frame.offsetWidth || 960;
+    const iconLg = Math.round(fw * 0.06);
+
+    const dayCols = five.map((d, i) => `
+      <div class="wx-fc-day${i === 0 ? ' wx-fc-today' : ''}">
+        <div class="wx-fc-dow">${d.dow || ''}</div>
+        <div class="wx-fc-icon">${iconSvg(d.icon, iconLg)}</div>
+        <div class="wx-fc-hi">${tempStr(d.hi)}</div>
+        <div class="wx-fc-lo">${tempStr(d.lo)}</div>
+        <div class="wx-fc-cond">${d.condition || ''}</div>
+      </div>`).join('');
+
+    frame.innerHTML =
+      headerHtml('5-Day Forecast') +
+      updatedBarHtml(data) +
+      `<div class="wx-seg-forecast">
+        ${dayCols || '<div style="color:#90a8f0;grid-column:1/-1;text-align:center;padding:1em">No forecast data available.</div>'}
+      </div>` +
+      tickerBarHtml(ticks);
+  }
+
+  function buildRadar(data, frame) {
+    const ticks    = Array.isArray(data.ticker) ? data.ticker : [];
+    const radarUrl = data.radar_url || '';
+
+    frame.innerHTML =
+      headerHtml('Regional Radar') +
+      updatedBarHtml(data) +
+      `<div class="wx-seg-radar">
+        <div class="wx-radar-img-wrap">
+          ${radarUrl
+            ? `<img class="wx-radar-img" id="wx-radar-img" src="${radarUrl}" alt="Regional Radar"
+                    onerror="document.getElementById('wx-radar-img').style.display='none';
+                             document.getElementById('wx-radar-err').style.display='block';">
+               <div class="wx-radar-err" id="wx-radar-err">Radar Unavailable</div>`
+            : `<div class="wx-radar-err" style="display:block">Radar Unavailable &mdash; No location configured</div>`}
+        </div>
+        <div class="wx-radar-caption">Source: NOAA/NWS</div>
+      </div>` +
+      tickerBarHtml(ticks);
+  }
+
+  function buildAlerts(data, frame) {
+    const ticks = Array.isArray(data.ticker) ? data.ticker : [];
+
+    const fw = frame.offsetWidth || 960;
+    const iconLg = Math.round(fw * 0.07);
+
+    let bodyHtml;
+    if (ticks.length) {
+      const items = ticks.map(t => `
+        <div class="wx-alert-item">
+          <div class="wx-alert-icon">&#9888;</div>
+          <div class="wx-alert-text">${t}</div>
+        </div>`).join('');
+      bodyHtml = `<div class="wx-seg-alerts">${items}</div>`;
+    } else {
+      bodyHtml = `
+        <div class="wx-seg-alerts">
+          <div class="wx-no-alerts">
+            <div class="wx-no-alerts-icon">${iconSvg('sunny', iconLg)}</div>
+            <div class="wx-no-alerts-title">No Active Severe Weather Alerts</div>
+            <div class="wx-no-alerts-sub">${data.location || 'Local Area'}</div>
+          </div>
+        </div>`;
+    }
+
+    frame.innerHTML =
+      headerHtml('Severe Weather Alerts') +
+      updatedBarHtml(data) +
+      bodyHtml +
+      tickerBarHtml(ticks);
+  }
+
+  function build(data) {
+    const frame = document.getElementById('wxFrame');
+    const now   = data.now || {};
+    const bgCondition = data.bg_condition || now.icon || 'cloudy';
+
+    // ── Not configured ────────────────────────────────────────────
+    if (now.condition === 'Not Configured') {
+      const fw = frame.offsetWidth || 960;
+      frame.innerHTML = `
+        <div class="wx-header">
+          <div class="wx-header-title">
+            <span>RetroStation MC</span>
+            <span class="wx-icon-header">${iconSvg('partly_cloudy', Math.round(fw * 0.055))}</span>
+            <span>Weather</span>
+          </div>
+          <div class="wx-header-subtitle">Local Forecast</div>
+        </div>
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;
+                    justify-content:center;gap:clamp(8px,1.5vw,20px);padding:1em;text-align:center;">
+          <div>${iconSvg('partly_cloudy', Math.round(fw * 0.07))}</div>
+          <div style="font-size:clamp(12px,2vw,26px);font-weight:900;letter-spacing:0.1em;
+                      text-transform:uppercase;color:#90c8ff;">No Location Configured</div>
+          <div style="font-size:clamp(9px,1.2vw,15px);color:#8098c0;max-width:26em;line-height:1.5;">
+            Add a Zip Code or Latitude&nbsp;/&nbsp;Longitude in
+            Virtual Weather Channel Settings.
+          </div>
+        </div>
+        <div class="wx-ticker-bar">
+          <div class="wx-ticker-label">Breaking News:</div>
+          <div class="wx-ticker-scroll">
+            <span class="wx-ticker-track">No location configured \u2022 </span>
+          </div>
+        </div>`;
+      _applyWeatherBackground(frame, bgCondition);
+      return;
+    }
+
+    // ── Segment dispatch ──────────────────────────────────────────
+    const segment = (data.segment != null) ? data.segment : 0;
+    if      (segment === 1) { buildForecast(data, frame); }
+    else if (segment === 2) { buildRadar(data, frame); }
+    else if (segment === 3) { buildAlerts(data, frame); }
+    else                    { buildCurrent(data, frame); }
+    _applyWeatherBackground(frame, bgCondition);
+  }
+
+  // ── Background music ────────────────────────────────────────────
+  let _musicEl = null;
+  let _currentMusicSrc = '';
+
+  function applyMusic(musicFile) {
+    if (!musicFile) {
+      if (_musicEl) { _musicEl.pause(); _musicEl.src = ''; }
+      _currentMusicSrc = '';
+      return;
+    }
+    if (musicFile === _currentMusicSrc) return;  // already playing this track
+    _currentMusicSrc = musicFile;
+    if (!_musicEl) {
+      _musicEl = document.createElement('audio');
+      _musicEl.loop = true;
+      _musicEl.volume = 0.5;
+      document.body.appendChild(_musicEl);
+    }
+    _musicEl.src = musicFile;
+    _musicEl.play().catch(function () {
+      // Autoplay blocked; resume on first user interaction
+      function resumeOnInteraction() {
+        _musicEl.play().catch(function () {});
+      }
+      document.addEventListener('click',   resumeOnInteraction, { once: true });
+      document.addEventListener('keydown', resumeOnInteraction, { once: true });
+    });
+  }
+
+  // Segment-duration aligned refresh: server tells us exactly how long until
+  // the next segment boundary so all viewers cycle in sync.
+  const WEATHER_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+  const ERROR_RETRY_MS              = 60 * 1000;
+
+  let _refreshTimer = null;
+
+  async function load() {
+    if (_refreshTimer !== null) { clearTimeout(_refreshTimer); _refreshTimer = null; }
+    try {
+      const resp = await fetch('/api/weather');
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      build(data);
+      applyMusic(new URLSearchParams(window.location.search).get('embedded') ? '' : (data.music_file || ''));
+      // Refresh aligned to wall clock: server tells us exactly how long until
+      // the next segment boundary so all viewers stay in sync.
+      const msUntilNext = (data.ms_until_next > 0) ? data.ms_until_next : WEATHER_REFRESH_INTERVAL_MS;
+      _refreshTimer = setTimeout(load, msUntilNext);
+    } catch (e) {
+      const frame = document.getElementById('wxFrame');
+      cancelBgAnim();
+      frame.innerHTML = `<div class="wx-loading">Unable to load weather data.</div>`;
+      _refreshTimer = setTimeout(load, ERROR_RETRY_MS);
+    }
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>

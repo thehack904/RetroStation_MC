@@ -26,9 +26,9 @@ RetroStation MC exposes a small set of Flask routes. Most write routes are inten
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/channel.m3u` | Single-channel M3U playlist, MIME `application/x-mpegURL` |
-| `GET` | `/channel.m3u8` | Same single-channel playlist, MIME `application/vnd.apple.mpegurl` |
-| `GET` | `/channel.xmltv` | XMLTV guide for the virtual guide channel |
+| `GET` | `/channel.m3u` | M3U playlist for the guide plus any enabled virtual channels, MIME `application/x-mpegURL` |
+| `GET` | `/channel.m3u8` | Same playlist, MIME `application/vnd.apple.mpegurl` |
+| `GET` | `/channel.xmltv` | XMLTV guide for the guide plus any enabled virtual channels |
 
 ## HLS endpoints
 
