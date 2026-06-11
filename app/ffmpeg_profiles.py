@@ -45,6 +45,12 @@ PREFERRED_PROVIDER_VIDEO_ENCODERS: dict[str, tuple[str, ...]] = {
     "amd": ("h264_amf", "hevc_amf", "av1_amf"),
     "vaapi": ("h264_vaapi", "hevc_vaapi", "av1_vaapi"),
 }
+HARDWARE_PROVIDER_SELECTION_PRIORITY: dict[str, int] = {
+    "nvidia": 0,
+    "intel": 1,
+    "vaapi": 2,
+    "amd": 3,
+}
 
 FFMPEG_PROFILES: dict[str, FFmpegProfile] = {
     DEFAULT_FFMPEG_PROFILE_NAME: FFmpegProfile(
@@ -104,7 +110,15 @@ def _build_detected_hardware_profile(gpu_capabilities: dict | None) -> FFmpegPro
     if not isinstance(detected, list):
         return None
 
-    for provider_name in detected:
+    ordered_detected = sorted(
+        [str(provider_name) for provider_name in detected],
+        key=lambda provider_name: HARDWARE_PROVIDER_SELECTION_PRIORITY.get(
+            provider_name,
+            len(HARDWARE_PROVIDER_SELECTION_PRIORITY),
+        ),
+    )
+
+    for provider_name in ordered_detected:
         provider = providers.get(provider_name)
         if not isinstance(provider, dict):
             continue

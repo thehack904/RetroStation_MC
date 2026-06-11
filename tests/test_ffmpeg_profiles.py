@@ -88,6 +88,29 @@ class FFmpegProfileTests(unittest.TestCase):
         self.assertEqual(profile.encoder_type, "hardware")
         self.assertEqual(profile.hardware_acceleration_provider, "nvidia")
 
+    def test_resolve_ffmpeg_profile_prefers_vaapi_over_amf_when_both_are_available(self) -> None:
+        profile = resolve_ffmpeg_profile(
+            {
+                "hardware_acceleration_mode": "hardware_if_available",
+            },
+            {
+                "detected_hardware_providers": ["amd", "vaapi"],
+                "providers": {
+                    "amd": {
+                        "available": True,
+                        "ffmpeg_encoders": ["h264_amf"],
+                    },
+                    "vaapi": {
+                        "available": True,
+                        "ffmpeg_encoders": ["h264_vaapi"],
+                    },
+                },
+            },
+        )
+
+        self.assertEqual(profile.video_codec, "h264_vaapi")
+        self.assertEqual(profile.hardware_acceleration_provider, "vaapi")
+
     def test_invalid_hardware_acceleration_mode_falls_back_to_default_mode(self) -> None:
         profile = resolve_ffmpeg_profile(
             {
