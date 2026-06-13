@@ -79,6 +79,8 @@ ffmpeg -version
 
 In Docker, FFmpeg is installed by the Dockerfile. For local Python, install it through your OS package manager.
 
+If you expected hardware encoding, also check the **Hardware Acceleration** tab. A detected GPU is not enough by itself; the provider must also be encoder-ready before the app will leave software fallback.
+
 ## XMLTV data appears empty
 
 Check that XMLTV channel IDs match M3U `tvg-id` values. RetroStation MC groups programmes by XMLTV `programme@channel` and matches them to parsed channel IDs.
@@ -122,6 +124,34 @@ Increase the live-edge/buffer protection in Diagnostics:
 - Keep FPS at `15` unless hardware headroom is confirmed.
 
 Then restart the guide.
+
+## Hardware acceleration never becomes active
+
+Check all three layers:
+
+1. The main form is set to **Use encoder-ready hardware when available**.
+2. The **Hardware Acceleration** tab shows the provider under **Hardware-Ready Providers**, not only **Detected Devices**.
+3. Your local install or container exposes the GPU and FFmpeg encoder to the app.
+
+If the provider is detected but not encoder-ready, RetroStation MC will stay on software fallback by design.
+
+## Weather Channel is missing or stays on standby
+
+Confirm:
+
+1. **Weather Channel** is enabled on the main admin page.
+2. Weather-specific settings were saved on `/virtual-channels`.
+3. The client can fetch `http://YOUR_SERVER:8787/hls/weather.m3u8`.
+
+While the Weather pipeline is warming up, `/hls/weather.m3u8` intentionally falls back to the standby playlist.
+
+## Guide is buffered but viewers still see standby overnight
+
+Check the **Off Air** tab. During the configured off-air window:
+
+- `/hls/master.m3u8` stays on standby
+- `/hls/live.m3u8` returns `404`
+- the standby variant may use either the normal standby pattern or the static-noise clip, depending on **Play static noise while off-air**
 
 ## 1080p stutters on low-power hardware
 

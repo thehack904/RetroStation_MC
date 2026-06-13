@@ -45,11 +45,16 @@ The output is designed to behave like a live virtual TV channel. The app renders
 - Built-in M3U and XMLTV outputs for the guide plus enabled virtual channels
 - HLS master playlist with standby-to-live switching
 - FFmpeg H.264 video and AAC audio output
+- Hardware acceleration auto-selection with software fallback
 - Silent AAC track by default for IPTV client compatibility
 - Optional background music upload and selection
+- Optional Weather virtual channel with dedicated HLS output
+- Guide and Weather logo metadata for exported playlists
 - Theme selection using JSON theme files
 - 720p and 1080p render profiles
 - Cut or vertical scroll page transitions
+- Standby pattern uploads with selectable custom artwork and overlay controls
+- Daily off-air scheduling with optional static-noise playback
 - Diagnostics controls for HLS live-edge delay and buffer thresholds
 - JSONL/CSV log export
 - Docker and Docker Compose support
@@ -57,7 +62,7 @@ The output is designed to behave like a live virtual TV channel. The app renders
 
 ## Local-only security model
 
-RetroStation MC v1.0.0 has **no authentication**. Do not expose it directly to the public internet. Run it on a trusted LAN, behind a VPN, or behind an authenticated reverse proxy.
+RetroStation MC v1.3.0 still has **no authentication**. Do not expose it directly to the public internet. Run it on a trusted LAN, behind a VPN, or behind an authenticated reverse proxy.
 
 ## Quick start with Docker Compose
 
@@ -86,6 +91,7 @@ Requirements:
 
 The installer creates and owns the app under the dedicated `iptv` system user at `/home/iptv/retrostation-mc`.
 It also creates and starts the `retrostation-mc` systemd service.
+During installation it runs `gpu_hwaccel_detect_v3.py` to report whether hardware acceleration is ready.
 
 ```bash
 sudo systemctl status retrostation-mc
@@ -139,11 +145,15 @@ Start here:
 | `data/config.db` | SQLite settings and event log database |
 | `data/guide_state.json` | Normalized renderer state generated from M3U/XMLTV |
 | `data/music/` | Uploaded background music files |
+| `data/weather_music/` | Uploaded Weather channel background music files |
 | `data/renderer.pid` | Renderer process PID used for reattach/restart logic |
 | `data/ffmpeg.pid` | FFmpeg process PID used for reattach/restart logic |
 | `output/guide.m3u8` | Live HLS media playlist written by FFmpeg |
 | `output/guide_*.ts` | Live MPEG-TS HLS segments |
 | `output/standby.ts` | Generated standby segment |
+| `output/static.ts` | Generated static-noise segment used by off-air mode when enabled |
+| `output/weather.m3u8` | Weather virtual channel HLS media playlist |
+| `output/weather_*.ts` | Weather virtual channel MPEG-TS HLS segments |
 | `sample_data/` | Bundled sample M3U/XMLTV input files |
 
 ## Default ports and environment variables

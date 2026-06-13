@@ -6,7 +6,7 @@ The admin UI is available at the root path:
 http://YOUR_SERVER:8787/
 ```
 
-v1.0.0 has no login screen. Keep the app local-only or place it behind external authentication.
+v1.3.0 still has no login screen. Keep the app local-only or place it behind external authentication.
 
 ## Header controls
 
@@ -49,7 +49,8 @@ For a first test, leave the default sample sources in place.
 | Visible Rows | Number of channels displayed per page; default is `8` |
 | Page Dwell | Seconds each page remains visible; default is `12` |
 | Transition | `cut` or vertical `scroll` transition between pages |
-| Output Format | Exposed option for M3U/XMLTV preference; v1.0.0 still provides the built-in output endpoints |
+| Hardware Acceleration | `software_fallback` always uses `libx264`; `hardware_if_available` uses encoder-ready hardware and falls back automatically when needed |
+| Output Format | UI export preference only; `/channel.m3u`, `/channel.m3u8`, and `/channel.xmltv` remain available |
 | Weather Channel | Adds the Weather virtual channel as its own entry in `/channel.m3u` and `/channel.xmltv` when enabled |
 
 Use lower FPS and 720p when testing on limited hardware.
@@ -74,7 +75,17 @@ The admin UI displays copyable URLs for:
 | M3U Playlist | `/channel.m3u` |
 | XMLTV Guide | `/channel.xmltv` |
 
-Use `/channel.m3u` for RetroIPTVGuide import. When **Weather Channel** is enabled on the main admin page, both exports include a second Weather entry.
+Use `/channel.m3u` for RetroIPTVGuide import. When **Weather Channel** is enabled on the main admin page, both exports include a second Weather entry that points to `/hls/weather.m3u8`.
+
+## Virtual Channels page
+
+Open `/virtual-channels` to manage Weather Channel-specific settings:
+
+- enable/disable the Weather virtual channel
+- set location, units, and rotation timing
+- toggle **Show Weather Icon in M3U / XMLTV** for exported playlist `tvg-logo` metadata
+- upload Weather-only background music and choose single-track or playlist playback
+- preview the browser-rendered Weather channel page
 
 ## Guide icon for RetroIPTVGuide
 
@@ -85,6 +96,15 @@ Use **Guide Icon (M3U)** to choose:
 - **Disabled** (no icon metadata in exported M3U)
 
 Upload/remove custom icons in the **Custom Guide Icon Upload** section on the admin page.
+
+## Hardware acceleration
+
+The main configuration form selects the encoding mode, and the **Hardware Acceleration** tab explains what the app can actually use:
+
+- **Detected Devices** lists hardware that was found on the system.
+- **Hardware-Ready Providers** lists devices that also passed FFmpeg encoder validation.
+- **Selection Mode** shows whether the app is forced to software or allowed to auto-select hardware.
+- **Active Path** and **Active Status** explain which encoder the guide is using right now.
 
 ## Standby test pattern graphics
 
@@ -135,6 +155,10 @@ Upload audio files and configure background music. See [Background Music](BACKGR
 ### Diagnostics
 
 Tune HLS live-edge delay, minimum buffer requirements, standby playlist size, and log display length. See [Diagnostics and Logging](DIAGNOSTICS_AND_LOGGING.md).
+
+### Hardware Acceleration
+
+View detected GPU providers, encoder-ready hardware, and the currently active encode path.
 
 ### Logs
 

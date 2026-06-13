@@ -21,9 +21,13 @@ class GpuCapabilitiesTests(unittest.TestCase):
         with patch("app.gpu_capabilities._probe_ffmpeg_encoders", return_value=fake_ffmpeg), patch(
             "app.gpu_capabilities._running_in_docker",
             return_value=False,
-        ), patch("app.gpu_capabilities._provider_device_visible", return_value=(True, "ok")):
+        ), patch("app.gpu_capabilities._provider_device_visible", return_value=(True, "ok")), patch(
+            "app.gpu_capabilities._probe_hw_encoder_functional",
+            return_value=(True, "Functional probe for 'h264_nvenc' succeeded."),
+        ):
             capabilities = detect_gpu_capabilities()
 
+        self.assertIn("nvidia", capabilities["device_detected_providers"])
         self.assertIn("nvidia", capabilities["detected_hardware_providers"])
         self.assertTrue(capabilities["providers"]["nvidia"]["available"])
         self.assertEqual(capabilities["providers"]["nvidia"]["ffmpeg_encoders"], ["h264_nvenc"])
@@ -51,6 +55,9 @@ class GpuCapabilitiesTests(unittest.TestCase):
         ), patch(
             "app.gpu_capabilities._provider_device_visible",
             side_effect=[(False, "nvidia"), (False, "intel"), (False, "amd"), (True, "vaapi")],
+        ), patch(
+            "app.gpu_capabilities._probe_hw_encoder_functional",
+            return_value=(True, "Functional probe for 'h264_vaapi' succeeded."),
         ):
             capabilities = detect_gpu_capabilities()
 
@@ -64,6 +71,44 @@ class GpuCapabilitiesTests(unittest.TestCase):
             visible, _ = _provider_device_visible("intel", in_docker=False)
 
         self.assertFalse(visible)
+
+    def test_marks_provider_unavailable_when_functional_probe_fails(self) -> None:
+        fake_ffmpeg = {"available": True, "error": "", "encoders": frozenset({"h264_qsv"})}
+        with patch("app.gpu_capabilities._probe_ffmpeg_encoders", return_value=fake_ffmpeg), patch(
+            "app.gpu_capabilities._running_in_docker",
+            return_value=False,
+        ), patch(
+            "app.gpu_capabilities._provider_device_visible",
+            side_effect=[(False, "nvidia"), (True, "intel"), (False, "amd"), (False, "vaapi")],
+        ), patch(
+            "app.gpu_capabilities._probe_hw_encoder_functional",
+            return_value=(False, "Functional probe for 'h264_qsv' exited with status 1."),
+        ):
+            capabilities = detect_gpu_capabilities()
+
+        self.assertNotIn("intel", capabilities["detected_hardware_providers"])
+        self.assertIn("intel", capabilities["device_detected_providers"])
+        self.assertFalse(capabilities["providers"]["intel"]["available"])
+        self.assertFalse(capabilities["hardware_available"])
+        self.assertIn("hardware was detected", capabilities["message"].lower())
+        self.assertIn("software fallback", capabilities["message"].lower())
+
+    def test_functional_probe_reason_stored_on_provider(self) -> None:
+        fake_ffmpeg = {"available": True, "error": "", "encoders": frozenset({"h264_qsv"})}
+        probe_reason = "Functional probe for 'h264_qsv' exited with status 1."
+        with patch("app.gpu_capabilities._probe_ffmpeg_encoders", return_value=fake_ffmpeg), patch(
+            "app.gpu_capabilities._running_in_docker",
+            return_value=False,
+        ), patch(
+            "app.gpu_capabilities._provider_device_visible",
+            side_effect=[(False, "nvidia"), (True, "intel"), (False, "amd"), (False, "vaapi")],
+        ), patch(
+            "app.gpu_capabilities._probe_hw_encoder_functional",
+            return_value=(False, probe_reason),
+        ):
+            capabilities = detect_gpu_capabilities()
+
+        self.assertEqual(capabilities["providers"]["intel"]["functional_probe_reason"], probe_reason)
 
 
 if __name__ == "__main__":

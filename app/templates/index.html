@@ -142,8 +142,11 @@
             <label class="field-label">Hardware Acceleration</label>
             <select name="hardware_acceleration_mode">
               <option value="software_fallback" {% if config.hardware_acceleration_mode == 'software_fallback' %}selected{% endif %}>Always use software fallback (libx264)</option>
-              <option value="hardware_if_available" {% if config.hardware_acceleration_mode == 'hardware_if_available' %}selected{% endif %}>Use detected hardware encoder when available</option>
+              <option value="hardware_if_available" {% if config.hardware_acceleration_mode == 'hardware_if_available' %}selected{% endif %}>Use encoder-ready hardware when available (auto software fallback)</option>
             </select>
+            <div style="font-size:12px;color:#9aa3b2;line-height:1.4;margin-top:4px">
+              Detected hardware means a device was found. Hardware is only used when it is encoder-ready (passes ffmpeg validation); otherwise software fallback remains active.
+            </div>
           </div>
           <div class="field-row">
             <label class="field-label">Output Format</label>
@@ -425,24 +428,45 @@
     <!-- Hardware Acceleration Tab -->
     <div class="tab-panel" id="tab-hardware-acceleration">
       <div class="section" style="margin-bottom:14px">
-        <div class="section__header">Detected Hardware Acceleration Type</div>
+        <div class="section__header">Hardware Detection &amp; Active Encoder Path</div>
         <div style="padding:8px 12px">
+          {% set detected_device_providers = status.gpu_capabilities.device_detected_providers if status.gpu_capabilities.device_detected_providers else [] %}
           <div class="info-row">
-            <span class="info-label">Type</span>
+            <span class="info-label">Detected Devices</span>
             <code>
-              {% if status.gpu_capabilities.detected_hardware_providers %}
-                {% for provider_name in status.gpu_capabilities.detected_hardware_providers %}
+              {% if detected_device_providers %}
+                {% for provider_name in detected_device_providers %}
                   {{ status.gpu_capabilities.providers[provider_name].label if status.gpu_capabilities.providers and status.gpu_capabilities.providers.get(provider_name) else provider_name }}{% if not loop.last %}, {% endif %}
                 {% endfor %}
+                + Software fallback (libx264)
               {% else %}
                 Software fallback (libx264)
               {% endif %}
             </code>
           </div>
+          <div class="info-row">
+            <span class="info-label">Selection Mode</span>
+            <code>
+              {% if config.hardware_acceleration_mode == 'hardware_if_available' %}
+                Auto: use encoder-ready hardware; otherwise software fallback
+              {% else %}
+                Forced software fallback (libx264)
+              {% endif %}
+            </code>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Active Path</span>
+            <code>{{ status.gpu_capabilities.active_path.label if status.gpu_capabilities.active_path else 'Software fallback (libx264)' }}</code>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Active Status</span>
+            <code>{{ status.gpu_capabilities.active_path.reason if status.gpu_capabilities.active_path else 'Software fallback is active.' }}</code>
+          </div>
         </div>
       </div>
       <div class="info-grid">
-        <div class="info-row"><span class="info-label">GPU Providers</span><code>{{ status.gpu_capabilities.detected_hardware_providers | join(', ') if status.gpu_capabilities.detected_hardware_providers else 'none' }}</code></div>
+        <div class="info-row"><span class="info-label">GPU Providers</span><code>{{ status.gpu_capabilities.device_detected_providers | join(', ') if status.gpu_capabilities.device_detected_providers else 'none' }}</code></div>
+        <div class="info-row"><span class="info-label">Hardware-Ready Providers</span><code>{{ status.gpu_capabilities.detected_hardware_providers | join(', ') if status.gpu_capabilities.detected_hardware_providers else 'none' }}</code></div>
         <div class="info-row"><span class="info-label">GPU Encoders</span><code>{{ status.gpu_capabilities.ffmpeg_detected_encoders | join(', ') if status.gpu_capabilities.ffmpeg_detected_encoders else 'none' }}</code></div>
         <div class="info-row"><span class="info-label">Docker GPU Visibility</span><code>{{ status.gpu_capabilities.docker_visible_providers | join(', ') if status.gpu_capabilities.running_in_docker and status.gpu_capabilities.docker_visible_providers else ('none' if status.gpu_capabilities.running_in_docker else 'n/a') }}</code></div>
         <div class="info-row"><span class="info-label">GPU Status</span><code>{{ status.gpu_capabilities.message }}</code></div>

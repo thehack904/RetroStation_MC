@@ -89,6 +89,18 @@
     #vc-zip-status { font-size: 0.85em; opacity: 0.8; }
 
     .vc-hint { font-size: 0.82em; opacity: 0.65; margin-top: 4px; line-height: 1.5; }
+    .vc-music-list { display: grid; gap: 8px; margin-top: 10px; }
+    .vc-music-item {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      background: rgba(0,0,0,0.2);
+      border: 1px solid var(--theme-panel-border, #223454);
+      border-radius: 4px;
+      padding: 8px 10px;
+    }
+    .vc-music-item code { margin-right: auto; }
 
     .vc-segment-desc {
       background: rgba(0,0,0,0.25);
@@ -182,7 +194,7 @@
           and <a href="https://www.weather.gov/" target="_blank" rel="noopener" style="color:inherit">NOAA/NWS</a> alerts (US only).
         </div>
 
-        <form method="post" action="{{ url_for('virtual_channels_weather_config') }}">
+        <form method="post" action="{{ url_for('virtual_channels_weather_config') }}" enctype="multipart/form-data">
 
           <div class="vc-enabled-toggle">
             <input type="hidden" name="weather_channel_enabled" value="0">
@@ -194,6 +206,75 @@
               &#127780; Preview Weather Page &#8599;
             </a>
           </div>
+
+          <!-- Weather logo icon toggle -->
+          <div class="vc-enabled-toggle" style="margin-bottom:14px;">
+            <input type="hidden" name="weather_logo_enabled" value="0">
+            <input type="checkbox" id="wx-logo-enabled" name="weather_logo_enabled" value="1"
+                   {% if weather.logo_enabled %}checked{% endif %}>
+            <label for="wx-logo-enabled">Show Weather Icon in M3U / XMLTV</label>
+          </div>
+
+          <div class="vc-segment-desc">
+            <strong>Weather Channel Background Music</strong><br>
+            Uses a separate uploaded music library for this virtual channel. Supports
+            <strong>single track</strong> or <strong>playlist</strong> modes with optional looping.
+          </div>
+
+          <div class="vc-enabled-toggle" style="margin-bottom:14px; display:block;">
+            <label style="display:block; margin-bottom:8px;">Upload Weather Channel music files</label>
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <input type="file" name="files" multiple accept=".mp3,.flac,.wav,.ogg,.m4a,.aac" style="width:auto">
+              <button type="submit" formaction="{{ url_for('weather_music_upload') }}" formmethod="post" class="btn btn--sm">Upload</button>
+            </div>
+          </div>
+
+          <div class="vc-fields-grid">
+            <div class="vc-field">
+              <label for="wx-music-mode">Music Mode</label>
+              <select id="wx-music-mode" name="weather_music_mode">
+                <option value="none" {% if weather.music_mode == 'none' %}selected{% endif %}>None (silence)</option>
+                <option value="single" {% if weather.music_mode == 'single' %}selected{% endif %}>Single file</option>
+                <option value="playlist" {% if weather.music_mode == 'playlist' %}selected{% endif %}>Playlist</option>
+              </select>
+            </div>
+            <div class="vc-field" style="justify-content:flex-end;">
+              <label>&nbsp;</label>
+              <label for="wx-music-loop" style="display:flex; align-items:center; gap:8px; opacity:1;">
+                <input type="checkbox" id="wx-music-loop" name="weather_music_loop" value="1"
+                       {% if weather.music_loop %}checked{% endif %}>
+                Loop music
+              </label>
+            </div>
+          </div>
+
+          {% if weather_music_files %}
+            <div class="vc-music-list">
+              {% for fname in weather_music_files %}
+                <div class="vc-music-item">
+                  <label style="display:flex; align-items:center; gap:6px;">
+                    <input type="radio" name="weather_music_single_file" value="{{ fname }}"
+                           {% if weather.music_single_file == fname %}checked{% endif %}>
+                    Single
+                  </label>
+                  <label style="display:flex; align-items:center; gap:6px;">
+                    <input type="checkbox" name="weather_music_playlist_files" value="{{ fname }}"
+                           {% if fname in weather.music_playlist_files %}checked{% endif %}>
+                    Playlist
+                  </label>
+                  <code>{{ fname }}</code>
+                  <button type="submit"
+                          formaction="{{ url_for('weather_music_delete', filename=fname) }}"
+                          formmethod="post"
+                          class="btn btn--sm">
+                    Delete
+                  </button>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="vc-hint">No Weather Channel music files uploaded yet.</p>
+          {% endif %}
 
           <!-- US ZIP code quick-lookup -->
           <div class="vc-zip-row">

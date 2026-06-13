@@ -27,7 +27,8 @@ If the Weather Channel toggle is enabled on the main admin page, the playlist al
 
 - `tvg-id="retro-weather-channel"`
 - `tvg-chno="2"`
-- stream URL pointing to `/weather?embedded=1`
+- stream URL pointing to `/hls/weather.m3u8`
+- `tvg-logo` metadata in the exported M3U when **Show Weather Icon in M3U / XMLTV** is enabled on `/virtual-channels`
 
 ## XMLTV output
 
@@ -51,6 +52,8 @@ The master playlist dynamically points to either:
 
 - `/hls/standby.m3u8` while the guide is stopped or warming up
 - `/hls/live.m3u8` once enough live HLS buffer exists
+
+During an active off-air window, `/hls/master.m3u8` stays on the standby variant until the configured on-air time returns.
 
 ## Why the master playlist matters
 

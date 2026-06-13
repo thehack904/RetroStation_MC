@@ -22,7 +22,7 @@ from app.ffmpeg_profiles import normalize_hardware_acceleration_mode
 from app.hls_playlist import trim_playlist_for_delayed_live_edge
 from app.manager import (
     GuideManager, WeatherChannelManager,
-    STANDBY_SEGMENT, STATIC_SEGMENT, STANDBY_DURATION_SECS, MUSIC_DIR,
+    STANDBY_SEGMENT, STATIC_SEGMENT, STANDBY_DURATION_SECS, MUSIC_DIR, WEATHER_MUSIC_DIR,
     WEATHER_PLAYLIST,
 )
 
@@ -30,6 +30,7 @@ BASE_DIR = Path(__file__).resolve().parent
 THEMES_DIR = BASE_DIR / "app" / "themes"
 OUTPUT_DIR = BASE_DIR / "output"
 GUIDE_LOGO_DIR = BASE_DIR / "data" / "guide_logo"
+WEATHER_LOGO_DIR = BASE_DIR / "data" / "weather_logo"
 STANDBY_PATTERN_DIR = BASE_DIR / "data" / "standby_patterns"
 GUIDE_DELAY_SEGMENTS = 2
 GUIDE_MIN_BUFFER_SECS = 18.0
@@ -42,6 +43,8 @@ MAX_MUSIC_FILE_BYTES = 100 * 1024 * 1024  # 100 MB
 ALLOWED_GUIDE_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 DEFAULT_GUIDE_LOGO_EXTENSION_ORDER = (".png", ".webp", ".jpg", ".jpeg", ".gif", ".svg")
 MAX_GUIDE_LOGO_BYTES = 5 * 1024 * 1024  # 5 MB
+ALLOWED_WEATHER_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+DEFAULT_WEATHER_LOGO_EXTENSION_ORDER = (".png", ".webp", ".jpg", ".jpeg", ".gif", ".svg")
 ALLOWED_STANDBY_PATTERN_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_STANDBY_PATTERN_BYTES = 10 * 1024 * 1024  # 10 MB
 
@@ -114,6 +117,16 @@ def _list_standby_pattern_files() -> list[str]:
         p.name
         for p in STANDBY_PATTERN_DIR.iterdir()
         if p.is_file() and p.suffix.lower() in ALLOWED_STANDBY_PATTERN_EXTENSIONS
+    )
+
+
+def _list_audio_files(directory: Path) -> list[str]:
+    if not directory.is_dir():
+        return []
+    return sorted(
+        p.name
+        for p in directory.iterdir()
+        if p.is_file() and p.suffix.lower() in ALLOWED_AUDIO_EXTENSIONS
     )
 
 
@@ -271,10 +284,7 @@ def index():
             theme_labels[t] = t
     diag = _read_diag_settings(config)
     events = store.get_recent_events(limit=diag["log_tail_lines"])
-    music_files = sorted(
-        p.name for p in MUSIC_DIR.iterdir()
-        if p.is_file() and p.suffix.lower() in ALLOWED_AUDIO_EXTENSIONS
-    )
+    music_files = _list_audio_files(MUSIC_DIR)
     standby_pattern_files = _list_standby_pattern_files()
     standby_custom_file = secure_filename(config.get("standby_custom_file", "") or "")
     if standby_custom_file not in standby_pattern_files:
@@ -316,6 +326,7 @@ def index():
         {
             "running_in_docker": False,
             "hardware_available": False,
+            "device_detected_providers": [],
             "detected_hardware_providers": [],
             "docker_visible_providers": [],
             "ffmpeg_available": False,
@@ -326,6 +337,13 @@ def index():
                 "available": True,
                 "label": "software",
                 "reason": "Software fallback is always available (libx264).",
+            },
+            "active_path": {
+                "provider": "software",
+                "label": "Software fallback (libx264)",
+                "codec": "libx264",
+                "using_hardware": False,
+                "reason": "Configured to always use software fallback (libx264).",
             },
             "message": "No hardware acceleration detected; software fallback is active.",
         },
@@ -559,6 +577,35 @@ def _default_guide_logo_name() -> str:
     return ""
 
 
+def _default_weather_logo_name() -> str:
+    preferred_names = [f"default{ext}" for ext in DEFAULT_WEATHER_LOGO_EXTENSION_ORDER]
+    for name in preferred_names:
+        path = WEATHER_LOGO_DIR / name
+        if path.is_file():
+            return name
+    if not WEATHER_LOGO_DIR.is_dir():
+        return ""
+    for path in sorted(WEATHER_LOGO_DIR.iterdir()):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in ALLOWED_WEATHER_LOGO_EXTENSIONS:
+            continue
+        safe_name = secure_filename(path.name)
+        if safe_name != path.name:
+            continue
+        return safe_name
+    return ""
+
+
+def _weather_logo_url(config: dict, base_url: str) -> str:
+    if not _coerce_bool(config.get("weather_logo_enabled"), DEFAULT_CONFIG["weather_logo_enabled"]):
+        return ""
+    logo_name = _default_weather_logo_name()
+    if logo_name:
+        return f"{base_url}/weather-logo/{logo_name}"
+    return ""
+
+
 def _build_channel_m3u_content(channel_name: str, stream_url: str, xmltv_url: str, logo_url: str = "") -> str:
     """Return M3U playlist content for the virtual guide channel."""
     logo_attr = f' tvg-logo="{logo_url}"' if logo_url else ""
@@ -612,7 +659,7 @@ def _build_virtual_channel_entries(config: dict, base_url: str) -> list[dict]:
                 "id": "retro-weather-channel",
                 "name": _weather_channel_display_name(config),
                 "stream_url": base_url + "/hls/weather.m3u8",
-                "logo_url": "",
+                "logo_url": _weather_logo_url(config, base_url),
                 "channel_number": 2,
                 "description": "Retro-style local weather channel.",
             }
@@ -1120,6 +1167,16 @@ def guide_logo_remove():
     return redirect(url_for("index") + "#tab-guide-icon")
 
 
+@app.get("/weather-logo/<path:filename>")
+def weather_logo_file(filename: str):
+    safe_name = secure_filename(filename)
+    if not safe_name:
+        abort(404)
+    response = send_from_directory(WEATHER_LOGO_DIR, safe_name)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
+
+
 @app.get("/standby-pattern/<path:filename>")
 def standby_pattern_file(filename: str):
     safe_name = secure_filename(filename)
@@ -1324,16 +1381,10 @@ def _is_audio_file(path: Path) -> bool:
     return False
 
 
-@app.post("/music/upload")
-def music_upload():
-    """Upload one or more audio files to the music library."""
-    files = request.files.getlist("files")
-    if not files or all(f.filename == "" for f in files):
-        flash("No files selected.", "error")
-        return redirect(url_for("index") + "#music-section")
-
-    saved = []
-    skipped = []
+def _save_uploaded_audio_files(files, destination_dir: Path) -> tuple[list[str], list[str], list[str]]:
+    saved: list[str] = []
+    skipped: list[str] = []
+    errors: list[str] = []
     for f in files:
         if not f.filename:
             continue
@@ -1342,17 +1393,30 @@ def music_upload():
         if ext not in ALLOWED_AUDIO_EXTENSIONS:
             skipped.append(f.filename)
             continue
-        dest = MUSIC_DIR / name
+        dest = destination_dir / name
         try:
             f.save(str(dest))
-            # Validate file content after saving to check magic bytes.
             if not _is_audio_file(dest):
                 dest.unlink(missing_ok=True)
-                flash(f"Rejected {name}: file does not appear to be a valid audio file.", "error")
+                errors.append(f"Rejected {name}: file does not appear to be a valid audio file.")
                 continue
             saved.append(name)
         except OSError as exc:
-            flash(f"Could not save {name}: {exc}", "error")
+            errors.append(f"Could not save {name}: {exc}")
+    return saved, skipped, errors
+
+
+@app.post("/music/upload")
+def music_upload():
+    """Upload one or more audio files to the music library."""
+    files = request.files.getlist("files")
+    if not files or all(f.filename == "" for f in files):
+        flash("No files selected.", "error")
+        return redirect(url_for("index") + "#music-section")
+
+    saved, skipped, errors = _save_uploaded_audio_files(files, MUSIC_DIR)
+    for error in errors:
+        flash(error, "error")
 
     if saved:
         flash(f"Uploaded: {', '.join(saved)}", "success")
@@ -1363,6 +1427,28 @@ def music_upload():
             "error",
         )
     return redirect(url_for("index") + "#music-section")
+
+
+@app.post("/virtual-channels/weather/music/upload")
+def weather_music_upload():
+    """Upload one or more audio files for Weather Channel background music."""
+    files = request.files.getlist("files")
+    if not files or all(f.filename == "" for f in files):
+        flash("No files selected.", "error")
+        return redirect(url_for("virtual_channels_page"))
+
+    saved, skipped, errors = _save_uploaded_audio_files(files, WEATHER_MUSIC_DIR)
+    for error in errors:
+        flash(error, "error")
+    if saved:
+        flash(f"Uploaded weather music: {', '.join(saved)}", "success")
+    if skipped:
+        flash(
+            f"Skipped weather music (unsupported format): {', '.join(skipped)}. "
+            f"Allowed: {', '.join(sorted(ALLOWED_AUDIO_EXTENSIONS))}",
+            "error",
+        )
+    return redirect(url_for("virtual_channels_page"))
 
 
 @app.post("/music/delete/<filename>")
@@ -1391,6 +1477,33 @@ def music_delete(filename: str):
     except OSError as exc:
         flash(f"Could not delete {safe_name}: {exc}", "error")
     return redirect(url_for("index") + "#music-section")
+
+
+@app.post("/virtual-channels/weather/music/delete/<filename>")
+def weather_music_delete(filename: str):
+    """Delete an uploaded Weather Channel music file."""
+    safe_name = secure_filename(filename)
+    dest = WEATHER_MUSIC_DIR / safe_name
+    if not dest.exists() or not dest.is_file():
+        flash(f"Weather music file not found: {safe_name}", "error")
+        return redirect(url_for("virtual_channels_page"))
+    try:
+        dest.unlink()
+        cfg = store.get_config()
+        changed = False
+        if cfg.get("weather_music_single_file") == safe_name:
+            cfg["weather_music_single_file"] = ""
+            changed = True
+        pl = cfg.get("weather_music_playlist_files", [])
+        if safe_name in pl:
+            cfg["weather_music_playlist_files"] = [x for x in pl if x != safe_name]
+            changed = True
+        if changed:
+            store.save_config(cfg)
+        flash(f"Deleted weather music: {safe_name}", "success")
+    except OSError as exc:
+        flash(f"Could not delete weather music {safe_name}: {exc}", "error")
+    return redirect(url_for("virtual_channels_page"))
 
 
 @app.post("/music/settings")
@@ -1549,6 +1662,12 @@ def _get_weather_config() -> dict:
                                               str(_WEATHER_SECONDS_PER_SEGMENT_DEFAULT))),
         "bg_condition_override":  cfg.get("weather_bg_condition_override", ""),
         "enabled":                cfg.get("weather_channel_enabled", False),
+        "logo_enabled":           _coerce_bool(cfg.get("weather_logo_enabled"),
+                                               DEFAULT_CONFIG["weather_logo_enabled"]),
+        "music_mode":             cfg.get("weather_music_mode", DEFAULT_CONFIG["weather_music_mode"]),
+        "music_loop":             _coerce_bool(cfg.get("weather_music_loop"), DEFAULT_CONFIG["weather_music_loop"]),
+        "music_single_file":      cfg.get("weather_music_single_file", DEFAULT_CONFIG["weather_music_single_file"]),
+        "music_playlist_files":   cfg.get("weather_music_playlist_files", DEFAULT_CONFIG["weather_music_playlist_files"]),
     }
 
 
@@ -1588,6 +1707,9 @@ def _save_weather_config(config_dict: dict) -> None:
     enabled = config_dict.get("enabled")
     if enabled is not None:
         store_update["weather_channel_enabled"] = bool(enabled)
+    logo_enabled = config_dict.get("logo_enabled")
+    if logo_enabled is not None:
+        store_update["weather_logo_enabled"] = bool(logo_enabled)
 
     cfg = store.get_config()
     store.save_config({**cfg, **store_update})
@@ -1887,9 +2009,11 @@ def _lookup_zip_city(postal_code: str, country_code: str = "us") -> dict:
 def virtual_channels_page():
     """Admin page for virtual channels configuration."""
     wx_cfg = _get_weather_config()
+    weather_music_files = _list_audio_files(WEATHER_MUSIC_DIR)
     return render_template(
         "virtual_channels.html",
         weather=wx_cfg,
+        weather_music_files=weather_music_files,
     )
 
 
@@ -1899,6 +2023,22 @@ def virtual_channels_weather_config():
     try:
         enabled_vals = request.form.getlist("weather_channel_enabled")
         enabled = "1" in enabled_vals
+        logo_enabled_vals = request.form.getlist("weather_logo_enabled")
+        logo_enabled = "1" in logo_enabled_vals
+        weather_music_mode = request.form.get("weather_music_mode", "none").strip()
+        if weather_music_mode not in ("none", "single", "playlist"):
+            weather_music_mode = "none"
+        weather_music_loop = request.form.get("weather_music_loop") == "1"
+        weather_music_single_file = secure_filename(request.form.get("weather_music_single_file", "").strip())
+        weather_music_playlist_files = [
+            secure_filename(name)
+            for name in request.form.getlist("weather_music_playlist_files")
+            if name
+        ]
+        available_files = set(_list_audio_files(WEATHER_MUSIC_DIR))
+        if weather_music_single_file not in available_files:
+            weather_music_single_file = ""
+        weather_music_playlist_files = [name for name in weather_music_playlist_files if name in available_files]
 
         weather_cfg = {
             "lat":                   request.form.get("weather_lat", "").strip(),
@@ -1908,8 +2048,19 @@ def virtual_channels_weather_config():
             "seconds_per_segment":   request.form.get("weather_seconds_per_segment", "300").strip(),
             "bg_condition_override": "",
             "enabled":               enabled,
+            "logo_enabled":          logo_enabled,
         }
         _save_weather_config(weather_cfg)
+        cfg = store.get_config()
+        cfg.update(
+            {
+                "weather_music_mode": weather_music_mode,
+                "weather_music_loop": weather_music_loop,
+                "weather_music_single_file": weather_music_single_file,
+                "weather_music_playlist_files": weather_music_playlist_files,
+            }
+        )
+        store.save_config(cfg)
         flash("Weather Channel settings saved.", "success")
 
         # Restart (or stop) the weather HLS pipeline to pick up the new config.

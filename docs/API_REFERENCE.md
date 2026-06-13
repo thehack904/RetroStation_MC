@@ -12,6 +12,9 @@ RetroStation MC exposes a small set of Flask routes. Most write routes are inten
 | `POST` | `/stop` | Stop renderer/FFmpeg and return to standby |
 | `POST` | `/restart` | Refresh state and restart renderer/FFmpeg |
 | `GET` | `/status` | Return JSON pipeline status |
+| `GET` | `/virtual-channels` | Virtual Channels admin page |
+| `POST` | `/virtual-channels/weather/config` | Save Weather Channel settings |
+| `POST` | `/off-air/settings` | Save off-air schedule settings |
 
 ## Diagnostics and logs
 
@@ -29,6 +32,8 @@ RetroStation MC exposes a small set of Flask routes. Most write routes are inten
 | `GET` | `/channel.m3u` | M3U playlist for the guide plus any enabled virtual channels, MIME `application/x-mpegURL` |
 | `GET` | `/channel.m3u8` | Same playlist, MIME `application/vnd.apple.mpegurl` |
 | `GET` | `/channel.xmltv` | XMLTV guide for the guide plus any enabled virtual channels |
+| `GET` | `/weather` | Browser-rendered Weather channel preview page |
+| `GET` | `/api/weather` | Weather overlay payload for the Weather channel page |
 
 ## HLS endpoints
 
@@ -37,6 +42,7 @@ RetroStation MC exposes a small set of Flask routes. Most write routes are inten
 | `GET` | `/hls/master.m3u8` | HLS master playlist that selects standby or live media |
 | `GET` | `/hls/standby.m3u8` | Synthetic standby media playlist; returns 404 once live is ready |
 | `GET` | `/hls/live.m3u8` | Live guide media playlist; returns 404 until live is ready |
+| `GET` | `/hls/weather.m3u8` | Weather virtual channel HLS playlist with standby fallback while warming up |
 | `GET` | `/hls/guide.m3u8` | Backward-compatible unified media playlist |
 | `GET` | `/hls/<filename>` | Static HLS playlist or segment file from `output/` |
 | `OPTIONS` | `/hls/master.m3u8` | CORS preflight |
@@ -57,6 +63,23 @@ Access-Control-Allow-Headers: Range
 | `POST` | `/music/upload` | Upload one or more audio files |
 | `POST` | `/music/delete/<filename>` | Delete an uploaded music file |
 | `POST` | `/music/settings` | Save music mode, loop setting, and file selection |
+| `POST` | `/virtual-channels/weather/music/upload` | Upload one or more Weather Channel audio files |
+| `POST` | `/virtual-channels/weather/music/delete/<filename>` | Delete an uploaded Weather Channel audio file |
+
+## Artwork and standby endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/guide-logo/<filename>` | Serve guide logo files from `data/guide_logo/` |
+| `POST` | `/guide-logo/upload` | Upload a custom guide logo |
+| `POST` | `/guide-logo/remove` | Remove the current custom guide logo |
+| `GET` | `/weather-logo/<filename>` | Serve Weather logo files from `data/weather_logo/` |
+| `GET` | `/standby-pattern/<filename>` | Serve uploaded standby pattern images |
+| `POST` | `/standby-pattern/upload` | Upload a standby pattern image |
+| `POST` | `/standby-pattern/select` | Select the active uploaded standby pattern |
+| `POST` | `/standby-pattern/select-default` | Revert to the generated default standby pattern |
+| `POST` | `/standby-pattern/remove` | Delete an uploaded standby pattern image |
+| `POST` | `/standby-pattern/settings` | Save standby overlay toggle and opacity |
 
 ## `/status` response fields
 
@@ -74,3 +97,4 @@ Typical fields:
 | `playlist_source` | Configured M3U source |
 | `xmltv_source` | Configured XMLTV source |
 | `stream_url` | Public stream path, currently `/hls/master.m3u8` |
+| `gpu_capabilities` | Hardware detection, encoder readiness, and active-path information for the admin UI |

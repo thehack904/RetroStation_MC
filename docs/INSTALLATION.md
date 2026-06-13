@@ -1,6 +1,6 @@
 # Installation
 
-RetroStation MC v1.0.0 can run either as a Docker container or as a local Python application.
+RetroStation MC v1.3.0 can run either as a Docker container or as a local Python application.
 
 ## Requirements
 
@@ -64,6 +64,7 @@ http://localhost:8787/
 
 The installer creates and owns the app under the dedicated `iptv` system user at `/home/iptv/retrostation-mc`.
 It also creates and starts the `retrostation-mc` systemd service.
+During installation it runs `gpu_hwaccel_detect_v3.py` to report whether hardware acceleration can be used or if software fallback is required.
 
 ```bash
 sudo systemctl status retrostation-mc
@@ -164,6 +165,12 @@ Check the HLS master playlist:
 
 ```bash
 curl http://localhost:8787/hls/master.m3u8
+```
+
+If the Weather Channel is enabled, check its dedicated HLS output too:
+
+```bash
+curl http://localhost:8787/hls/weather.m3u8
 ```
 
 Check status JSON:

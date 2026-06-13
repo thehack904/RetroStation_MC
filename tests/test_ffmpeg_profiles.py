@@ -12,7 +12,7 @@ from app.ffmpeg_profiles import (
     FFmpegProfile,
     resolve_ffmpeg_profile,
 )
-from app.manager import _build_audio_ffmpeg_args, _build_ffmpeg_command, _build_weather_ffmpeg_command
+from app.manager import _build_audio_ffmpeg_args, _build_ffmpeg_command, _build_weather_ffmpeg_command, _resolve_hw_device_init_args
 
 
 class FFmpegProfileTests(unittest.TestCase):
@@ -402,6 +402,84 @@ class FFmpegProfileTests(unittest.TestCase):
         self.assertIn("-preset", command)
         self.assertIn("-tune", command)
 
+    def test_build_weather_ffmpeg_command_uses_looped_single_track_when_configured(self) -> None:
+        profile = FFmpegProfile(
+            name="weather-single-music",
+            resolution="640x360",
+            video_codec="libx264",
+            audio_codec="aac",
+            bitrate=None,
+            preset="veryfast",
+            tune="zerolatency",
+            hls_segment_length=6,
+            encoder_type="software",
+            hardware_acceleration_provider="software",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_dir = Path(temp_dir)
+            music_dir = base_dir / "weather_music"
+            music_dir.mkdir()
+            track = music_dir / "forecast.mp3"
+            track.write_bytes(b"demo")
+            with patch("app.manager.WEATHER_MUSIC_DIR", music_dir):
+                command = _build_weather_ffmpeg_command(
+                    profile,
+                    "10",
+                    "123",
+                    {
+                        "weather_music_mode": "single",
+                        "weather_music_single_file": "forecast.mp3",
+                        "weather_music_loop": True,
+                    },
+                )
+
+        self.assertIn("-stream_loop", command)
+        self.assertEqual(command[command.index("-stream_loop") + 1], "-1")
+        self.assertIn(str(track), command)
+        self.assertIn("-map", command)
+        self.assertEqual(command[command.index("-map") + 1], "0:v")
+        self.assertEqual(command[command.index("-map", command.index("-map") + 1) + 1], "1:a")
+
+    def test_build_weather_ffmpeg_command_uses_playlist_mode_when_configured(self) -> None:
+        profile = FFmpegProfile(
+            name="weather-playlist-music",
+            resolution="640x360",
+            video_codec="libx264",
+            audio_codec="aac",
+            bitrate=None,
+            preset="veryfast",
+            tune="zerolatency",
+            hls_segment_length=6,
+            encoder_type="software",
+            hardware_acceleration_provider="software",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_dir = Path(temp_dir)
+            data_dir = base_dir / "data"
+            weather_music_dir = base_dir / "weather_music"
+            data_dir.mkdir()
+            weather_music_dir.mkdir()
+            track1 = weather_music_dir / "w1.mp3"
+            track2 = weather_music_dir / "w2.mp3"
+            track1.write_bytes(b"demo")
+            track2.write_bytes(b"demo")
+            with patch("app.manager.DATA_DIR", data_dir), patch("app.manager.WEATHER_MUSIC_DIR", weather_music_dir):
+                command = _build_weather_ffmpeg_command(
+                    profile,
+                    "10",
+                    "123",
+                    {
+                        "weather_music_mode": "playlist",
+                        "weather_music_playlist_files": ["w1.mp3", "w2.mp3"],
+                        "weather_music_loop": False,
+                    },
+                )
+
+        self.assertIn("-f", command)
+        self.assertIn("concat", command)
+        self.assertIn("-filter_complex", command)
+        self.assertIn("amix=inputs=2:duration=longest:normalize=0[outa]", " ".join(command))
+
     def test_audio_args_use_profile_codec_for_playlist_music(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             base_dir = Path(temp_dir)
@@ -421,6 +499,247 @@ class FFmpegProfileTests(unittest.TestCase):
                 )
 
         self.assertEqual(codec_args, ["-c:a", "libopus", "-b:a", "128k"])
+
+    def test_intel_qsv_command_uses_nv12_pixel_format(self) -> None:
+        """Intel QSV (h264_qsv) requires nv12 as the output pixel format, not
+        yuv420p.  A mismatch causes FFmpeg to reject the stream with an
+        'invalid or not supported pixel format' error."""
+        profile = FFmpegProfile(
+            name="intel_hardware_auto",
+            resolution="1280x720",
+            video_codec="h264_qsv",
+            audio_codec="aac",
+            bitrate=None,
+            preset=None,
+            tune=None,
+            hls_segment_length=6,
+            encoder_type="hardware",
+            hardware_acceleration_provider="intel",
+        )
+        audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args({}, profile.audio_codec)
+        command = _build_ffmpeg_command(
+            profile,
+            "15",
+            audio_input_args,
+            audio_codec_args,
+            audio_map_args,
+            "200",
+            Path("/tmp/output/guide.m3u8"),
+        )
+
+        self.assertEqual(command[command.index("-c:v") + 1], "h264_qsv")
+        # The command has two -pix_fmt flags: the input (-pix_fmt rgb24) and
+        # the output encoder format.  Verify the output (second) one is nv12.
+        pix_fmt_indices = [i for i, arg in enumerate(command) if arg == "-pix_fmt"]
+        self.assertGreaterEqual(len(pix_fmt_indices), 2, "Expected both an input and an output -pix_fmt")
+        output_pix_fmt = command[pix_fmt_indices[-1] + 1]
+        self.assertEqual(output_pix_fmt, "nv12")
+
+    def test_intel_qsv_weather_command_uses_nv12_pixel_format(self) -> None:
+        """Intel QSV requires nv12 in the weather pipeline as well."""
+        profile = FFmpegProfile(
+            name="intel_hardware_auto",
+            resolution="1280x720",
+            video_codec="h264_qsv",
+            audio_codec="aac",
+            bitrate=None,
+            preset=None,
+            tune=None,
+            hls_segment_length=6,
+            encoder_type="hardware",
+            hardware_acceleration_provider="intel",
+        )
+        command = _build_weather_ffmpeg_command(profile, "15", "300")
+
+        self.assertEqual(command[command.index("-c:v") + 1], "h264_qsv")
+        pix_fmt_indices = [i for i, arg in enumerate(command) if arg == "-pix_fmt"]
+        self.assertGreaterEqual(len(pix_fmt_indices), 2, "Expected both an input and an output -pix_fmt")
+        output_pix_fmt = command[pix_fmt_indices[-1] + 1]
+        self.assertEqual(output_pix_fmt, "nv12")
+
+    def test_software_encoder_command_uses_yuv420p_pixel_format(self) -> None:
+        """Software (libx264) path must keep yuv420p to avoid colour/format regressions."""
+        profile = resolve_ffmpeg_profile(
+            {
+                "ffmpeg_profile": DEFAULT_FFMPEG_PROFILE_NAME,
+                "hardware_acceleration_mode": "software_fallback",
+            }
+        )
+        audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args({}, profile.audio_codec)
+        command = _build_ffmpeg_command(
+            profile,
+            "15",
+            audio_input_args,
+            audio_codec_args,
+            audio_map_args,
+            "400",
+            Path("/tmp/output/guide.m3u8"),
+        )
+
+        pix_fmt_indices = [i for i, arg in enumerate(command) if arg == "-pix_fmt"]
+        self.assertGreaterEqual(len(pix_fmt_indices), 2, "Expected both an input and an output -pix_fmt")
+        output_pix_fmt = command[pix_fmt_indices[-1] + 1]
+        self.assertEqual(output_pix_fmt, "yuv420p")
+
+    def test_hardware_encoder_pixel_format_per_provider(self) -> None:
+        """Each hardware encoder uses the correct pixel format for its API."""
+        expected_pix_fmts = {
+            "h264_nvenc": "yuv420p",
+            "h264_qsv":   "nv12",
+            "h264_amf":   "nv12",
+            "h264_vaapi": "nv12",
+        }
+        for codec, expected_fmt in expected_pix_fmts.items():
+            with self.subTest(codec=codec):
+                profile = FFmpegProfile(
+                    name=f"{codec}-profile",
+                    resolution="1280x720",
+                    video_codec=codec,
+                    audio_codec="aac",
+                    bitrate=None,
+                    preset=None,
+                    tune=None,
+                    hls_segment_length=6,
+                    encoder_type="hardware",
+                    hardware_acceleration_provider="auto",
+                )
+                audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args({}, profile.audio_codec)
+                command = _build_ffmpeg_command(
+                    profile,
+                    "15",
+                    audio_input_args,
+                    audio_codec_args,
+                    audio_map_args,
+                    "500",
+                    Path("/tmp/output/guide.m3u8"),
+                )
+                pix_fmt_indices = [i for i, arg in enumerate(command) if arg == "-pix_fmt"]
+                self.assertGreaterEqual(len(pix_fmt_indices), 2, f"{codec}: expected input and output -pix_fmt")
+                output_pix_fmt = command[pix_fmt_indices[-1] + 1]
+                self.assertEqual(
+                    output_pix_fmt,
+                    expected_fmt,
+                    msg=f"{codec} should use {expected_fmt!r}",
+                )
+
+
+    def test_resolve_hw_device_init_args_returns_qsv_init_for_intel_codecs(self) -> None:
+        """All QSV codec variants must trigger -init_hw_device qsv=hw."""
+        for codec in ("h264_qsv", "hevc_qsv", "av1_qsv"):
+            with self.subTest(codec=codec):
+                args = _resolve_hw_device_init_args(codec)
+                self.assertEqual(args, ["-init_hw_device", "qsv=hw"])
+
+    def test_resolve_hw_device_init_args_returns_empty_for_non_qsv(self) -> None:
+        """Non-QSV encoders must not inject any device init arguments."""
+        for codec in ("libx264", "h264_nvenc", "h264_amf", "h264_vaapi", ""):
+            with self.subTest(codec=codec):
+                args = _resolve_hw_device_init_args(codec)
+                self.assertEqual(args, [])
+
+    def test_intel_qsv_guide_command_includes_init_hw_device_before_first_input(self) -> None:
+        """Intel QSV guide pipeline must include -init_hw_device qsv=hw before -i."""
+        profile = FFmpegProfile(
+            name="intel_hardware_auto",
+            resolution="1280x720",
+            video_codec="h264_qsv",
+            audio_codec="aac",
+            bitrate=None,
+            preset=None,
+            tune=None,
+            hls_segment_length=6,
+            encoder_type="hardware",
+            hardware_acceleration_provider="intel",
+        )
+        audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args({}, profile.audio_codec)
+        command = _build_ffmpeg_command(
+            profile,
+            "15",
+            audio_input_args,
+            audio_codec_args,
+            audio_map_args,
+            "200",
+            Path("/tmp/output/guide.m3u8"),
+        )
+
+        self.assertIn("-init_hw_device", command)
+        init_idx = command.index("-init_hw_device")
+        self.assertEqual(command[init_idx + 1], "qsv=hw")
+        # Must appear before the first -i (stdin video input).
+        first_input_idx = command.index("-i")
+        self.assertLess(init_idx, first_input_idx,
+                        "-init_hw_device must precede the first -i")
+
+    def test_intel_qsv_weather_command_includes_init_hw_device_before_first_input(self) -> None:
+        """Intel QSV weather pipeline must include -init_hw_device qsv=hw before -i."""
+        profile = FFmpegProfile(
+            name="intel_hardware_auto",
+            resolution="1280x720",
+            video_codec="h264_qsv",
+            audio_codec="aac",
+            bitrate=None,
+            preset=None,
+            tune=None,
+            hls_segment_length=6,
+            encoder_type="hardware",
+            hardware_acceleration_provider="intel",
+        )
+        command = _build_weather_ffmpeg_command(profile, "15", "300")
+
+        self.assertIn("-init_hw_device", command)
+        init_idx = command.index("-init_hw_device")
+        self.assertEqual(command[init_idx + 1], "qsv=hw")
+        first_input_idx = command.index("-i")
+        self.assertLess(init_idx, first_input_idx,
+                        "-init_hw_device must precede the first -i")
+
+    def test_software_guide_command_has_no_init_hw_device(self) -> None:
+        """Software (libx264) guide pipeline must NOT include -init_hw_device."""
+        profile = resolve_ffmpeg_profile(
+            {
+                "ffmpeg_profile": DEFAULT_FFMPEG_PROFILE_NAME,
+                "hardware_acceleration_mode": "software_fallback",
+            }
+        )
+        audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args({}, profile.audio_codec)
+        command = _build_ffmpeg_command(
+            profile,
+            "15",
+            audio_input_args,
+            audio_codec_args,
+            audio_map_args,
+            "400",
+            Path("/tmp/output/guide.m3u8"),
+        )
+
+        self.assertNotIn("-init_hw_device", command)
+
+    def test_nvidia_guide_command_has_no_init_hw_device(self) -> None:
+        """NVIDIA NVENC guide pipeline must NOT include -init_hw_device."""
+        profile = FFmpegProfile(
+            name="nvidia_hardware_auto",
+            resolution="1280x720",
+            video_codec="h264_nvenc",
+            audio_codec="aac",
+            bitrate=None,
+            preset=None,
+            tune=None,
+            hls_segment_length=6,
+            encoder_type="hardware",
+            hardware_acceleration_provider="nvidia",
+        )
+        audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args({}, profile.audio_codec)
+        command = _build_ffmpeg_command(
+            profile,
+            "15",
+            audio_input_args,
+            audio_codec_args,
+            audio_map_args,
+            "500",
+            Path("/tmp/output/guide.m3u8"),
+        )
+
+        self.assertNotIn("-init_hw_device", command)
 
 
 if __name__ == "__main__":

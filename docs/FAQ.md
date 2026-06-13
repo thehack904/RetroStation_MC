@@ -6,7 +6,7 @@ No. It does not provide IPTV content. It generates a virtual guide channel from 
 
 ## Does it restream the channels from my M3U?
 
-No. v1.0.0 uses the M3U and XMLTV data to render the guide video. The generated output is the guide channel itself.
+No. RetroStation MC uses the M3U and XMLTV data to render the guide video. The generated output is the guide channel itself.
 
 ## What URL should I add to RetroIPTVGuide?
 
@@ -34,7 +34,11 @@ A TV guide grid does not require cinematic frame rate. Lower FPS reduces rendere
 
 ## Can I expose this on the internet?
 
-No, not directly. v1.0.0 has no authentication. Use LAN-only access, VPN, or an authenticated reverse proxy.
+No, not directly. v1.3.0 still has no authentication. Use LAN-only access, VPN, or an authenticated reverse proxy.
+
+## Can I export more than one virtual channel?
+
+Yes. `/channel.m3u`, `/channel.m3u8`, and `/channel.xmltv` always include the guide channel and can also include the Weather Channel when it is enabled.
 
 ## Can I add my own themes?
 

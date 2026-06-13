@@ -87,6 +87,13 @@ setup_environment() {
   run_as_app_user "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 }
 
+run_hwaccel_diagnostics() {
+  echo "Running GPU hardware acceleration diagnostics..."
+  if ! run_as_app_user "$APP_DIR/.venv/bin/python" "$APP_DIR/gpu_hwaccel_detect_v3.py"; then
+    echo "Warning: GPU hardware acceleration diagnostics failed; continuing with software fallback." >&2
+  fi
+}
+
 ensure_systemd_available() {
   if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; then
     echo "This installer requires systemd. For non-systemd systems, use manual installation." >&2
@@ -122,6 +129,7 @@ ensure_systemd_available
 ensure_user
 stage_project
 setup_environment
+run_hwaccel_diagnostics
 install_service
 
 echo "Linux setup complete."

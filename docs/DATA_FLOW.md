@@ -32,7 +32,7 @@ Each parsed channel includes:
 }
 ```
 
-The source stream URL is parsed but not restreamed by RetroStation MC v1.0.0. The app uses playlist and EPG metadata to render the guide channel.
+The source stream URL is parsed but not restreamed by RetroStation MC v1.3.0. The app uses playlist and EPG metadata to render the guide channel.
 
 ## 3. XMLTV parsing
 

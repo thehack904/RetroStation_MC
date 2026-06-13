@@ -335,8 +335,149 @@ class VirtualChannelsWeatherConfigTests(unittest.TestCase):
         from app.config_store import DEFAULT_CONFIG
         for key in ("weather_channel_enabled", "weather_lat", "weather_lon",
                     "weather_location_name", "weather_units",
-                    "weather_seconds_per_segment", "weather_bg_condition_override"):
+                    "weather_seconds_per_segment", "weather_bg_condition_override",
+                    "weather_music_mode", "weather_music_loop",
+                    "weather_music_single_file", "weather_music_playlist_files"):
             self.assertIn(key, DEFAULT_CONFIG, f"Missing key in DEFAULT_CONFIG: {key}")
+
+    def test_config_store_default_has_weather_logo_enabled(self) -> None:
+        from app.config_store import DEFAULT_CONFIG
+        self.assertIn("weather_logo_enabled", DEFAULT_CONFIG)
+        self.assertTrue(DEFAULT_CONFIG["weather_logo_enabled"])
+
+    # ── Weather icon toggle ───────────────────────────────────────
+
+    def test_virtual_channels_page_contains_weather_logo_toggle(self) -> None:
+        body = self.client.get("/virtual-channels").data.decode()
+        self.assertIn('name="weather_logo_enabled"', body)
+        self.assertIn('name="weather_music_mode"', body)
+        self.assertIn('name="weather_music_loop"', body)
+
+    def test_channel_playlist_includes_weather_logo_when_logo_enabled(self) -> None:
+        self.web.store.save_config(
+            {
+                "weather_channel_enabled": True,
+                "weather_logo_enabled": True,
+                "weather_location_name": "Miami, FL",
+            }
+        )
+        body = self.client.get("/channel.m3u").data.decode()
+        self.assertIn('tvg-id="retro-weather-channel"', body)
+        self.assertIn("tvg-logo=", body)
+        self.assertIn("/weather-logo/", body)
+
+    def test_channel_playlist_omits_weather_logo_when_logo_disabled(self) -> None:
+        self.web.store.save_config(
+            {
+                "weather_channel_enabled": True,
+                "weather_logo_enabled": False,
+                "weather_location_name": "Miami, FL",
+            }
+        )
+        body = self.client.get("/channel.m3u").data.decode()
+        self.assertIn('tvg-id="retro-weather-channel"', body)
+        # The guide channel may still have a logo; only check weather entry has none
+        lines = body.splitlines()
+        weather_extinf = next((l for l in lines if "retro-weather-channel" in l), "")
+        self.assertNotIn("tvg-logo=", weather_extinf)
+
+    def test_save_weather_config_persists_logo_enabled(self) -> None:
+        resp = self.client.post(
+            "/virtual-channels/weather/config",
+            data={
+                "weather_channel_enabled": "1",
+                "weather_logo_enabled": "1",
+                "weather_location_name": "Denver, CO",
+                "weather_lat": "39.74",
+                "weather_lon": "-104.98",
+                "weather_units": "F",
+                "weather_seconds_per_segment": "300",
+            },
+            follow_redirects=True,
+        )
+        self.assertEqual(resp.status_code, 200)
+        cfg = self.web.store.get_config()
+        self.assertTrue(cfg.get("weather_logo_enabled"))
+
+    def test_save_weather_config_logo_disabled_persists(self) -> None:
+        self.client.post(
+            "/virtual-channels/weather/config",
+            data={
+                "weather_logo_enabled": "0",
+                "weather_units": "F",
+                "weather_seconds_per_segment": "300",
+            },
+            follow_redirects=True,
+        )
+        cfg = self.web.store.get_config()
+        self.assertFalse(cfg.get("weather_logo_enabled"))
+
+    def test_weather_logo_route_serves_default_logo(self) -> None:
+        logo_dir = Path(__file__).resolve().parents[1] / "data" / "weather_logo"
+        logo_files = [
+            f for f in logo_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
+        ] if logo_dir.is_dir() else []
+        self.assertTrue(logo_files, "No weather logo file found in data/weather_logo/")
+        logo_name = logo_files[0].name
+        resp = self.client.get(f"/weather-logo/{logo_name}")
+        self.assertEqual(resp.status_code, 200)
+
+    def test_weather_logo_route_rejects_missing_file(self) -> None:
+        resp = self.client.get("/weather-logo/nonexistent.png")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_get_weather_config_includes_logo_enabled(self) -> None:
+        self.web.store.save_config({"weather_logo_enabled": True})
+        cfg = self.web._get_weather_config()
+        self.assertIn("logo_enabled", cfg)
+        self.assertTrue(cfg["logo_enabled"])
+
+    def test_get_weather_config_includes_weather_music_fields(self) -> None:
+        self.web.store.save_config(
+            {
+                "weather_music_mode": "playlist",
+                "weather_music_loop": True,
+                "weather_music_single_file": "weather.mp3",
+                "weather_music_playlist_files": ["weather.mp3"],
+            }
+        )
+        cfg = self.web._get_weather_config()
+        self.assertEqual(cfg.get("music_mode"), "playlist")
+        self.assertTrue(cfg.get("music_loop"))
+        self.assertEqual(cfg.get("music_single_file"), "weather.mp3")
+        self.assertEqual(cfg.get("music_playlist_files"), ["weather.mp3"])
+
+    def test_save_weather_config_persists_weather_music_settings(self) -> None:
+        track_name = "weather_track_test.mp3"
+        track_path = self.web.WEATHER_MUSIC_DIR / track_name
+        track_path.write_bytes(b"ID3demo")
+        try:
+            resp = self.client.post(
+                "/virtual-channels/weather/config",
+                data=MultiDict(
+                    [
+                        ("weather_music_mode", "playlist"),
+                        ("weather_music_loop", "1"),
+                        ("weather_music_single_file", track_name),
+                        ("weather_music_playlist_files", track_name),
+                    ]
+                ),
+                follow_redirects=True,
+            )
+            self.assertEqual(resp.status_code, 200)
+            cfg = self.web.store.get_config()
+            self.assertEqual(cfg.get("weather_music_mode"), "playlist")
+            self.assertTrue(cfg.get("weather_music_loop"))
+            self.assertEqual(cfg.get("weather_music_single_file"), track_name)
+            self.assertEqual(cfg.get("weather_music_playlist_files"), [track_name])
+        finally:
+            track_path.unlink(missing_ok=True)
+
+    def test_weather_logo_url_returns_empty_when_disabled(self) -> None:
+        config = {"weather_logo_enabled": False}
+        url = self.web._weather_logo_url(config, "http://localhost")
+        self.assertEqual(url, "")
 
     # ── Virtual channels template ─────────────────────────────────
 

@@ -10,7 +10,7 @@ The admin UI lists any directory under `app/themes/` that contains a theme file.
 
 ## Bundled themes
 
-v1.1.0 includes these theme directories:
+Current bundled theme directories include:
 
 - `classic_blue`
 - `classic_cable`

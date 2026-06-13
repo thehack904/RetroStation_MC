@@ -83,6 +83,37 @@ class HlsWatchdogTests(unittest.TestCase):
             "No hardware acceleration detected; software fallback is active.",
         )
 
+    def test_status_reports_software_active_when_detected_hardware_is_not_encoder_ready(self) -> None:
+        self.manager._pipeline_active = False
+        self.manager._renderer_pid = None
+        self.manager._ffmpeg_pid = None
+        self.store.get_config.return_value = {
+            "hardware_acceleration_mode": "hardware_if_available",
+            "segment_seconds": 6,
+            "diag_min_buffer_secs": 18,
+            "diag_min_buffer_segments": 3,
+        }
+        gpu_capabilities = {
+            "device_detected_providers": ["intel"],
+            "detected_hardware_providers": [],
+            "providers": {
+                "intel": {
+                    "label": "Intel QuickSync / QSV",
+                    "available": False,
+                }
+            },
+            "message": "Hardware was detected, but no usable hardware encoder passed validation; software fallback is active.",
+        }
+        with patch.object(self.manager, "_hls_watchdog_status", return_value={"healthy": True, "warnings": []}), patch(
+            "app.manager.detect_gpu_capabilities",
+            return_value=gpu_capabilities,
+        ):
+            status = self.manager.status()
+
+        self.assertEqual(status["gpu_capabilities"]["active_path"]["provider"], "software")
+        self.assertEqual(status["gpu_capabilities"]["active_path"]["label"], "Software fallback (libx264)")
+        self.assertIn("hardware was detected but could not be validated for encoding", status["gpu_capabilities"]["active_path"]["reason"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()
