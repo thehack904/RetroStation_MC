@@ -159,6 +159,16 @@ a { color: var(--theme-btn-bg, #2f65d9); }
   white-space: nowrap;
 }
 
+.help-icon {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--theme-btn-bg, #2f65d9);
+  cursor: help;
+  vertical-align: middle;
+  margin-left: 2px;
+}
+.help-icon:focus { outline: 1px dotted var(--theme-btn-bg, #2f65d9); }
+
 .field-row-inline {
   display: flex;
   align-items: center;

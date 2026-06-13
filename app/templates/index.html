@@ -139,14 +139,11 @@
             </select>
           </div>
           <div class="field-row">
-            <label class="field-label">Hardware Acceleration</label>
+            <label class="field-label">Hardware Acceleration <span class="help-icon" tabindex="0" title="Detected hardware means a device was found. Hardware is only used when it is encoder-ready (passes ffmpeg validation); otherwise software fallback remains active.">ⓘ</span></label>
             <select name="hardware_acceleration_mode">
               <option value="software_fallback" {% if config.hardware_acceleration_mode == 'software_fallback' %}selected{% endif %}>Always use software fallback (libx264)</option>
               <option value="hardware_if_available" {% if config.hardware_acceleration_mode == 'hardware_if_available' %}selected{% endif %}>Use encoder-ready hardware when available (auto software fallback)</option>
             </select>
-            <div style="font-size:12px;color:#9aa3b2;line-height:1.4;margin-top:4px">
-              Detected hardware means a device was found. Hardware is only used when it is encoder-ready (passes ffmpeg validation); otherwise software fallback remains active.
-            </div>
           </div>
           <div class="field-row">
             <label class="field-label">Output Format</label>
