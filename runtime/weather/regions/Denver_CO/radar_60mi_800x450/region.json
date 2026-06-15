@@ -1,0 +1,20 @@
+{
+  "zip": "",
+  "name": "Denver, CO",
+  "lat": 39.74,
+  "lon": -104.98,
+  "radius_miles": 60,
+  "bbox": [
+    -106.99039,
+    38.87043,
+    -102.96961,
+    40.60957
+  ],
+  "width": 800,
+  "height": 450,
+  "basemap": "runtime/weather/regions/Denver_CO/radar_60mi_800x450/basemap.png",
+  "radar_overlay": "runtime/weather/regions/Denver_CO/radar_60mi_800x450/radar_overlay.png",
+  "radar_final": "runtime/weather/regions/Denver_CO/radar_60mi_800x450/radar_final.png",
+  "radar_refresh_seconds": 300,
+  "region_key": "Denver, CO"
+}

@@ -76,8 +76,8 @@ class VirtualChannelsWeatherConfigTests(unittest.TestCase):
 
     def test_api_weather_segment_is_valid(self) -> None:
         data = self.client.get("/api/weather").get_json()
-        self.assertIn(data["segment"], range(4))
-        self.assertIn(data["segment_label"], ("current", "forecast", "radar", "alerts"))
+        self.assertIn(data["segment"], range(5))
+        self.assertIn(data["segment_label"], ("current", "forecast", "radar", "alerts", "extended"))
 
     def test_api_weather_stub_when_unconfigured(self) -> None:
         # With no lat/lon configured the payload should contain stub 'now' data
@@ -317,10 +317,14 @@ class VirtualChannelsWeatherConfigTests(unittest.TestCase):
         url = self.web._build_radar_url("25.77", "-80.19")
         self.assertIn("bbox=", url)
         self.assertIn("opengeo.ncep.noaa.gov", url)
+        self.assertIn("layers=conus_bref_qcd", url)
+        self.assertIn("version=1.1.1", url)
+        self.assertIn("transparent=true", url)
 
     def test_build_radar_url_fallback_to_conus(self) -> None:
         url = self.web._build_radar_url("", "")
-        self.assertIn("bbox=-126,24,-66,50", url)
+        self.assertIn("bbox=-126.0,24.0,-66.0,50.0", url)
+        self.assertIn("layers=conus_bref_qcd", url)
 
     def test_build_weather_payload_stub_when_no_coords(self) -> None:
         payload = self.web._build_weather_payload({

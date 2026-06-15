@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from app.weather_renderer import WeatherRenderer, _BG
+from app.weather_renderer import WeatherRenderer, _BG, _WHITE, _YELLOW
 
 
 class WeatherRendererIconTests(unittest.TestCase):
@@ -67,6 +67,44 @@ class WeatherRendererIconTests(unittest.TestCase):
         dt = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
         converted = self.renderer._apply_display_tz(dt)
         self.assertEqual(converted.strftime("%H:%M"), "12:00")
+
+
+class WeatherRendererAlertsAndRadarTests(unittest.TestCase):
+    """Tests for the radar and alerts segments rendering."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        state_path = Path(self.temp_dir.name) / "weather_state.json"
+        state_path.write_text("{}", encoding="utf-8")
+        self.renderer = WeatherRenderer(state_path, 1280, 720)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _draw_alerts(self, alerts: list[dict]) -> Image.Image:
+        self.renderer._state = {"alerts": alerts, "location": "Testville"}
+        img = Image.new("RGB", (self.renderer.width, self.renderer.height), _BG)
+        draw = ImageDraw.Draw(img)
+        self.renderer._draw_alerts(draw)
+        return img
+
+    def test_alerts_segment_renders_alert_content(self) -> None:
+        alerts = [
+            {"event": "Severe Thunderstorm Warning", "headline": "Take shelter immediately", "severity": "Severe"}
+        ]
+        img = self._draw_alerts(alerts)
+        px = img.load()
+        non_bg = sum(
+            1 for y in range(img.height) for x in range(img.width)
+            if px[x, y] != _BG
+        )
+        self.assertGreater(non_bg, 0, "Expected rendered content for alerts segment")
+
+    def test_alerts_segment_without_alerts_renders_no_alert_message(self) -> None:
+        img = self._draw_alerts([])
+        px = img.load()
+        non_bg = sum(1 for y in range(img.height) for x in range(img.width) if px[x, y] != _BG)
+        self.assertGreater(non_bg, 0, "Expected no-alert fallback rendering")
 
 
 if __name__ == "__main__":

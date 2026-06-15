@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import logging
+import math
 import traceback
 import time
 import xml.etree.ElementTree as ET
@@ -24,6 +25,16 @@ from app.manager import (
     GuideManager, WeatherChannelManager,
     STANDBY_SEGMENT, STATIC_SEGMENT, STANDBY_DURATION_SECS, MUSIC_DIR, WEATHER_MUSIC_DIR,
     WEATHER_PLAYLIST,
+)
+from app.weather_radar import (
+    CONUS_FALLBACK_BBOX,
+    DEFAULT_HEIGHT as WEATHER_RADAR_DEFAULT_HEIGHT,
+    DEFAULT_RADIUS_MILES as WEATHER_RADAR_DEFAULT_RADIUS_MILES,
+    DEFAULT_REFRESH_SECONDS as WEATHER_RADAR_REFRESH_SECONDS,
+    DEFAULT_WIDTH as WEATHER_RADAR_DEFAULT_WIDTH,
+    build_noaa_radar_url,
+    create_or_update_weather_region,
+    refresh_radar_if_stale,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -1555,7 +1566,7 @@ _WEATHER_CONFIG_KEYS = (
     "seconds_per_segment", "bg_condition_override",
 )
 _WEATHER_SECONDS_PER_SEGMENT_DEFAULT = 300  # 5 minutes
-_WEATHER_SEGMENT_LABELS = ("current", "forecast", "radar", "alerts")
+_WEATHER_SEGMENT_LABELS = ("current", "forecast", "radar", "alerts", "extended")
 
 _WEATHER_BG_VALID_CONDITIONS = (
     "", "sunny", "partly_cloudy", "cloudy", "rain", "drizzle",
@@ -1602,14 +1613,7 @@ _WIND_DIRS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
 _WINDY_BG_THRESHOLD_MPH = 25
 _WINDY_BG_THRESHOLD_KMH = 40
 
-_RADAR_URL_CONUS = (
-    "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_raw/ows"
-    "?service=WMS&version=1.3.0&request=GetMap&layers=conus_bref_raw"
-    "&bbox=-126,24,-66,50&width=800&height=450"
-    "&crs=EPSG:4326&format=image/png"
-)
-_RADAR_LAT_OFFSET = 5.0
-_RADAR_LON_OFFSET = 8.0
+_WEATHER_RADAR_IMAGE_ENDPOINT = "/weather-radar/current.png"
 
 
 def _wmo_label(code: int) -> str:
@@ -1632,22 +1636,68 @@ def _wind_dir(degrees: float) -> str:
 
 
 def _build_radar_url(lat: str, lon: str) -> str:
-    if not lat or not lon:
-        return _RADAR_URL_CONUS
     try:
-        flat, flon = float(lat), float(lon)
-        min_lat = round(flat - _RADAR_LAT_OFFSET, 2)
-        max_lat = round(flat + _RADAR_LAT_OFFSET, 2)
-        min_lon = round(flon - _RADAR_LON_OFFSET, 2)
-        max_lon = round(flon + _RADAR_LON_OFFSET, 2)
-        return (
-            "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_raw/ows"
-            f"?service=WMS&version=1.3.0&request=GetMap&layers=conus_bref_raw"
-            f"&bbox={min_lon},{min_lat},{max_lon},{max_lat}"
-            f"&width=800&height=450&crs=EPSG:4326&format=image/png"
+        bbox = CONUS_FALLBACK_BBOX
+        if lat and lon:
+            flat = float(lat)
+            flon = float(lon)
+            miles_per_degree_lat = 69.0
+            miles_per_degree_lon = max(1e-6, 69.0 * math.cos(math.radians(flat)))
+            aspect = WEATHER_RADAR_DEFAULT_WIDTH / WEATHER_RADAR_DEFAULT_HEIGHT
+            lat_delta = WEATHER_RADAR_DEFAULT_RADIUS_MILES / miles_per_degree_lat
+            lon_delta = (WEATHER_RADAR_DEFAULT_RADIUS_MILES * aspect) / miles_per_degree_lon
+            bbox = [
+                round(flon - lon_delta, 5),
+                round(flat - lat_delta, 5),
+                round(flon + lon_delta, 5),
+                round(flat + lat_delta, 5),
+            ]
+        return build_noaa_radar_url(
+            {
+                "bbox": bbox,
+                "width": WEATHER_RADAR_DEFAULT_WIDTH,
+                "height": WEATHER_RADAR_DEFAULT_HEIGHT,
+            }
         )
-    except (TypeError, ValueError):
-        return _RADAR_URL_CONUS
+    except Exception:
+        return build_noaa_radar_url(
+            {
+                "bbox": CONUS_FALLBACK_BBOX,
+                "width": WEATHER_RADAR_DEFAULT_WIDTH,
+                "height": WEATHER_RADAR_DEFAULT_HEIGHT,
+            }
+        )
+
+
+def _weather_region_zip(configured_name: str) -> str:
+    if not configured_name:
+        return ""
+    for token in configured_name.replace(",", " ").split():
+        if token.isdigit() and len(token) == 5:
+            return token
+    return ""
+
+
+def _weather_radar_assets(cfg: dict, updated_str: str) -> tuple[str, str]:
+    lat = str(cfg.get("lat", "")).strip()
+    lon = str(cfg.get("lon", "")).strip()
+    location_name = str(cfg.get("location_name", "")).strip()
+    if not lat or not lon:
+        return _WEATHER_RADAR_IMAGE_ENDPOINT, ""
+
+    region = create_or_update_weather_region(
+        lat=lat,
+        lon=lon,
+        location_name=location_name or "Local Weather",
+        zip_code=_weather_region_zip(location_name),
+        radius_miles=WEATHER_RADAR_DEFAULT_RADIUS_MILES,
+        width=WEATHER_RADAR_DEFAULT_WIDTH,
+        height=WEATHER_RADAR_DEFAULT_HEIGHT,
+        refresh_seconds=WEATHER_RADAR_REFRESH_SECONDS,
+    )
+    radar_path = refresh_radar_if_stale(region)
+    cache_bust_token = int(time.time())
+    return f"{_WEATHER_RADAR_IMAGE_ENDPOINT}?v={cache_bust_token}", str(radar_path)
 
 
 def _get_weather_config() -> dict:
@@ -1756,7 +1806,7 @@ def _fetch_open_meteo(lat: str, lon: str, units: str) -> dict | None:
         "&hourly=temperature_2m,weather_code"
         "&daily=temperature_2m_max,temperature_2m_min,weather_code,sunrise,sunset"
         f"&temperature_unit={temp_unit}&wind_speed_unit={wind_unit}"
-        "&forecast_days=5&timezone=auto"
+        "&forecast_days=14&timezone=auto"
     )
     try:
         resp = _requests.get(url, timeout=10, headers={"User-Agent": "RetroStation-MC/1.0"})
@@ -1779,6 +1829,14 @@ def _build_weather_payload(cfg: dict) -> dict:
 
     raw = None
     nws_alerts: list = []
+    radar_url = _WEATHER_RADAR_IMAGE_ENDPOINT
+    radar_image_path = ""
+    radar_source_url = _build_radar_url(lat, lon)
+    if lat and lon:
+        try:
+            radar_url, radar_image_path = _weather_radar_assets(cfg, updated_str)
+        except Exception:
+            logging.exception("Weather radar cache refresh failed for lat=%s lon=%s", lat, lon)
     if lat and lon:
         raw = _fetch_open_meteo(lat, lon, units)
         nws_alerts = _fetch_nws_alerts(lat, lon)
@@ -1848,19 +1906,23 @@ def _build_weather_payload(cfg: dict) -> dict:
         d_wcodes = daily.get("weather_code", [])
         extended = []
         five_day = []
-        for i in range(min(5, len(d_times))):
+        for i in range(min(14, len(d_times))):
             try:
-                dow = "TODAY" if i == 0 else date.fromisoformat(d_times[i]).strftime("%a").upper()
+                day_obj = date.fromisoformat(d_times[i])
+                dow = "TODAY" if i == 0 else day_obj.strftime("%a").upper()
+                mmdd = day_obj.strftime("%m/%d")
             except Exception:
                 dow = "TODAY" if i == 0 else d_times[i][-5:]
+                mmdd = d_times[i][-5:] if isinstance(d_times[i], str) and len(d_times[i]) >= 5 else ""
             hi  = round(d_maxes[i])  if i < len(d_maxes)  and d_maxes[i]  is not None else None
             lo  = round(d_mins[i])   if i < len(d_mins)   and d_mins[i]   is not None else None
             wc  = d_wcodes[i]        if i < len(d_wcodes)                              else 0
-            five_day.append({"dow": dow, "hi": hi, "lo": lo,
-                             "condition": _wmo_label(wc), "icon": _wmo_icon(wc)})
+            if i < 5:
+                five_day.append({"dow": dow, "hi": hi, "lo": lo,
+                                 "date": mmdd, "condition": _wmo_label(wc), "icon": _wmo_icon(wc)})
             if i > 0:
                 extended.append({"dow": dow, "hi": hi, "lo": lo,
-                                  "condition": _wmo_label(wc), "icon": _wmo_icon(wc)})
+                                  "date": mmdd, "condition": _wmo_label(wc), "icon": _wmo_icon(wc)})
 
         ticker: list[str] = []
         if nws_alerts:
@@ -1886,7 +1948,9 @@ def _build_weather_payload(cfg: dict) -> dict:
             "five_day":             five_day,
             "ticker":               ticker,
             "alerts":               nws_alerts,
-            "radar_url":            _build_radar_url(lat, lon),
+            "radar_url":            radar_url,
+            "radar_image_path":     radar_image_path,
+            "radar_source_url":     radar_source_url,
             "bg_condition":         bg_condition,
             "bg_condition_override": bg_override,
         }
@@ -1909,7 +1973,9 @@ def _build_weather_payload(cfg: dict) -> dict:
         "five_day":  [],
         "ticker":    [],
         "alerts":    [],
-        "radar_url": _build_radar_url("", ""),
+        "radar_url": radar_url,
+        "radar_image_path": radar_image_path,
+        "radar_source_url": radar_source_url,
         "bg_condition":          bg_condition,
         "bg_condition_override": bg_override,
     }
@@ -2084,6 +2150,37 @@ def weather_page():
     return render_template("weather.html")
 
 
+@app.get("/weather-radar/current.png")
+def weather_radar_current_image():
+    """Serve the current composited weather radar image from local cache."""
+    cfg = _get_weather_config()
+    lat = str(cfg.get("lat", "")).strip()
+    lon = str(cfg.get("lon", "")).strip()
+    if not lat or not lon:
+        abort(404)
+
+    try:
+        region = create_or_update_weather_region(
+            lat=lat,
+            lon=lon,
+            location_name=str(cfg.get("location_name", "")).strip() or "Local Weather",
+            zip_code=_weather_region_zip(str(cfg.get("location_name", ""))),
+            radius_miles=WEATHER_RADAR_DEFAULT_RADIUS_MILES,
+            width=WEATHER_RADAR_DEFAULT_WIDTH,
+            height=WEATHER_RADAR_DEFAULT_HEIGHT,
+            refresh_seconds=WEATHER_RADAR_REFRESH_SECONDS,
+        )
+        radar_path = refresh_radar_if_stale(region)
+        response = send_from_directory(radar_path.parent, radar_path.name)
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
+    except Exception as exc:
+        logging.exception("weather_radar_current_image failed: %s", exc)
+        abort(404)
+
+
 # ─── Weather API endpoints ────────────────────────────────────────────────────
 
 @app.get("/api/weather")
@@ -2093,11 +2190,12 @@ def api_weather():
     Returns current conditions, today's forecast, extended outlook, 5-day
     forecast, radar URL, and ticker text.
 
-    The channel cycles through 4 segments wall-clock aligned:
+    The channel cycles through 5 segments wall-clock aligned:
       0 – Current Conditions
       1 – 5-Day Forecast
       2 – Regional Radar
       3 – Severe Weather Alerts
+      4 – Extended Forecast (10-Day)
     """
     cfg = _get_weather_config()
     payload = _build_weather_payload(cfg)
@@ -2109,7 +2207,7 @@ def api_weather():
     except (TypeError, ValueError):
         seconds_per_segment = _WEATHER_SECONDS_PER_SEGMENT_DEFAULT
 
-    _cycle_seconds = 4 * seconds_per_segment
+    _cycle_seconds = 5 * seconds_per_segment
     _now_ts = datetime.now(timezone.utc).timestamp()
     _cycle_pos = _now_ts % _cycle_seconds
     segment = int(_cycle_pos / seconds_per_segment)

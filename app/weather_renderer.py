@@ -4,11 +4,12 @@ Reads a weather state JSON file written by WeatherChannelManager and renders
 cycling 16:9 frames to stdout (raw RGB24) so that a companion ffmpeg process
 can encode them into an HLS media stream at /hls/weather.m3u8.
 
-The display cycles through four segments wall-clock aligned:
+The display cycles through five segments wall-clock aligned:
   0 – Current Conditions
   1 – 5-Day Forecast
-  2 – Today's Forecast  (morning / afternoon / evening)
-  3 – Extended Outlook / Active Alerts
+  2 – Regional Radar
+  3 – Severe Weather Alerts
+  4 – Extended Forecast (10-Day)
 
 Usage (invoked by WeatherChannelManager):
     python app/weather_renderer.py \\
@@ -145,7 +146,7 @@ class WeatherRenderer:
 
     def _current_segment(self, epoch: float) -> int:
         sps   = max(30, int(self._state.get("seconds_per_segment", 300)))
-        cycle = 4 * sps
+        cycle = 5 * sps
         return int(epoch % cycle) // sps
 
     def _unit_sym(self) -> str:
@@ -470,70 +471,121 @@ class WeatherRenderer:
                          row_y + bh * 52 // 100,
                          hi_lo, self._f_small, _WHITE)
 
-    # ── Segment 2 – Today's Forecast ─────────────────────────────────────────
+    # ── Segment 4 – Extended Forecast (10-Day) ──────────────────────────────
 
-    def _draw_today_forecast(self, draw: ImageDraw.ImageDraw) -> None:
+    def _draw_extended_forecast(self, draw: ImageDraw.ImageDraw) -> None:
         w  = self.width
         by = self._body_y
         bh = self._body_h
 
-        title = "TODAY'S FORECAST"
+        title = "EXTENDED FORECAST"
         self._center(draw, w // 2, by + 10, title, self._f_large, _YELLOW)
 
-        today = self._state.get("today", [])
-        if not today:
+        extended = self._state.get("extended", [])
+        # Show from the current day (index 0) through the next 10 days.
+        days = extended[:10]
+        if not days:
             self._center(draw, w // 2, by + bh // 2 - 20,
                          "Weather data not configured", self._f_med, _GRAY)
             return
 
-        usym  = self._unit_sym()
-        n     = len(today)
-        col_w = w // n
+        usym = self._unit_sym()
+        n = min(10, len(days))
+        # Use two rows of up to 5 columns each for a clean layout.
+        cols_per_row = min(5, -(-n // 2))  # ceil(n/2), max 5
+        rows = 2 if n > 5 else 1
 
-        title_h = self._th(draw, title, self._f_large) + 20
-        row_y   = by + title_h + bh * 10 // 100
-        icon_size = max(30, min(col_w // 3, bh * 24 // 100))
+        title_h   = self._th(draw, title, self._f_large) + 20
+        avail_h   = bh - title_h - 10
+        row_h     = avail_h // rows
+        col_w     = w // cols_per_row
+        icon_size = max(22, min(col_w // 3, row_h * 28 // 100))
 
-        for i, period in enumerate(today):
-            cx = i * col_w + col_w // 2
+        for i, day in enumerate(days[:n]):
+            row_idx = i // cols_per_row
+            col_idx = i % cols_per_row
+            # Centre columns in last row when it has fewer entries.
+            row_count = min(cols_per_row, n - row_idx * cols_per_row)
+            row_start_x = (w - row_count * col_w) // 2
+            cx = row_start_x + col_idx * col_w + col_w // 2
+            row_y = by + title_h + row_idx * row_h
 
-            if i:
-                draw.line([i * col_w, by + title_h, i * col_w, by + bh - 10],
+            # Column separator (skip first in each row)
+            if col_idx:
+                draw.line([row_start_x + col_idx * col_w,
+                           row_y + 4,
+                           row_start_x + col_idx * col_w,
+                           row_y + row_h - 4],
                           fill=_BG_SEP, width=1)
 
-            label = str(period.get("label", ""))
-            self._center(draw, cx, row_y, label, self._f_med, _LBLUE)
-            icon_y = row_y + self._th(draw, label, self._f_med) + icon_size // 2 + 6
-            self._draw_weather_icon(draw, str(period.get("icon", "cloudy")), cx, icon_y, icon_size)
+            # Day + date label
+            dow  = str(day.get("dow", ""))
+            mmdd = str(day.get("date", ""))
+            label = f"{dow} {mmdd}" if mmdd else dow
+            self._center(draw, cx, row_y + 6, label, self._f_tiny, _YELLOW)
 
-            temp = period.get("temp")
-            if temp is not None:
-                temp_str = f"{temp}{usym}"
-                self._center(draw, cx,
-                             row_y + bh * 32 // 100,
-                             temp_str, self._f_large, _YELLOW)
+            lbl_h = self._th(draw, label, self._f_tiny) + 6
+            icon_cy = row_y + lbl_h + icon_size // 2 + 4
+            self._draw_weather_icon(draw, str(day.get("icon", "cloudy")), cx, icon_cy, icon_size)
 
-            cond = str(period.get("condition", ""))
+            # Condition short label
+            icon  = day.get("icon", "")
+            short = _ICON_SHORT.get(icon, str(day.get("condition", ""))[:9])
             self._center(draw, cx,
-                         row_y + bh * 50 // 100,
-                         cond, self._f_small, _WHITE)
+                         icon_cy + icon_size // 2 + 4,
+                         short, self._f_tiny, _LBLUE)
 
-            icon  = period.get("icon", "")
-            short = _ICON_SHORT.get(icon, "")
-            if short:
-                self._center(draw, cx,
-                             row_y + bh * 62 // 100,
-                             short, self._f_tiny, _GRAY)
+            # Hi / Lo
+            hi = day.get("hi")
+            lo = day.get("lo")
+            hi_lo = f"{hi}{usym}/{lo}{usym}" if hi is not None and lo is not None else "--"
+            self._center(draw, cx,
+                         row_y + row_h - self._th(draw, hi_lo, self._f_tiny) - 6,
+                         hi_lo, self._f_tiny, _WHITE)
 
-    # ── Segment 3 – Alerts / Extended Outlook ────────────────────────────────
+    # ── Segment 2 – Regional Radar ───────────────────────────────────────────
 
-    def _draw_alerts_or_extended(self, draw: ImageDraw.ImageDraw) -> None:
+    def _draw_regional_radar(self, draw: ImageDraw.ImageDraw, target_img: Image.Image) -> None:
         w  = self.width
         by = self._body_y
         bh = self._body_h
 
-        alerts   = self._state.get("alerts", [])
-        extended = self._state.get("extended", [])
+        title = "REGIONAL RADAR"
+        self._center(draw, w // 2, by + 10, title, self._f_large, _YELLOW)
+
+        radar_path = str(self._state.get("radar_image_path", "")).strip()
+        title_h = self._th(draw, title, self._f_large) + 20
+        img_x = 20
+        img_y = by + title_h + 10
+        img_w = max(100, w - 40)
+        img_h = max(80, bh - title_h - 30)
+
+        if radar_path:
+            try:
+                with Image.open(radar_path).convert("RGB") as radar_img:
+                    if radar_img.size != (img_w, img_h):
+                        radar_img = radar_img.resize((img_w, img_h), Image.Resampling.LANCZOS)
+                    radar_frame = radar_img.copy()
+                target_img.paste(radar_frame, (img_x, img_y))
+                draw.rectangle([img_x, img_y, img_x + img_w, img_y + img_h], outline=_BG_SEP, width=2)
+                return
+            except Exception:
+                pass
+
+        self._center(draw, w // 2, by + bh // 2 - 20,
+                     "Radar Unavailable", self._f_med, _ORANGE)
+        self._center(draw, w // 2,
+                     by + bh // 2 + self._th(draw, "Radar Unavailable", self._f_med) + 8,
+                     "Waiting for local radar cache", self._f_small, _GRAY)
+
+    # ── Segment 3 – Severe Weather Alerts ─────────────────────────────────────
+
+    def _draw_alerts(self, draw: ImageDraw.ImageDraw) -> None:
+        w  = self.width
+        by = self._body_y
+        bh = self._body_h
+
+        alerts = self._state.get("alerts", [])
 
         if alerts:
             title = "⚠  ACTIVE WEATHER ALERTS"
@@ -566,30 +618,14 @@ class WeatherRenderer:
                 y += 12
                 if y > by + bh - 30:
                     break
-        elif extended:
-            title = "EXTENDED OUTLOOK"
-            self._center(draw, w // 2, by + 10, title, self._f_large, _YELLOW)
-
-            usym = self._unit_sym()
-            y    = by + self._th(draw, title, self._f_large) + 28
-            for day in extended[:4]:
-                dow  = str(day.get("dow", ""))
-                hi   = day.get("hi")
-                lo   = day.get("lo")
-                cond = str(day.get("condition", ""))
-                line = f"{dow:<6}  {hi}{usym} / {lo}{usym}   {cond}" if hi is not None else f"{dow:<6}  {cond}"
-                draw.text((40, y), line, font=self._f_med, fill=_WHITE)
-                y += self._th(draw, line, self._f_med) + 10
-                if y > by + bh - 20:
-                    break
         else:
-            msg = "No active weather alerts"
+            msg = "No Active Severe Weather Alerts"
             self._center(draw, w // 2, by + bh // 2 - 20,
                          msg, self._f_med, _GREEN)
-            sub = "Configure a location to see live alerts"
+            sub = self._state.get("location", "Local Area")
             self._center(draw, w // 2,
                          by + bh // 2 + self._th(draw, msg, self._f_med) + 8,
-                         sub, self._f_small, _GRAY)
+                         str(sub), self._f_small, _GRAY)
 
     # ── Public draw method ────────────────────────────────────────────────────
 
@@ -608,9 +644,11 @@ class WeatherRenderer:
         elif seg == 1:
             self._draw_five_day(draw)
         elif seg == 2:
-            self._draw_today_forecast(draw)
+            self._draw_regional_radar(draw, img)
+        elif seg == 3:
+            self._draw_alerts(draw)
         else:
-            self._draw_alerts_or_extended(draw)
+            self._draw_extended_forecast(draw)
 
         self._draw_ticker(draw, epoch_time)
         return img

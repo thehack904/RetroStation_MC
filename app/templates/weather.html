@@ -549,6 +549,65 @@
       flex-shrink: 0;
     }
 
+    /* ── Extended Forecast (segment 4) ─────────────────────────── */
+    .wx-seg-extended {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35em;
+      padding: 0.5em 0.7em;
+      min-height: 0;
+    }
+
+    .wx-ext-row {
+      flex: 1;
+      display: grid;
+      gap: 0.4em;
+      min-height: 0;
+    }
+
+    .wx-ext-cell {
+      background: rgba(10, 40, 170, 0.75);
+      border: 2px solid #3058d8;
+      border-radius: 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.4em 0.3em;
+      gap: 0.15em;
+      min-width: 0;
+    }
+
+    .wx-ext-cell-dow {
+      font-size: clamp(9px, 1.3vw, 16px);
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #c8d8ff;
+      white-space: nowrap;
+    }
+
+    .wx-ext-cell-icon { line-height: 1; }
+
+    .wx-ext-cell-cond {
+      font-size: clamp(8px, 0.95vw, 12px);
+      font-weight: 700;
+      color: #d0e0ff;
+      text-align: center;
+    }
+
+    .wx-ext-cell-hi {
+      font-size: clamp(13px, 1.8vw, 24px);
+      font-weight: 900;
+    }
+
+    .wx-ext-cell-lo {
+      font-size: clamp(10px, 1.3vw, 17px);
+      font-weight: 700;
+      opacity: 0.65;
+    }
+
     /* ── Severe Weather Alerts (segment 3) ──────────────────────── */
     .wx-seg-alerts {
       flex: 1;
@@ -1076,6 +1135,51 @@
       tickerBarHtml(ticks);
   }
 
+  function buildExtended(data, frame) {
+    const ext   = Array.isArray(data.extended) ? data.extended : [];
+    const ticks = Array.isArray(data.ticker)   ? data.ticker   : [];
+
+    // Show days beyond the 5-day window (index 4 onward), up to 9 days (days 5-13).
+    const days = ext.length > 4 ? ext.slice(4, 14) : ext.slice(0, 10);
+
+    const fw = frame.offsetWidth || 960;
+    const iconSm = Math.round(fw * 0.038);
+
+    let bodyHtml;
+    if (!days.length) {
+      bodyHtml = `<div class="wx-seg-extended" style="align-items:center;justify-content:center;">
+        <div style="color:#90a8f0;font-size:clamp(12px,1.6vw,20px);text-align:center;padding:1em">
+          No extended forecast available.
+        </div>
+      </div>`;
+    } else {
+      const row1 = days.slice(0, 5);
+      const row2 = days.slice(5);
+      const rows = row2.length ? [row1, row2] : [row1];
+
+      const rowsHtml = rows.map(row => {
+        const cols = row.map(d => `
+          <div class="wx-ext-cell">
+            <div class="wx-ext-cell-dow">${d.dow || ''}${d.date ? ' <span style="opacity:.65;font-weight:600">' + d.date + '</span>' : ''}</div>
+            <div class="wx-ext-cell-icon">${iconSvg(d.icon, iconSm)}</div>
+            <div class="wx-ext-cell-cond">${d.condition || ''}</div>
+            <div class="wx-ext-cell-hi">${tempStr(d.hi)}</div>
+            <div class="wx-ext-cell-lo">${tempStr(d.lo)}</div>
+          </div>`).join('');
+        const colCount = row.length;
+        return `<div class="wx-ext-row" style="grid-template-columns:repeat(${colCount},1fr)">${cols}</div>`;
+      }).join('');
+
+      bodyHtml = `<div class="wx-seg-extended">${rowsHtml}</div>`;
+    }
+
+    frame.innerHTML =
+      headerHtml('Extended Forecast') +
+      updatedBarHtml(data) +
+      bodyHtml +
+      tickerBarHtml(ticks);
+  }
+
   function build(data) {
     const frame = document.getElementById('wxFrame');
     const now   = data.now || {};
@@ -1118,6 +1222,7 @@
     if      (segment === 1) { buildForecast(data, frame); }
     else if (segment === 2) { buildRadar(data, frame); }
     else if (segment === 3) { buildAlerts(data, frame); }
+    else if (segment === 4) { buildExtended(data, frame); }
     else                    { buildCurrent(data, frame); }
     _applyWeatherBackground(frame, bgCondition);
   }
