@@ -57,6 +57,20 @@ class CoerceTimeStrTests(unittest.TestCase):
         self.assertEqual(_app._coerce_time_str("", "07:00"), "07:00")
 
 
+class CoerceFormHardwareModeTests(unittest.TestCase):
+    def test_coerce_form_defaults_hardware_mode_when_missing(self) -> None:
+        cfg = _app.coerce_form({})
+        self.assertEqual(cfg["hardware_acceleration_mode"], "software_fallback")
+
+    def test_coerce_form_accepts_hardware_mode_when_present(self) -> None:
+        cfg = _app.coerce_form(MultiDict([("hardware_acceleration_mode", "hardware_if_available")]))
+        self.assertEqual(cfg["hardware_acceleration_mode"], "hardware_if_available")
+
+    def test_coerce_form_rejects_invalid_hardware_mode(self) -> None:
+        cfg = _app.coerce_form(MultiDict([("hardware_acceleration_mode", "invalid")]))
+        self.assertEqual(cfg["hardware_acceleration_mode"], "software_fallback")
+
+
 class IsOffAirTests(unittest.TestCase):
     # ------------------------------------------------------------------
     # Feature disabled
@@ -135,7 +149,6 @@ class IsOffAirTests(unittest.TestCase):
         # 06:00 is not included in the window 00:00-06:00
         cfg = _cfg(off_air_start="00:00", off_air_end="06:00")
         self.assertFalse(_app._is_off_air(cfg, _now=_at(6, 0)))
-
 
 class StandbySegmentSelectionTests(unittest.TestCase):
     def test_off_air_static_enabled_uses_static_segment(self) -> None:

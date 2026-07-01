@@ -25,8 +25,8 @@ Before release, validate:
 
 1. Docker Compose starts cleanly.
 2. Admin UI opens on port `8787`.
-3. `/channel.m3u` returns one channel.
-4. `/channel.xmltv` returns valid XML.
+3. `/channel.m3u` returns the guide channel plus any enabled virtual channels.
+4. `/channel.xmltv` returns valid XML for the guide channel plus any enabled virtual channels.
 5. `/hls/master.m3u8` returns standby before guide start.
 6. **Save & Start** starts renderer and FFmpeg.
 7. `output/guide.m3u8` and `output/guide_*.ts` are created.

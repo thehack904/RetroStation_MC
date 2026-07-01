@@ -1,6 +1,6 @@
 # Renderer
 
-RetroStation MC v1.0.0 uses a Python/Pillow renderer implemented in `app/renderer.py`.
+RetroStation MC v1.3.0 uses a Python/Pillow renderer implemented in `app/renderer.py`.
 
 ## Renderer contract
 

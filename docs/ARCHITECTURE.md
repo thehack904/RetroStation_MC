@@ -1,6 +1,6 @@
 # Architecture
 
-RetroStation MC v1.0.0 is a small Flask application with a managed renderer/encoder pipeline.
+RetroStation MC v1.3.0 is a Flask application with managed guide and Weather channel pipelines.
 
 ## Component overview
 
@@ -20,27 +20,36 @@ Flask app.py
       │       ├── renderer.py process ───► raw RGB stdout
       │       └── ffmpeg process ────────► output/guide.m3u8 + output/guide_*.ts
       │
+      ├── WeatherChannelManager
+      │       │
+      │       ├── weather_renderer.py ───► raw RGB stdout
+      │       └── ffmpeg process ────────► output/weather.m3u8 + output/weather_*.ts
+      │
       ├── HLS endpoints
       │       ├── /hls/master.m3u8
       │       ├── /hls/standby.m3u8
       │       ├── /hls/live.m3u8
+      │       ├── /hls/weather.m3u8
       │       └── /hls/<segment>.ts
       │
       └── Integration endpoints
               ├── /channel.m3u
               ├── /channel.m3u8
-              └── /channel.xmltv
+              ├── /channel.xmltv
+              ├── /virtual-channels
+              └── /weather
 ```
 
 ## Main files
 
 | File | Purpose |
 |---|---|
-| `app.py` | Flask entrypoint, routes, admin UI wiring, HLS serving, music endpoints |
+| `app.py` | Flask entrypoint, routes, admin UI wiring, HLS serving, Weather admin page, and music/artwork endpoints |
 | `app/config_store.py` | SQLite-backed configuration and app event storage |
 | `app/manager.py` | Worker loop, renderer/FFmpeg lifecycle, standby generation, audio selection |
 | `app/guide_state.py` | Converts config + M3U + XMLTV into normalized renderer state |
 | `app/renderer.py` | Pillow-based frame renderer that writes raw RGB frames to stdout |
+| `app/weather_renderer.py` | Browser-driven Weather channel renderer support |
 | `app/hls_playlist.py` | Live-edge trimming helper for HLS playlists |
 | `app/m3u_parser.py` | Basic M3U parser |
 | `app/xmltv_parser.py` | Basic XMLTV parser |
@@ -53,12 +62,14 @@ Flask app.py
 
 The Flask process starts a `GuideManager`. The manager runs a background worker thread that periodically refreshes guide state and checks whether an intentionally active pipeline is still running.
 
-When the admin starts the guide, the manager launches two subprocesses:
+When the admin starts the guide, the main manager launches two subprocesses:
 
 1. `renderer.py` emits raw RGB video frames to stdout.
 2. `ffmpeg` reads those frames from stdin, adds audio, encodes H.264/AAC, and writes HLS media.
 
 The pipeline is intentionally separate from Flask. PID files allow a new Flask process to reattach to still-running renderer/FFmpeg processes after a Flask restart.
+
+When the Weather Channel is enabled, a second managed pipeline produces `output/weather.m3u8` and falls back to the standby segment until that HLS output is buffered.
 
 ## First-run standby behavior
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap lists recommended post-v1.0.0 improvements.
+This roadmap lists recommended post-v1.3.0 improvements.
 
 ## Priority 1 — Reliability and operations
 

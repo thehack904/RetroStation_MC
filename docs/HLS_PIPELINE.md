@@ -11,6 +11,9 @@ RetroStation MC uses FFmpeg to produce HLS media and Flask to serve client-facin
            │       └── /hls/standby.ts
            └── /hls/live.m3u8
                    └── /hls/guide_*.ts
+/channel.m3u (Weather enabled)
+   └── /hls/weather.m3u8
+           └── /hls/weather_*.ts
 ```
 
 `/hls/guide.m3u8` also exists as a backward-compatible unified media playlist endpoint.
@@ -30,8 +33,12 @@ The default FFmpeg profile is `software_default`.
 | Minimum live segment count | `3` |
 | Standby playlist window | `3` synthetic entries |
 
-The internal profile registry also includes placeholder hardware-acceleration
-providers for NVIDIA, Intel, AMD, and VAAPI for future encoder work.
+The hardware acceleration mode controls profile resolution:
+
+- `software_fallback`: force software encoding (`libx264`)
+- `hardware_if_available`: use the first detected encoder-ready provider (NVIDIA, Intel, VAAPI, AMD priority order), otherwise fall back to software
+
+The same profile resolution path is used for both guide and Weather channel pipelines.
 
 ## FFmpeg video strategy
 
@@ -97,9 +104,17 @@ This keeps `EXT-X-MEDIA-SEQUENCE` increasing across restarts. Without this, clie
 
 ## Standby mode
 
-The app generates `output/standby.ts`, a 30-second color-bar style MPEG-TS segment with silent AAC audio. While live guide output is not ready, `/hls/master.m3u8` points at `/hls/standby.m3u8`.
+The app generates `output/standby.ts`, a 30-second color-bar style MPEG-TS segment with silent AAC audio.
+It also generates `output/static.ts`, a static-noise segment used when off-air static mode is enabled.
+While live guide output is not ready, `/hls/master.m3u8` points at `/hls/standby.m3u8`.
 
 The standby media playlist is synthetic. It repeats `standby.ts` with a changing query string and discontinuity tags so clients continue polling and do not cache a single exhausted segment forever.
+
+During configured off-air windows:
+
+- `/hls/master.m3u8` always points to `/hls/standby.m3u8`
+- `/hls/live.m3u8` returns `404`
+- `/hls/standby.m3u8` serves either `standby.ts` or `static.ts` depending on `off_air_static_enabled`
 
 ## Live readiness gate
 
@@ -134,3 +149,8 @@ This keeps clients away from the most recently written HLS edge, where file writ
 ## Backward-compatible endpoint
 
 `/hls/guide.m3u8` returns live output when ready, otherwise standby. New integrations should prefer `/hls/master.m3u8`.
+
+## Weather channel behavior
+
+When the Weather channel is enabled, `/hls/weather.m3u8` is exposed as a dedicated media playlist.
+It follows the same guide readiness principles and uses standby fallback while weather output is warming up.

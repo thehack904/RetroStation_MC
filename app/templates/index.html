@@ -43,6 +43,7 @@
       {% endif %}
     </div>
     <div class="status-bar__actions">
+      <a href="{{ url_for('virtual_channels_page') }}" class="btn btn--sm">&#127780; Virtual Channels</a>
       <form method="post" action="{{ url_for('restart_pipeline') }}">
         <button type="submit" class="btn btn--sm">&#x21BB; Restart Guide</button>
       </form>
@@ -138,12 +139,27 @@
             </select>
           </div>
           <div class="field-row">
+            <label class="field-label">Hardware Acceleration <span class="help-icon" tabindex="0" title="Detected hardware means a device was found. Hardware is only used when it is encoder-ready (passes ffmpeg validation); otherwise software fallback remains active.">ⓘ</span></label>
+            <select name="hardware_acceleration_mode">
+              <option value="software_fallback" {% if config.hardware_acceleration_mode == 'software_fallback' %}selected{% endif %}>Always use software fallback (libx264)</option>
+              <option value="hardware_if_available" {% if config.hardware_acceleration_mode == 'hardware_if_available' %}selected{% endif %}>Use encoder-ready hardware when available (auto software fallback)</option>
+            </select>
+          </div>
+          <div class="field-row">
             <label class="field-label">Output Format</label>
             <select name="output_format">
               <option value="both" {% if config.output_format == 'both' %}selected{% endif %}>M3U + XMLTV</option>
               <option value="m3u" {% if config.output_format == 'm3u' %}selected{% endif %}>M3U only</option>
               <option value="m3u8" {% if config.output_format == 'm3u8' %}selected{% endif %}>M3U8 only</option>
             </select>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Weather Channel</label>
+            <label class="inline-check" style="min-width:auto">
+              <input type="hidden" name="weather_channel_enabled" value="0">
+              <input type="checkbox" name="weather_channel_enabled" value="1" {% if config.weather_channel_enabled %}checked{% endif %}>
+              Include Weather Channel in the exported M3U/XMLTV
+            </label>
           </div>
         </section>
 
@@ -215,6 +231,11 @@
             value="{{ url_for('channel_xmltv', _external=True) }}">
           <button type="button" class="btn btn--sm btn--copy" onclick="copyUrl('url-xmltv', this)">Copy</button>
         </div>
+        {% if config.weather_channel_enabled %}
+        <div style="margin-top:8px;opacity:0.75;font-size:0.88em">
+          Weather Channel is currently included as its own channel entry in the exported M3U/XMLTV.
+        </div>
+        {% endif %}
       </section>
 
       <!-- Pipeline Status -->
@@ -269,6 +290,7 @@
       <button class="tab-btn tab-btn--active" data-tab="general">General</button>
       <button class="tab-btn" data-tab="music">Music</button>
       <button class="tab-btn" data-tab="diagnostics">Diagnostics</button>
+      <button class="tab-btn" data-tab="hardware-acceleration">Hardware Acceleration</button>
       <button class="tab-btn" data-tab="logs">Logs</button>
       <button class="tab-btn" data-tab="guide-icon">Guide Icon</button>
       <button class="tab-btn" data-tab="standby-pattern">Standby Pattern</button>
@@ -283,6 +305,10 @@
         <div class="info-row"><span class="info-label">XMLTV</span><code>{{ status.xmltv_source or '—' }}</code></div>
         <div class="info-row"><span class="info-label">Theme</span><code>{{ status.current_theme or '—' }}</code></div>
         <div class="info-row"><span class="info-label">Stream URL</span><code>{{ status.stream_url }}</code></div>
+      </div>
+      <div class="form-actions" style="margin-top:14px">
+        <a href="{{ url_for('virtual_channels_page') }}" class="btn btn--sm"><span aria-hidden="true">&#127780;</span> Open Virtual Channels</a>
+        <a href="{{ url_for('weather_page') }}" class="btn btn--sm" target="_blank" rel="noopener"><span aria-hidden="true">&#9925;</span> Preview Weather Page <span aria-hidden="true">&#8599;</span></a>
       </div>
     </div>
 
@@ -394,6 +420,54 @@
           {% endif %}
         </div>
       </form>
+    </div>
+
+    <!-- Hardware Acceleration Tab -->
+    <div class="tab-panel" id="tab-hardware-acceleration">
+      <div class="section" style="margin-bottom:14px">
+        <div class="section__header">Hardware Detection &amp; Active Encoder Path</div>
+        <div style="padding:8px 12px">
+          {% set detected_device_providers = status.gpu_capabilities.device_detected_providers if status.gpu_capabilities.device_detected_providers else [] %}
+          <div class="info-row">
+            <span class="info-label">Detected Devices</span>
+            <code>
+              {% if detected_device_providers %}
+                {% for provider_name in detected_device_providers %}
+                  {{ status.gpu_capabilities.providers[provider_name].label if status.gpu_capabilities.providers and status.gpu_capabilities.providers.get(provider_name) else provider_name }}{% if not loop.last %}, {% endif %}
+                {% endfor %}
+                + Software fallback (libx264)
+              {% else %}
+                Software fallback (libx264)
+              {% endif %}
+            </code>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Selection Mode</span>
+            <code>
+              {% if config.hardware_acceleration_mode == 'hardware_if_available' %}
+                Auto: use encoder-ready hardware; otherwise software fallback
+              {% else %}
+                Forced software fallback (libx264)
+              {% endif %}
+            </code>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Active Path</span>
+            <code>{{ status.gpu_capabilities.active_path.label if status.gpu_capabilities.active_path else 'Software fallback (libx264)' }}</code>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Active Status</span>
+            <code>{{ status.gpu_capabilities.active_path.reason if status.gpu_capabilities.active_path else 'Software fallback is active.' }}</code>
+          </div>
+        </div>
+      </div>
+      <div class="info-grid">
+        <div class="info-row"><span class="info-label">GPU Providers</span><code>{{ status.gpu_capabilities.device_detected_providers | join(', ') if status.gpu_capabilities.device_detected_providers else 'none' }}</code></div>
+        <div class="info-row"><span class="info-label">Hardware-Ready Providers</span><code>{{ status.gpu_capabilities.detected_hardware_providers | join(', ') if status.gpu_capabilities.detected_hardware_providers else 'none' }}</code></div>
+        <div class="info-row"><span class="info-label">GPU Encoders</span><code>{{ status.gpu_capabilities.ffmpeg_detected_encoders | join(', ') if status.gpu_capabilities.ffmpeg_detected_encoders else 'none' }}</code></div>
+        <div class="info-row"><span class="info-label">Docker GPU Visibility</span><code>{{ status.gpu_capabilities.docker_visible_providers | join(', ') if status.gpu_capabilities.running_in_docker and status.gpu_capabilities.docker_visible_providers else ('none' if status.gpu_capabilities.running_in_docker else 'n/a') }}</code></div>
+        <div class="info-row"><span class="info-label">GPU Status</span><code>{{ status.gpu_capabilities.message }}</code></div>
+      </div>
     </div>
 
     <!-- Logs Tab -->
@@ -553,7 +627,7 @@
     <div class="tab-panel" id="tab-about">
       <div class="info-grid">
         <div class="info-row"><span class="info-label">Application</span><code>RetroStation MC</code></div>
-        <div class="info-row"><span class="info-label">Version</span><code>v1.2.0</code></div>
+        <div class="info-row"><span class="info-label">Version</span><code>v1.3.0</code></div>
         <div class="info-row"><span class="info-label">Description</span><code>Admin-driven retro guide channel generator for RetroIPTVGuide.</code></div>
       </div>
     </div>

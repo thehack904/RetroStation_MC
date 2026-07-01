@@ -21,6 +21,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "xmltv_source": str(BASE_DIR / "sample_data" / "xmltv.xml"),
     "theme": "retrostation_mc",
     "ffmpeg_profile": "software_default",
+    "hardware_acceleration_mode": "software_fallback",
     "resolution": "1280x720",
     "fps": 15,
     "segment_seconds": 6,
@@ -48,6 +49,19 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "music_loop": False,         # loop the audio
     "music_single_file": "",     # selected filename for single mode
     "music_playlist_files": [],  # ordered list of filenames for playlist mode
+    # Virtual Channels — Weather Channel
+    "weather_channel_enabled": False,
+    "weather_logo_enabled": True,
+    "weather_lat": "",
+    "weather_lon": "",
+    "weather_location_name": "",
+    "weather_units": "F",
+    "weather_seconds_per_segment": "300",
+    "weather_bg_condition_override": "",
+    "weather_music_mode": "none",             # "none" | "single" | "playlist"
+    "weather_music_loop": False,              # loop selected weather music
+    "weather_music_single_file": "",          # selected filename for weather single mode
+    "weather_music_playlist_files": [],       # ordered filenames for weather playlist mode
     # Diagnostics / HLS live-edge tuning
     "diag_delay_segments": 2,
     "diag_min_buffer_secs": 18,

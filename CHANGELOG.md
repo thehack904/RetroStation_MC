@@ -12,11 +12,113 @@ This project uses a simple release-based changelog format with the following sec
 - `Known Issues` for confirmed limitations that remain open.
 
 ---
+## [v1.3.0] - 2026-07-01
+
+### Added
+
+* Added first-pass hardware acceleration capability detection through `app/gpu_capabilities.py`.
+* Added `gpu_hwaccel_detect_v3.py` for local GPU, FFmpeg encoder, Docker visibility, and software-fallback diagnostics.
+* Added hardware acceleration mode configuration through `hardware_acceleration_mode`.
+
+  * `software_fallback` keeps encoding on `libx264`.
+  * `hardware_if_available` selects encoder-ready hardware only when a functional FFmpeg probe succeeds.
+* Added admin hardware acceleration controls and status reporting for:
+
+  * detected hardware devices
+  * Docker-visible hardware devices
+  * FFmpeg-reported encoders
+  * encoder-ready providers
+  * selected encode path
+  * software fallback status
+* Added functional FFmpeg hardware encoder probes so detected GPUs are not treated as usable unless the selected encoder can successfully encode.
+* Added the dedicated Weather virtual channel.
+
+  * Added Virtual Channels admin page at `/virtual-channels`.
+  * Added Weather Channel browser preview page at `/weather`.
+  * Added dedicated Weather HLS playlist at `/hls/weather.m3u8`.
+  * Added Weather renderer support through `app/weather_renderer.py`.
+  * Added Weather radar support through `app/weather_radar.py`.
+  * Added Weather Channel state tracking through `data/weather_state.json`.
+* Added Weather Channel configuration options:
+
+  * enable/disable Weather Channel
+  * latitude and longitude
+  * location name
+  * temperature units
+  * segment duration
+  * background condition override
+  * Weather logo export toggle
+* Added Weather Channel playlist and EPG export support.
+
+  * `/channel.m3u` and `/channel.m3u8` can now include enabled virtual channels.
+  * `/channel.xmltv` can now include XMLTV entries for enabled virtual channels.
+* Added Weather Channel logo support.
+
+  * Added bundled default Weather logo at `data/weather_logo/default.svg`.
+  * Added Weather logo route at `/weather-logo/<filename>`.
+  * Added optional `tvg-logo` metadata for Weather playlist export.
+* Added Weather Channel background music support.
+
+  * Added separate Weather music upload/delete workflow.
+  * Added separate Weather music library under `data/weather_music/`.
+  * Added Weather-specific single-track and playlist modes.
+* Added Weather data APIs and supporting integrations:
+
+  * `/api/weather`
+  * `/api/weather/bg_override`
+  * `/api/weather/zip-lookup`
+  * `/weather-radar/current.png`
+* Added Open-Meteo forecast integration for current, hourly, and daily Weather Channel data.
+* Added NWS active weather alert integration for U.S. locations.
+* Added ZIP-code lookup support through Nominatim for easier Weather Channel location setup.
+* Added radar image generation and caching support.
+* Added `requests>=2.31.0` as a runtime dependency for Weather data, radar, alerts, and ZIP lookup requests.
+* Added test coverage for:
+
+  * GPU capability detection
+  * hardware encoder fallback
+  * hardware acceleration status UI
+  * Weather virtual channel exports
+  * Weather radar handling
+  * Weather rendering
+  * M3U parsing
+
+### Changed
+
+* Updated FFmpeg profile resolution so hardware acceleration is selected only when an encoder-ready provider passes validation.
+* Updated guide and Weather HLS pipelines to share the same hardware/software encode-path selection logic.
+* Updated the admin UI with Virtual Channels navigation, Weather Channel controls, and expanded hardware acceleration status.
+* Updated M3U/XMLTV generation to support multiple exported virtual channels instead of only the main guide channel.
+* Updated Linux installation diagnostics to run `gpu_hwaccel_detect_v3.py` and report whether hardware encoding is usable or software fallback will be used.
+* Updated Docker host-alias examples so the default package no longer includes a private LAN IP address.
+
+  * `RETROGUIDE_HOST_ALIASES` should remain unset by default.
+  * Host aliases are now documented as optional deployment-specific overrides, for example:
+    `RETROGUIDE_HOST_ALIASES=iptv.lan=<media-server-ip>,epg.lan=<epg-server-ip>`
+
+### Fixed
+
+* Fixed Weather virtual channel playlist entries so they point to `/hls/weather.m3u8` instead of the embedded Weather preview page.
+* Improved hardware acceleration fallback behavior so detected-but-unusable GPUs do not cause the pipeline to fail when software fallback is available.
+* Removed private-network example IPs from default Docker host-alias examples to avoid interfering with user deployments.
+
+### Security
+
+* Served Weather logo files use sanitized filenames and no-cache headers, matching the guide-logo delivery model.
+* Weather music upload/delete handling uses sanitized filenames and validates selections against the uploaded Weather music library.
+* Docker host-alias configuration is now opt-in so the default compose example does not expose or assume a private LAN topology.
+
+### Known Issues
+
+* RetroStation MC v1.3.0 still has no built-in authentication. Keep it LAN-only, behind a VPN, or behind an authenticated reverse proxy.
+* Weather Channel output depends on external data providers for forecast, alert, radar, and ZIP lookup data. If those services are unavailable, Weather output may fall back to partial or placeholder data.
+* Hardware acceleration support depends on the host GPU, Docker runtime visibility, installed drivers, and FFmpeg encoder support. If hardware encoding is unavailable or fails validation, RetroStation MC falls back to software encoding.
+
+---
 
 ## [v1.2.0] - 2026-06-06
 
 ### Added
-
 - Added an **Off Air** admin tab for scheduling a daily off-air window.
 - Added off-air configuration keys:
   - `off_air_enabled`, `off_air_start`, `off_air_end`, `off_air_static_enabled`
@@ -72,7 +174,6 @@ This project uses a simple release-based changelog format with the following sec
   - Linux installer/uninstaller behavior
 
 ### Changed
-
 - Updated the Admin **About** tab version from `v1.1.0` to `v1.2.0`.
 - Refactored FFmpeg command construction out of the main pipeline start logic into a dedicated helper.
 - Updated audio FFmpeg argument generation to use the selected profile audio codec instead of hardcoding AAC.
@@ -92,14 +193,12 @@ This project uses a simple release-based changelog format with the following sec
 - Updated architecture, configuration, HLS pipeline, and admin user documentation for the new off-air, standby pattern, watchdog, and installer behavior.
 
 ### Fixed
-
 - Improved HLS observability by surfacing stalled playlist/segment conditions directly in diagnostics.
 - Improved standby/live switching behavior during scheduled off-air windows.
 - Improved standby pattern robustness by validating uploaded image content before use.
 - Improved FFmpeg configurability by centralizing codec/profile settings instead of scattering hardcoded values.
 
 ### Security / Hardening
-
 - Added validation and sanitization for standby pattern uploads.
 - Added file size limits for standby pattern uploads.
 - Added no-cache headers for served standby pattern files.
@@ -107,12 +206,11 @@ This project uses a simple release-based changelog format with the following sec
 - Added uninstall logic that preserves the `iptv` user when `/home/iptv` still contains other files.
 
 ### Known Issues / Notes
-
 - The hardware acceleration providers are currently placeholders; only the default software FFmpeg profile is implemented.
 
 ---
 
-## [v1.1.0] - 2026-05-27
+## [v1.1.0] - 2026-05-25 - Beta
 
 ### Added
 - RetroStation MC as the new default bundled theme.

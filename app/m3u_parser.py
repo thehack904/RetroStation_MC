@@ -10,11 +10,22 @@ def read_text(source: str) -> str:
     return read_text_or_file(source, timeout=15)
 
 
+def _extract_display_name(line: str) -> str:
+    in_quotes = False
+    for index, char in enumerate(line):
+        if char == '"':
+            in_quotes = not in_quotes
+            continue
+        if char == "," and not in_quotes:
+            return line[index + 1 :].strip() or "Unknown"
+    return "Unknown"
+
+
 def parse_extinf(line: str) -> dict:
     attrs = {}
     for key, value in re.findall(r'([\w\-]+)="([^"]*)"', line):
         attrs[key] = value
-    name = line.split(",", 1)[1].strip() if "," in line else "Unknown"
+    name = _extract_display_name(line)
     attrs["display_name"] = name
     return attrs
 

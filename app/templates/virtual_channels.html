@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Virtual Channels — RetroStation MC</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    .vc-page { max-width: 860px; margin: 0 auto; padding: 24px 16px; }
+    .vc-back-bar { margin-bottom: 18px; }
+    .vc-back-bar a { font-size: 0.9em; opacity: 0.8; }
+    .vc-header { margin-bottom: 28px; }
+    .vc-header h1 { font-size: 1.5em; font-weight: 700; margin-bottom: 4px; }
+    .vc-header p { opacity: 0.7; font-size: 0.92em; }
+
+    .vc-card {
+      background: var(--theme-panel-bg, #111b31);
+      border: 1px solid var(--theme-panel-border, #223454);
+      border-radius: 6px;
+      margin-bottom: 28px;
+      overflow: hidden;
+    }
+    .vc-card-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--theme-panel-border, #223454);
+    }
+    .vc-card-head h2 { font-size: 1.05em; font-weight: 700; margin: 0; }
+    .vc-card-head .vc-channel-badge {
+      font-size: 0.75em;
+      background: var(--theme-btn-bg, #2f65d9);
+      color: var(--theme-btn-text, #fff);
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .vc-card-body { padding: 18px; }
+
+    .vc-enabled-toggle {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 18px;
+      padding: 10px 14px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 4px;
+    }
+    .vc-enabled-toggle label { font-weight: 600; cursor: pointer; }
+    .vc-enabled-toggle .vc-preview-link {
+      margin-left: auto;
+      font-size: 0.88em;
+      opacity: 0.8;
+    }
+
+    .vc-fields-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .vc-field { display: flex; flex-direction: column; gap: 5px; }
+    .vc-field label { font-size: 0.85em; opacity: 0.75; font-weight: 600; }
+    .vc-field input, .vc-field select {
+      padding: 6px 8px;
+      background: var(--theme-input-bg, #0b1220);
+      border: 1px solid var(--theme-input-border, #35527e);
+      border-radius: 4px;
+      color: inherit;
+      font-size: 0.93em;
+    }
+    .vc-field-wide { grid-column: 1 / -1; }
+
+    .vc-zip-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .vc-zip-row label { font-size: 0.85em; opacity: 0.75; font-weight: 600; min-width: 130px; }
+    .vc-zip-row input { width: 90px; padding: 5px 7px; font-size: 0.92em;
+                        background: var(--theme-input-bg, #0b1220);
+                        border: 1px solid var(--theme-input-border, #35527e);
+                        border-radius: 4px; color: inherit; }
+    #vc-zip-status { font-size: 0.85em; opacity: 0.8; }
+
+    .vc-hint { font-size: 0.82em; opacity: 0.65; margin-top: 4px; line-height: 1.5; }
+    .vc-music-list { display: grid; gap: 8px; margin-top: 10px; }
+    .vc-music-item {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      background: rgba(0,0,0,0.2);
+      border: 1px solid var(--theme-panel-border, #223454);
+      border-radius: 4px;
+      padding: 8px 10px;
+    }
+    .vc-music-item code { margin-right: auto; }
+
+    .vc-segment-desc {
+      background: rgba(0,0,0,0.25);
+      border-left: 3px solid var(--theme-btn-bg, #2f65d9);
+      padding: 8px 12px;
+      font-size: 0.83em;
+      opacity: 0.85;
+      border-radius: 0 4px 4px 0;
+      margin-bottom: 14px;
+    }
+
+    .vc-test-panel {
+      padding: 12px 14px;
+      background: rgba(0, 10, 50, 0.55);
+      border: 1px solid #3058d8;
+      border-radius: 4px;
+      margin-top: 14px;
+    }
+    .vc-test-panel-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .vc-test-badge {
+      background: #1640d4;
+      color: #fff;
+      font-weight: 700;
+      font-size: 0.75em;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      padding: 0.18em 0.5em;
+      border-radius: 3px;
+    }
+    .vc-test-panel-title { color: #c8d8ff; font-size: 0.88em; font-weight: 600; }
+    #wx-bg-override-status { margin-left: auto; font-size: 0.82em; opacity: 0.8; }
+    .vc-test-hint { font-size: 0.78em; opacity: 0.7; margin-bottom: 10px; line-height: 1.45; }
+    .wx-bg-btn-group { display: flex; flex-wrap: wrap; gap: 6px; }
+
+    .form-actions { margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  </style>
+</head>
+<body>
+
+  <!-- Status header matching main admin page style -->
+  <header class="status-bar">
+    <div class="status-bar__brand">RetroStation MC</div>
+    <div class="status-bar__info">
+      <span class="status-bar__item">Virtual Channels</span>
+    </div>
+    <div class="status-bar__actions">
+      <a href="{{ url_for('index') }}" class="btn btn--sm">&#8592; Back to Admin</a>
+    </div>
+  </header>
+
+  <!-- Flash messages -->
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-bar">
+      {% for category, message in messages %}
+        <div class="flash flash--{{ category }}">{{ message }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% endwith %}
+
+  <div class="vc-page">
+
+    <div class="vc-header">
+      <h1>&#127780; Virtual Channels</h1>
+      <p>Manage virtual channel overlays powered by live data. Each enabled channel is accessible as a web page that can be captured for broadcast.</p>
+    </div>
+
+    <!-- ═══════════  Weather Channel Card  ═══════════ -->
+    <div class="vc-card">
+      <div class="vc-card-head">
+        <span style="font-size:1.4em;">&#127780;</span>
+        <h2>Weather Channel</h2>
+        <span class="vc-channel-badge">Weather</span>
+        {% if weather.enabled %}
+          <span class="vc-channel-badge" style="background:#228b22;">Enabled</span>
+        {% endif %}
+      </div>
+      <div class="vc-card-body">
+
+        <div class="vc-segment-desc">
+          Cycles through 5 segments wall-clock aligned:
+          <strong>Current Conditions</strong> &rarr; <strong>5-Day Forecast</strong>
+          &rarr; <strong>Regional Radar</strong> &rarr; <strong>Severe Weather Alerts</strong>
+          &rarr; <strong>Extended Forecast</strong>.
+          Uses <a href="https://open-meteo.com/" target="_blank" rel="noopener" style="color:inherit">Open-Meteo</a> (free, no API key)
+          and <a href="https://www.weather.gov/" target="_blank" rel="noopener" style="color:inherit">NOAA/NWS</a> alerts (US only).
+        </div>
+
+        <form method="post" action="{{ url_for('virtual_channels_weather_config') }}" enctype="multipart/form-data">
+
+          <div class="vc-enabled-toggle">
+            <input type="hidden" name="weather_channel_enabled" value="0">
+            <input type="checkbox" id="wx-enabled" name="weather_channel_enabled" value="1"
+                   {% if weather.enabled %}checked{% endif %}>
+            <label for="wx-enabled">Enable Weather Channel</label>
+            <a href="{{ url_for('weather_page') }}" target="_blank" rel="noopener"
+               class="vc-preview-link btn btn--sm">
+              &#127780; Preview Weather Page &#8599;
+            </a>
+          </div>
+
+          <!-- Weather logo icon toggle -->
+          <div class="vc-enabled-toggle" style="margin-bottom:14px;">
+            <input type="hidden" name="weather_logo_enabled" value="0">
+            <input type="checkbox" id="wx-logo-enabled" name="weather_logo_enabled" value="1"
+                   {% if weather.logo_enabled %}checked{% endif %}>
+            <label for="wx-logo-enabled">Show Weather Icon in M3U / XMLTV</label>
+          </div>
+
+          <div class="vc-segment-desc">
+            <strong>Weather Channel Background Music</strong><br>
+            Uses a separate uploaded music library for this virtual channel. Supports
+            <strong>single track</strong> or <strong>playlist</strong> modes with optional looping.
+          </div>
+
+          <div class="vc-enabled-toggle" style="margin-bottom:14px; display:block;">
+            <label style="display:block; margin-bottom:8px;">Upload Weather Channel music files</label>
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <input type="file" name="files" multiple accept=".mp3,.flac,.wav,.ogg,.m4a,.aac" style="width:auto">
+              <button type="submit" formaction="{{ url_for('weather_music_upload') }}" formmethod="post" class="btn btn--sm">Upload</button>
+            </div>
+          </div>
+
+          <div class="vc-fields-grid">
+            <div class="vc-field">
+              <label for="wx-music-mode">Music Mode</label>
+              <select id="wx-music-mode" name="weather_music_mode">
+                <option value="none" {% if weather.music_mode == 'none' %}selected{% endif %}>None (silence)</option>
+                <option value="single" {% if weather.music_mode == 'single' %}selected{% endif %}>Single file</option>
+                <option value="playlist" {% if weather.music_mode == 'playlist' %}selected{% endif %}>Playlist</option>
+              </select>
+            </div>
+            <div class="vc-field" style="justify-content:flex-end;">
+              <label>&nbsp;</label>
+              <label for="wx-music-loop" style="display:flex; align-items:center; gap:8px; opacity:1;">
+                <input type="checkbox" id="wx-music-loop" name="weather_music_loop" value="1"
+                       {% if weather.music_loop %}checked{% endif %}>
+                Loop music
+              </label>
+            </div>
+          </div>
+
+          {% if weather_music_files %}
+            <div class="vc-music-list">
+              {% for fname in weather_music_files %}
+                <div class="vc-music-item">
+                  <label style="display:flex; align-items:center; gap:6px;">
+                    <input type="radio" name="weather_music_single_file" value="{{ fname }}"
+                           {% if weather.music_single_file == fname %}checked{% endif %}>
+                    Single
+                  </label>
+                  <label style="display:flex; align-items:center; gap:6px;">
+                    <input type="checkbox" name="weather_music_playlist_files" value="{{ fname }}"
+                           {% if fname in weather.music_playlist_files %}checked{% endif %}>
+                    Playlist
+                  </label>
+                  <code>{{ fname }}</code>
+                  <button type="submit"
+                          formaction="{{ url_for('weather_music_delete', filename=fname) }}"
+                          formmethod="post"
+                          class="btn btn--sm">
+                    Delete
+                  </button>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="vc-hint">No Weather Channel music files uploaded yet.</p>
+          {% endif %}
+
+          <!-- US ZIP code quick-lookup -->
+          <div class="vc-zip-row">
+            <label>US Zip Code Lookup</label>
+            <input type="text" id="vc-zip-input" placeholder="e.g. 33101"
+                   maxlength="5" inputmode="numeric" pattern="\d{5}">
+            <button type="button" id="vc-zip-lookup-btn" class="btn btn--sm">Look Up</button>
+            <span id="vc-zip-status" aria-live="polite"></span>
+          </div>
+
+          <!-- Location fields -->
+          <div class="vc-fields-grid">
+            <div class="vc-field vc-field-wide">
+              <label for="wx-location">Location Name</label>
+              <input type="text" id="wx-location" name="weather_location_name"
+                     value="{{ weather.location_name }}"
+                     placeholder="e.g. Miami, FL" maxlength="120">
+            </div>
+            <div class="vc-field">
+              <label for="wx-lat">Latitude</label>
+              <input type="text" id="wx-lat" name="weather_lat"
+                     value="{{ weather.lat }}"
+                     placeholder="e.g. 25.77" maxlength="20" inputmode="decimal">
+            </div>
+            <div class="vc-field">
+              <label for="wx-lon">Longitude</label>
+              <input type="text" id="wx-lon" name="weather_lon"
+                     value="{{ weather.lon }}"
+                     placeholder="e.g. -80.19" maxlength="20" inputmode="decimal">
+            </div>
+            <div class="vc-field">
+              <label for="wx-units">Units</label>
+              <select id="wx-units" name="weather_units">
+                <option value="F" {% if weather.units != 'C' %}selected{% endif %}>°F — Fahrenheit</option>
+                <option value="C" {% if weather.units == 'C' %}selected{% endif %}>°C — Celsius</option>
+              </select>
+            </div>
+            <div class="vc-field">
+              <label for="wx-sps">Segment Duration</label>
+              <select id="wx-sps" name="weather_seconds_per_segment">
+                {% set cur_sps = (weather.seconds_per_segment or '300') | int %}
+                <option value="60"  {% if cur_sps == 60  %}selected{% endif %}>1 minute — 5-min cycle</option>
+                <option value="120" {% if cur_sps == 120 %}selected{% endif %}>2 minutes — 10-min cycle</option>
+                <option value="180" {% if cur_sps == 180 %}selected{% endif %}>3 minutes — 15-min cycle</option>
+                <option value="300" {% if cur_sps == 300 %}selected{% endif %}>5 minutes — 25-min cycle (default)</option>
+                <option value="600" {% if cur_sps == 600 %}selected{% endif %}>10 minutes — 50-min cycle</option>
+              </select>
+              <p class="vc-hint">Time displayed on each of the 5 screens before rotating.</p>
+            </div>
+          </div>
+
+          <!-- Animated background test panel -->
+          <div class="vc-test-panel">
+            <div class="vc-test-panel-header">
+              <span class="vc-test-badge">&#127919; Test</span>
+              <strong class="vc-test-panel-title">Animated Background Preview</strong>
+              <span id="wx-bg-override-status" aria-live="polite"></span>
+            </div>
+            <p class="vc-test-hint">
+              Force a specific animated background on the weather channel for testing,
+              regardless of actual weather. Click a condition to activate it; click
+              <strong>Auto</strong> to restore real-weather backgrounds.
+            </p>
+            <div class="wx-bg-btn-group">
+              <button type="button" class="wx-bg-test-btn btn btn--sm"
+                      data-condition="" title="Use actual weather condition (default)">&#9654; Auto</button>
+              <button type="button" class="wx-bg-test-btn btn btn--sm"
+                      data-condition="sunny" title="Sunny / Clear sky">&#9728; Sunny</button>
+              <button type="button" class="wx-bg-test-btn btn btn--sm"
+                      data-condition="partly_cloudy" title="Partly cloudy">&#9925; Partly Cloudy</button>
+              <button type="button" class="wx-bg-test-btn btn btn--sm"
+                      data-condition="cloudy" title="Overcast / Cloudy">&#9729; Cloudy</button>
+              <button type="button" class="wx-bg-test-btn btn btn--sm"
+                      data-condition="rain" title="Rain">&#127783; Rain</button>
+              <button type="button" class="wx-bg-test-btn btn btn--sm"
+                      data-condition="drizzle" title="Drizzle">&#127746; Drizzle</button>
+              <button type="button" class="wx-bg-test-btn btn btn--sm"
+                      data-condition="snow" title="Snow">&#10052; Snow</button>
+              <button type="button" class="wx-bg-test-btn btn btn--sm"
+                      data-condition="thunderstorm" title="Thunderstorm">&#9928; T-Storm</button>
+              <button type="button" class="wx-bg-test-btn btn btn--sm"
+                      data-condition="foggy" title="Foggy / Misty">&#127787; Foggy</button>
+              <button type="button" class="wx-bg-test-btn btn btn--sm"
+                      data-condition="windy" title="Windy">&#127786; Windy</button>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn--primary">Save Weather Settings</button>
+          </div>
+        </form>
+
+      </div><!-- /vc-card-body -->
+    </div><!-- /vc-card -->
+
+  </div><!-- /vc-page -->
+
+  <!-- Zip code lookup -->
+  <script>
+  (function () {
+    var zipInput  = document.getElementById('vc-zip-input');
+    var zipBtn    = document.getElementById('vc-zip-lookup-btn');
+    var zipStatus = document.getElementById('vc-zip-status');
+    var latInput  = document.getElementById('wx-lat');
+    var lonInput  = document.getElementById('wx-lon');
+    var locInput  = document.getElementById('wx-location');
+
+    if (!zipBtn) return;
+
+    zipBtn.addEventListener('click', function () {
+      var zip = (zipInput.value || '').trim();
+      if (!zip) { zipStatus.textContent = 'Enter a zip code first.'; return; }
+      zipStatus.textContent = 'Looking up\u2026';
+      fetch('/api/weather/zip-lookup?zip=' + encodeURIComponent(zip), {credentials: 'same-origin'})
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.ok) {
+            latInput.value = d.lat;
+            lonInput.value = d.lon;
+            if (!locInput.value) locInput.value = d.name;
+            zipStatus.textContent = '\u2713 Found: ' + d.name;
+            zipStatus.style.color = '#70c070';
+          } else {
+            zipStatus.textContent = d.error || 'Not found.';
+            zipStatus.style.color = '#e07070';
+          }
+        })
+        .catch(function () {
+          zipStatus.textContent = 'Request failed.';
+          zipStatus.style.color = '#e07070';
+        });
+    });
+
+    zipInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); zipBtn.click(); }
+    });
+  })();
+  </script>
+
+  <!-- Animated background override test -->
+  <script>
+  (function () {
+    var statusEl = document.getElementById('wx-bg-override-status');
+    var buttons  = document.querySelectorAll('.wx-bg-test-btn');
+
+    fetch('/api/weather/bg_override', {credentials: 'same-origin'})
+      .then(function (r) { return r.json(); })
+      .then(function (d) { _highlightActive(d.condition || ''); })
+      .catch(function () {});
+
+    function _highlightActive(condition) {
+      buttons.forEach(function (btn) {
+        var isActive = btn.getAttribute('data-condition') === condition;
+        btn.style.background    = isActive ? '#1640d4' : '';
+        btn.style.color         = isActive ? '#fff'    : '';
+        btn.style.borderColor   = isActive ? '#4a70ff' : '';
+        btn.style.fontWeight    = isActive ? '700'     : '';
+      });
+      if (condition) {
+        statusEl.textContent = 'Override: ' + condition.replaceAll('_', ' ');
+        statusEl.style.color = '#ffd700';
+      } else {
+        statusEl.textContent = 'Auto (actual weather)';
+        statusEl.style.color = '';
+      }
+    }
+
+    buttons.forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var condition = btn.getAttribute('data-condition');
+        statusEl.textContent = 'Saving\u2026';
+        fetch('/api/weather/bg_override', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({condition: condition})
+        })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.ok) {
+            _highlightActive(d.condition || '');
+          } else {
+            statusEl.textContent = 'Error: ' + (d.error || 'unknown');
+            statusEl.style.color = '#e07070';
+          }
+        })
+        .catch(function () {
+          statusEl.textContent = 'Request failed';
+          statusEl.style.color = '#e07070';
+        });
+      });
+    });
+  })();
+  </script>
+
+</body>
+</html>

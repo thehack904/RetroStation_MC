@@ -4,11 +4,11 @@
 
 | Version | Status |
 |---|---|
-| v1.0.0 | Initial supported release |
+| v1.3.0 | Current documented release |
 
 ## Security model
 
-RetroStation MC v1.0.0 is a local-control application. It has no built-in authentication or authorization. Treat it as a trusted-LAN service.
+RetroStation MC v1.3.0 is a local-control application. It has no built-in authentication or authorization. Treat it as a trusted-LAN service.
 
 Do not expose the app directly to the public internet.
 
@@ -28,6 +28,7 @@ The admin UI can:
 - change playlist and XMLTV sources
 - restart and stop FFmpeg/renderer processes
 - upload audio files
+- upload or remove guide logos and standby patterns
 - delete uploaded audio files
 - read logs
 - export logs

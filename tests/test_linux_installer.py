@@ -18,6 +18,8 @@ class LinuxInstallerTests(unittest.TestCase):
         self.assertIn('SYSTEMD_FILE="/etc/systemd/system/${SERVICE_NAME}.service"', self.installer)
         self.assertIn("run_as_app_user python3 -m venv \"$APP_DIR/.venv\"", self.installer)
         self.assertIn("run_as_app_user \"$APP_DIR/.venv/bin/pip\" install -r \"$APP_DIR/requirements.txt\"", self.installer)
+        self.assertIn("run_as_app_user \"$APP_DIR/.venv/bin/python\" \"$APP_DIR/gpu_hwaccel_detect_v3.py\"", self.installer)
+        self.assertIn("Warning: GPU hardware acceleration diagnostics failed; continuing with software fallback.", self.installer)
         self.assertIn("systemctl enable --now \"$SERVICE_NAME\"", self.installer)
 
     def test_linux_installer_checks_ffmpeg_dependency(self) -> None:

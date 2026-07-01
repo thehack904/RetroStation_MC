@@ -15,7 +15,8 @@ from typing import Optional
 from werkzeug.utils import secure_filename
 
 from .config_store import ConfigStore
-from .ffmpeg_profiles import FFmpegProfile, resolve_ffmpeg_profile
+from .ffmpeg_profiles import FFmpegProfile, normalize_hardware_acceleration_mode, resolve_ffmpeg_profile
+from .gpu_capabilities import detect_gpu_capabilities
 from .guide_state import STATE_PATH, build_state
 from .logging_utils import AppLogger
 from .m3u_parser import parse_m3u
@@ -25,9 +26,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = BASE_DIR / "output"
 DATA_DIR = BASE_DIR / "data"
 MUSIC_DIR = DATA_DIR / "music"
+WEATHER_MUSIC_DIR = DATA_DIR / "weather_music"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+WEATHER_MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 
 STANDBY_SEGMENT = OUTPUT_DIR / "standby.ts"
 STATIC_SEGMENT = OUTPUT_DIR / "static.ts"
@@ -150,6 +153,16 @@ STANDBY_DURATION_SECS = 30
 HLS_KEYFRAME_INTERVAL_SECS = 2
 HLS_TELEMETRY_WARN_INTERVAL_MULTIPLIER = 1.5
 HLS_TELEMETRY_WARN_DURATION_VARIANCE_SECS = 0.15
+
+# Hardware-encoder runtime fallback.
+# If the ffmpeg process dies this many times consecutively within the quick-
+# failure window while a hardware encoder is selected, both managers force
+# software (libx264) encoding for the remainder of the process lifetime and
+# log a warning so the operator knows why the encoder changed.
+HW_ENCODER_MAX_CONSECUTIVE_FAILURES = 3
+# Seconds: an ffmpeg death within this window of the previous start_pipeline
+# call is treated as a "quick" (likely encoder-init) failure.
+HW_ENCODER_QUICK_FAILURE_WINDOW_SECS = 10.0
 
 # PID files let us reattach to the pipeline after a Flask restart without
 # killing the already-running renderer and ffmpeg processes.
@@ -409,7 +422,14 @@ def _build_static_noise_image(width: int, height: int) -> "Image.Image":
 # Manager
 # ---------------------------------------------------------------------------
 
-def _build_audio_ffmpeg_args(config: dict, audio_codec: str) -> tuple[list[str], list[str], list[str]]:
+def _build_audio_ffmpeg_args(
+    config: dict,
+    audio_codec: str,
+    *,
+    key_prefix: str = "music_",
+    music_dir: Path | None = None,
+    playlist_filename: str = "music_playlist.txt",
+) -> tuple[list[str], list[str], list[str]]:
     """Return (input_args, codec_args, map_args) for the audio portion of the
     ffmpeg pipeline based on the music configuration in *config*.
 
@@ -429,13 +449,19 @@ def _build_audio_ffmpeg_args(config: dict, audio_codec: str) -> tuple[list[str],
     silence_codec = ["-c:a", audio_codec, "-b:a", "32k"]
     silence_map = ["-map", "0:v", "-map", "1:a"]
 
-    music_mode = config.get("music_mode", "none")
-    music_loop = bool(config.get("music_loop", False))
+    mode_key = f"{key_prefix}mode"
+    loop_key = f"{key_prefix}loop"
+    single_file_key = f"{key_prefix}single_file"
+    playlist_files_key = f"{key_prefix}playlist_files"
+    music_dir = music_dir or MUSIC_DIR
+
+    music_mode = config.get(mode_key, "none")
+    music_loop = bool(config.get(loop_key, False))
 
     if music_mode == "single":
-        filename = config.get("music_single_file", "")
+        filename = config.get(single_file_key, "")
         if filename:
-            file_path = MUSIC_DIR / Path(filename).name
+            file_path = music_dir / Path(filename).name
             if file_path.exists():
                 if music_loop:
                     return (
@@ -461,14 +487,14 @@ def _build_audio_ffmpeg_args(config: dict, audio_codec: str) -> tuple[list[str],
                     )
 
     elif music_mode == "playlist":
-        playlist_files = config.get("music_playlist_files", [])
+        playlist_files = config.get(playlist_files_key, [])
         valid_files = [
-            MUSIC_DIR / Path(f).name
+            music_dir / Path(f).name
             for f in playlist_files
-            if (MUSIC_DIR / Path(f).name).exists()
+            if (music_dir / Path(f).name).exists()
         ]
         if valid_files:
-            concat_file = DATA_DIR / "music_playlist.txt"
+            concat_file = DATA_DIR / playlist_filename
             try:
                 # Escape single-quotes in paths (ffmpeg concat demuxer uses
                 # single-quoted file entries; a literal ' must become '\'').
@@ -548,21 +574,26 @@ def _build_ffmpeg_command(
     # populated with multiple IDR points so segment boundaries can start cleanly
     # and avoid "grey frame" stalls in stricter IPTV clients.
     gop_frames = int(fps) * HLS_KEYFRAME_INTERVAL_SECS
+    video_codec, video_codec_args, preset, tune, _, pix_fmt = _resolve_video_encoder_path(profile)
+    hw_device_init_args = _resolve_hw_device_init_args(video_codec)
     ffmpeg_cmd = [
         "ffmpeg",
         "-hide_banner", "-loglevel", "error", "-y",
+        *hw_device_init_args,
         "-f", "rawvideo",
         "-pix_fmt", "rgb24",
         "-s", profile.resolution,
         "-r", fps,
         "-i", "-",
         *audio_input_args,
-        "-c:v", profile.video_codec,
+        "-c:v", video_codec,
     ]
-    if profile.preset:
-        ffmpeg_cmd.extend(["-preset", profile.preset])
+    ffmpeg_cmd.extend(video_codec_args)
+    if preset:
+        ffmpeg_cmd.extend(["-preset", preset])
+    if tune:
+        ffmpeg_cmd.extend(["-tune", tune])
     ffmpeg_cmd.extend([
-        "-tune", "zerolatency",
         # GOP / keyframe strategy mirrors ErsatzTV's OutputFormatHls:
         # -g / -keyint_min pin the GOP to exactly KeyframeIntervalSeconds
         # so ffmpeg never stretches it on scene-change detection.
@@ -579,7 +610,7 @@ def _build_ffmpeg_command(
     if profile.bitrate:
         ffmpeg_cmd.extend(["-b:v", profile.bitrate])
     ffmpeg_cmd.extend([
-        "-pix_fmt", "yuv420p",
+        "-pix_fmt", pix_fmt,
         *audio_codec_args,
         *audio_map_args,
         "-f", "hls",
@@ -647,6 +678,18 @@ class GuideManager:
         self._hls_telemetry_stop = threading.Event()
         self._last_hls_watchdog_warning_at: float | None = None
         self._last_hls_watchdog_warning_key: tuple[str, ...] = ()
+        # Hardware-encoder runtime fallback state.
+        # _hw_failure_count: consecutive quick-failure restarts while a hardware
+        #   encoder was in use.  Reset to 0 after a long-lived run.
+        # _hw_fallback_forced: set True once the failure threshold is hit; stays
+        #   True for the lifetime of this process so we don't keep hammering
+        #   broken hardware.
+        # _last_encoder_type: "hardware" or "software" – set each time
+        #   start_pipeline resolves the ffmpeg profile so ensure_pipeline_running
+        #   can decide whether to count a crash as a hw failure.
+        self._hw_failure_count: int = 0
+        self._hw_fallback_forced: bool = False
+        self._last_encoder_type: str = "software"
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -899,9 +942,12 @@ class GuideManager:
         to fail with repeated 404 errors on the segment URLs and often stall
         indefinitely.
 
-        ``standby.ts`` is intentionally preserved across restarts so that
-        the standby playlist (served while guide.m3u8 is not yet ready) is
-        immediately available without waiting for a new encode.
+        ``standby.ts`` and ``static.ts`` are intentionally preserved across
+        restarts so that the standby playlist is immediately available.
+
+        ``weather.m3u8`` and ``weather_*.ts`` segments are owned by the
+        :class:`WeatherChannelManager` and are intentionally skipped here so
+        that a guide pipeline restart does not interrupt the weather stream.
 
         Epoch-based ``-start_number`` (set in ``start_pipeline``) ensures that
         ``EXT-X-MEDIA-SEQUENCE`` always advances across restarts, so there is no
@@ -909,6 +955,9 @@ class GuideManager:
         """
         for path in OUTPUT_DIR.iterdir():
             if path in {STANDBY_SEGMENT, STATIC_SEGMENT}:
+                continue
+            # Preserve weather channel files managed by WeatherChannelManager.
+            if path.name == "weather.m3u8" or path.name.startswith("weather_"):
                 continue
             if path.suffix in (".ts", ".m3u8"):
                 try:
@@ -1079,7 +1128,25 @@ class GuideManager:
             self._clean_output_dir()
 
             config = self.store.get_config()
-            profile = resolve_ffmpeg_profile(config)
+            if self._hw_fallback_forced:
+                config = {**config, "hardware_acceleration_mode": "software_fallback"}
+                self.logger.warning(
+                    "pipeline",
+                    f"Hardware encoder failed {HW_ENCODER_MAX_CONSECUTIVE_FAILURES} consecutive time(s) quickly; "
+                    "forcing software fallback (libx264) for the remainder of this session.",
+                )
+            try:
+                gpu_capabilities = detect_gpu_capabilities()
+            except Exception as exc:
+                self.logger.warning("pipeline", f"GPU detection unavailable; using software fallback profile: {exc}")
+                gpu_capabilities = {}
+            profile = resolve_ffmpeg_profile(config, gpu_capabilities)
+            self._last_encoder_type = profile.encoder_type
+            selected_codec, _, _, _, encoder_path, _ = _resolve_video_encoder_path(profile)
+            self.logger.info(
+                "pipeline",
+                f"Selected encoder path: {encoder_path} (codec={selected_codec}, provider={profile.hardware_acceleration_provider or 'software'})",
+            )
             resolution = profile.resolution
             fps = str(config.get("fps", 15))
             segment_seconds = str(profile.hls_segment_length)
@@ -1246,6 +1313,28 @@ class GuideManager:
                 rc_str = str(ffmpeg_rc) if ffmpeg_rc is not None else "unknown"
                 parts.append(f"ffmpeg (PID {self._ffmpeg_pid}, exit {rc_str})")
             self.logger.warning("pipeline", f"Dead process(es): {', '.join(parts)} — restarting pipeline")
+
+            # Track consecutive quick failures while a hardware encoder is in
+            # use so we can force a software fallback once the threshold is hit.
+            elapsed = (
+                time.time() - self._pipeline_started_at
+                if self._pipeline_started_at is not None
+                else float("inf")
+            )
+            if self._last_encoder_type == "hardware" and elapsed < HW_ENCODER_QUICK_FAILURE_WINDOW_SECS:
+                self._hw_failure_count += 1
+                if self._hw_failure_count >= HW_ENCODER_MAX_CONSECUTIVE_FAILURES and not self._hw_fallback_forced:
+                    self._hw_fallback_forced = True
+                    self.logger.warning(
+                        "pipeline",
+                        f"Hardware encoder has crashed {self._hw_failure_count} time(s) within "
+                        f"{HW_ENCODER_QUICK_FAILURE_WINDOW_SECS:.0f}s of startup; "
+                        "switching to software (libx264) fallback.",
+                    )
+            else:
+                # Ran long enough (or was already on software) — reset the counter.
+                self._hw_failure_count = 0
+
             self.start_pipeline(message="Guide is Restarting...")
 
     def is_guide_buffered(self, min_secs: float = 25.0, min_segments: int = 5) -> bool:
@@ -1447,6 +1536,27 @@ class GuideManager:
                 self._last_was_buffered = now_buffered
             version = self._stream_version
         hls_watchdog = self._hls_watchdog_status(config)
+        try:
+            gpu_capabilities = detect_gpu_capabilities()
+        except Exception as exc:
+            gpu_capabilities = {
+                "running_in_docker": False,
+                "hardware_available": False,
+                "device_detected_providers": [],
+                "detected_hardware_providers": [],
+                "docker_visible_providers": [],
+                "ffmpeg_available": False,
+                "ffmpeg_error": str(exc),
+                "ffmpeg_detected_encoders": [],
+                "providers": {},
+                "software_fallback": {
+                    "available": True,
+                    "label": "software",
+                    "reason": "Software fallback is always available (libx264).",
+                },
+                "message": "GPU detection failed; software fallback is active.",
+            }
+        gpu_capabilities["active_path"] = _build_active_gpu_path(config, gpu_capabilities)
         return {
             "renderer_running": self._renderer_pid is not None and _pid_alive(self._renderer_pid),
             "ffmpeg_running": self._ffmpeg_pid is not None and _pid_alive(self._ffmpeg_pid),
@@ -1466,4 +1576,527 @@ class GuideManager:
             # preview and IPTV clients use the same two-level HLS hierarchy.
             "stream_url": "/hls/master.m3u8",
             "hls_watchdog": hls_watchdog,
+            "gpu_capabilities": gpu_capabilities,
+        }
+
+
+def _build_active_gpu_path(config: dict, gpu_capabilities: dict | None) -> dict:
+    profile = resolve_ffmpeg_profile(config, gpu_capabilities)
+    provider_name = str(profile.hardware_acceleration_provider or "software")
+    using_hardware = provider_name != "software"
+    normalized_mode = normalize_hardware_acceleration_mode(config.get("hardware_acceleration_mode"))
+    detected_devices = []
+    ready_hardware_providers: list[str] = []
+    if isinstance(gpu_capabilities, dict):
+        raw_detected_devices = gpu_capabilities.get("device_detected_providers")
+        if isinstance(raw_detected_devices, list):
+            detected_devices = [str(provider) for provider in raw_detected_devices]
+        raw_ready = gpu_capabilities.get("detected_hardware_providers")
+        if isinstance(raw_ready, list):
+            ready_hardware_providers = [str(provider) for provider in raw_ready]
+
+    # Build a human-readable list of hardware provider labels that are both
+    # detected AND encoder-ready (passed the functional probe).
+    ready_hw_labels: list[str] = []
+    if ready_hardware_providers and isinstance(gpu_capabilities, dict):
+        providers_map = gpu_capabilities.get("providers") or {}
+        for ready_provider in ready_hardware_providers:
+            info = providers_map.get(ready_provider) if isinstance(providers_map, dict) else None
+            hw_label = (info.get("label") if isinstance(info, dict) else None) or ready_provider
+            ready_hw_labels.append(str(hw_label))
+
+    if using_hardware:
+        label = _hardware_provider_label(gpu_capabilities, provider_name)
+        reason = "Using the detected hardware encoder."
+    elif normalized_mode != "hardware_if_available":
+        if ready_hw_labels:
+            # Hardware is available and ready, but the admin has chosen forced software.
+            hw_names = ", ".join(ready_hw_labels)
+            label = f"Software fallback (libx264) — {hw_names} encoder-ready"
+            reason = (
+                f"Hardware Acceleration setting is configured, Hardware ({hw_names}) is encoder-ready. "
+                f"Will use software fallback if/when needed."
+            )
+        else:
+            label = _hardware_provider_label(gpu_capabilities, provider_name)
+            reason = "Configured to always use software fallback (libx264)."
+    elif detected_devices:
+        label = _hardware_provider_label(gpu_capabilities, provider_name)
+        reason = (
+            "Hardware was detected but could not be validated for encoding; "
+            "software fallback is active. "
+            "See the GPU Providers section below for details."
+        )
+    else:
+        label = _hardware_provider_label(gpu_capabilities, provider_name)
+        reason = "No hardware encoder was detected or validated; software fallback is active."
+    return {
+        "provider": provider_name,
+        "label": label,
+        "codec": profile.video_codec,
+        "using_hardware": using_hardware,
+        "reason": reason,
+    }
+
+
+def _hardware_provider_label(gpu_capabilities: dict | None, provider_name: str) -> str:
+    if provider_name == "software":
+        return "Software fallback (libx264)"
+    if isinstance(gpu_capabilities, dict):
+        providers = gpu_capabilities.get("providers")
+        if isinstance(providers, dict):
+            provider = providers.get(provider_name)
+            if isinstance(provider, dict):
+                label = provider.get("label")
+                if label:
+                    return str(label)
+    return provider_name
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WeatherChannelManager
+# ─────────────────────────────────────────────────────────────────────────────
+
+WEATHER_STATE_PATH          = DATA_DIR / "weather_state.json"
+WEATHER_RENDERER_PID_FILE   = DATA_DIR / "weather_renderer.pid"
+WEATHER_FFMPEG_PID_FILE     = DATA_DIR / "weather_ffmpeg.pid"
+WEATHER_PLAYLIST            = OUTPUT_DIR / "weather.m3u8"
+WEATHER_SEGMENT_PREFIX      = "weather_"
+# Weather data is refetched on this cadence (seconds) regardless of
+# seconds_per_segment so the ticker and "last updated" stamp stay fresh.
+WEATHER_FETCH_INTERVAL_SECS = 120
+
+
+def _resolve_video_encoder_path(profile: FFmpegProfile) -> tuple[str, list[str], Optional[str], Optional[str], str, str]:
+    """Return codec, codec-specific args, preset, tune, path label, and pixel format.
+
+    Hardware encoders such as Intel QSV (h264_qsv) and AMD AMF (h264_amf) require
+    the ``nv12`` pixel format rather than ``yuv420p``.  Returning the required
+    pixel format here lets the command builders select the correct ``-pix_fmt``
+    argument without hard-coding ``yuv420p`` everywhere.
+    """
+    codec = (profile.video_codec or "").strip().lower()
+    encoder_map: dict[str, tuple[list[str], Optional[str], Optional[str], str, str]] = {
+        "h264_nvenc": (["-rc", "vbr", "-cq", "23", "-forced-idr", "1"], None, None, "hardware:nvidia", "yuv420p"),
+        "h264_qsv":   (["-look_ahead", "0", "-global_quality", "23"],   None, None, "hardware:intel",  "nv12"),
+        "h264_amf":   (["-quality", "balanced"],                         None, None, "hardware:amd",    "nv12"),
+        "h264_vaapi": (["-qp", "23"],                                    None, None, "hardware:vaapi",  "nv12"),
+        "libx264":    ([],                                 profile.preset, profile.tune, "software:libx264", "yuv420p"),
+    }
+    selected = encoder_map.get(codec)
+    if selected:
+        codec_args, preset, tune, path_label, pix_fmt = selected
+        return codec, codec_args, preset, tune, path_label, pix_fmt
+    if profile.encoder_type != "hardware":
+        return codec or "libx264", [], profile.preset, profile.tune, f"software:custom-{codec or 'unknown'}", "yuv420p"
+    return "libx264", [], "veryfast", "zerolatency", f"software:fallback-from-{codec or 'unknown'}", "yuv420p"
+
+
+def _resolve_hw_device_init_args(codec: str) -> list[str]:
+    """Return global ffmpeg device initialisation arguments for hardware encoders.
+
+    These *must* be placed **before** the first ``-i`` (input) in the ffmpeg
+    command so that the hardware context is available when the codec is opened.
+
+    Intel QSV (``h264_qsv``, ``hevc_qsv``, ``av1_qsv``) requires an explicit
+    ``-init_hw_device qsv=hw`` declaration.  Without it, ffmpeg may fail to
+    create a QSV context on many Intel systems (particularly Docker containers
+    where the device is accessible via ``/dev/dri`` but the auto-detection path
+    in libmfx/oneVPL is not reliable).
+    """
+    qsv_codecs = {"h264_qsv", "hevc_qsv", "av1_qsv"}
+    if codec in qsv_codecs:
+        return ["-init_hw_device", "qsv=hw"]
+    return []
+
+
+def _build_weather_ffmpeg_command(
+    profile: FFmpegProfile,
+    fps: str,
+    start_number: str,
+    config: dict | None = None,
+) -> list[str]:
+    """Return the ffmpeg command that encodes weather renderer frames to HLS."""
+    try:
+        width, height = [int(v) for v in profile.resolution.lower().split("x", 1)]
+    except ValueError:
+        width, height = 1280, 720
+    gop = int(fps) * HLS_KEYFRAME_INTERVAL_SECS
+    video_codec, video_codec_args, preset, tune, _, pix_fmt = _resolve_video_encoder_path(profile)
+    hw_device_init_args = _resolve_hw_device_init_args(video_codec)
+    audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
+        config or {},
+        profile.audio_codec,
+        key_prefix="weather_music_",
+        music_dir=WEATHER_MUSIC_DIR,
+        playlist_filename="weather_music_playlist.txt",
+    )
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-hide_banner", "-loglevel", "error", "-y",
+        *hw_device_init_args,
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-s", f"{width}x{height}",
+        "-r", fps,
+        "-i", "-",
+        *audio_input_args,
+        "-c:v", video_codec,
+    ]
+    ffmpeg_cmd.extend(video_codec_args)
+    if preset:
+        ffmpeg_cmd.extend(["-preset", preset])
+    if tune:
+        ffmpeg_cmd.extend(["-tune", tune])
+    ffmpeg_cmd.extend([
+        "-g", str(gop),
+        "-keyint_min", str(gop),
+        "-force_key_frames", f"expr:gte(t,n_forced*{HLS_KEYFRAME_INTERVAL_SECS})",
+        "-sc_threshold", "0",
+    ])
+    if profile.bitrate:
+        ffmpeg_cmd.extend(["-b:v", profile.bitrate])
+    ffmpeg_cmd.extend([
+        "-pix_fmt", pix_fmt,
+        *audio_codec_args,
+        *audio_map_args,
+        "-f", "hls",
+        "-hls_time", "6",
+        "-hls_segment_type", "mpegts",
+        "-hls_list_size", "10",
+        "-segment_list_flags", "+live",
+        "-hls_flags",
+        "delete_segments+program_date_time+omit_endlist+discont_start+independent_segments",
+        "-start_number", start_number,
+        "-hls_segment_filename", str(OUTPUT_DIR / "weather_%d.ts"),
+        str(WEATHER_PLAYLIST),
+    ])
+    return ffmpeg_cmd
+
+
+class WeatherChannelManager:
+    """Manages the live HLS pipeline for the weather virtual channel.
+
+    A background worker thread:
+    1. Calls *data_fetcher* periodically to obtain current weather data and
+       writes it to :data:`WEATHER_STATE_PATH` so the renderer can read it.
+    2. Ensures the ``weather_renderer.py`` + ffmpeg sub-processes are running
+       whenever ``weather_channel_enabled`` is *True* in the config store.
+    3. Auto-restarts the pipeline if either process exits unexpectedly.
+
+    The pipeline outputs ``output/weather.m3u8`` + ``output/weather_*.ts``.
+    These files are intentionally excluded from
+    :meth:`GuideManager._clean_output_dir` so guide restarts don't interrupt
+    the weather stream.
+    """
+
+    def __init__(self, store: ConfigStore, data_fetcher) -> None:
+        """
+        Parameters
+        ----------
+        store:
+            Shared config store (same instance used by :class:`GuideManager`).
+        data_fetcher:
+            Zero-argument callable that returns a weather data ``dict`` (the
+            same shape as ``/api/weather``) or *None* on failure.
+        """
+        self.store        = store
+        self.logger       = AppLogger(store)
+        self._data_fetcher = data_fetcher
+
+        self._lock: threading.Lock       = threading.Lock()
+        self._renderer_pid:   Optional[int]              = None
+        self._ffmpeg_pid:     Optional[int]              = None
+        self._renderer_popen: Optional[subprocess.Popen] = None
+        self._ffmpeg_popen:   Optional[subprocess.Popen] = None
+        self._pipeline_active: bool      = False
+
+        self._stop_event    = threading.Event()
+        self._worker_thread: Optional[threading.Thread] = None
+        self._last_fetch_at: float = 0.0
+        # Hardware-encoder runtime fallback state (mirrors GuideManager).
+        self._hw_failure_count: int = 0
+        self._hw_fallback_forced: bool = False
+        self._last_encoder_type: str = "software"
+        self._pipeline_started_at: float = 0.0
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
+
+    def start(self) -> None:
+        """Start the background worker (idempotent)."""
+        self._stop_event.clear()
+        if self._worker_thread and self._worker_thread.is_alive():
+            return
+
+        # Try to reattach to a surviving pipeline from a prior Flask run.
+        renderer_pid = _load_pid(WEATHER_RENDERER_PID_FILE)
+        ffmpeg_pid   = _load_pid(WEATHER_FFMPEG_PID_FILE)
+        if (
+            renderer_pid and _pid_alive(renderer_pid) and _pid_matches(renderer_pid, "weather_renderer")
+            and ffmpeg_pid and _pid_alive(ffmpeg_pid) and _pid_matches(ffmpeg_pid, "ffmpeg")
+        ):
+            cfg = self.store.get_config()
+            if cfg.get("weather_channel_enabled"):
+                self._renderer_pid    = renderer_pid
+                self._ffmpeg_pid      = ffmpeg_pid
+                self._pipeline_active = True
+                self.logger.info(
+                    "weather",
+                    f"Reattached to existing weather pipeline "
+                    f"(renderer PID {renderer_pid}, ffmpeg PID {ffmpeg_pid})",
+                )
+
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop, daemon=True, name="weather-worker"
+        )
+        self._worker_thread.start()
+        self.logger.info("weather", "Weather channel manager started")
+
+    def stop(self) -> None:
+        """Stop the background worker and terminate the pipeline."""
+        self._stop_event.set()
+        self._stop_pipeline()
+        self.logger.info("weather", "Weather channel manager stopped")
+
+    # ── Background worker ─────────────────────────────────────────────────────
+
+    def _worker_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                cfg     = self.store.get_config()
+                enabled = bool(cfg.get("weather_channel_enabled", False))
+
+                if enabled:
+                    self._maybe_fetch_state()
+                    self._ensure_pipeline_running()
+                else:
+                    if self._pipeline_active:
+                        self._stop_pipeline()
+                        self.logger.info("weather", "Weather channel disabled; pipeline stopped")
+            except Exception as exc:
+                self.logger.error(
+                    "weather",
+                    f"Worker error ({exc.__class__.__name__}): {exc}",
+                )
+            self._stop_event.wait(30)
+
+    # ── Weather state ─────────────────────────────────────────────────────────
+
+    def _maybe_fetch_state(self) -> None:
+        now = time.time()
+        if now - self._last_fetch_at < WEATHER_FETCH_INTERVAL_SECS:
+            return
+        try:
+            data = self._data_fetcher()
+            if data is not None:
+                # Include seconds_per_segment so the renderer can determine
+                # segment timing without reading the full config store.
+                cfg = self.store.get_config()
+                try:
+                    sps = max(30, min(600, int(cfg.get("weather_seconds_per_segment", 300) or 300)))
+                except (TypeError, ValueError):
+                    sps = 300
+                data["seconds_per_segment"] = sps
+                data["units"] = cfg.get("weather_units", "F")
+                data["timezone"] = cfg.get("timezone", "local")
+                data["browser_timezone"] = (cfg.get("browser_timezone") or "").strip()
+                WEATHER_STATE_PATH.write_text(
+                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                )
+                self._last_fetch_at = now
+                self.logger.info("weather", "Weather state updated")
+        except Exception as exc:
+            self.logger.error("weather", f"Failed to fetch/save weather state: {exc}")
+
+    # ── Pipeline management ───────────────────────────────────────────────────
+
+    def start_pipeline(self) -> None:
+        """Start (or restart) the weather renderer + ffmpeg pipeline."""
+        # Force a fresh state fetch before starting the renderer.
+        self._last_fetch_at = 0.0
+        self._maybe_fetch_state()
+
+        with self._lock:
+            self._stop_pipeline_locked()
+            self._clean_weather_output()
+
+            cfg        = self.store.get_config()
+            if self._hw_fallback_forced:
+                cfg = {**cfg, "hardware_acceleration_mode": "software_fallback"}
+                self.logger.warning(
+                    "weather",
+                    f"Hardware encoder failed {HW_ENCODER_MAX_CONSECUTIVE_FAILURES} consecutive time(s) quickly; "
+                    "forcing software fallback (libx264) for the remainder of this session.",
+                )
+            try:
+                gpu_capabilities = detect_gpu_capabilities()
+            except Exception as exc:
+                self.logger.warning("weather", f"GPU detection unavailable; using software fallback profile: {exc}")
+                gpu_capabilities = {}
+            profile    = resolve_ffmpeg_profile(cfg, gpu_capabilities)
+            self._last_encoder_type  = profile.encoder_type
+            self._pipeline_started_at = time.time()
+            selected_codec, _, _, _, encoder_path, _ = _resolve_video_encoder_path(profile)
+            self.logger.info(
+                "weather",
+                f"Selected encoder path: {encoder_path} (codec={selected_codec}, provider={profile.hardware_acceleration_provider or 'software'})",
+            )
+            resolution = profile.resolution
+            fps        = str(cfg.get("fps", 10))
+            start_num  = str(int(time.time()) // 6)
+
+            renderer_cmd = [
+                sys.executable,
+                str(BASE_DIR / "app" / "weather_renderer.py"),
+                "--state",      str(WEATHER_STATE_PATH),
+                "--fps",        fps,
+                "--resolution", resolution,
+            ]
+            ffmpeg_cmd = _build_weather_ffmpeg_command(profile, fps, start_num, cfg)
+
+            try:
+                renderer_popen = subprocess.Popen(
+                    renderer_cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                self.logger.error("weather", f"Failed to start weather renderer: {exc}")
+                return
+
+            try:
+                ffmpeg_popen = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdin=renderer_popen.stdout,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                _terminate_pid(renderer_popen.pid, renderer_popen, self.logger, "weather-renderer")
+                self.logger.error("weather", f"Failed to start weather ffmpeg: {exc}")
+                return
+
+            renderer_popen.stdout.close()
+            renderer_popen.stdout = None
+
+            self._renderer_popen = renderer_popen
+            self._ffmpeg_popen   = ffmpeg_popen
+            self._renderer_pid   = renderer_popen.pid
+            self._ffmpeg_pid     = ffmpeg_popen.pid
+            self._pipeline_active = True
+
+            _save_pid(WEATHER_RENDERER_PID_FILE, renderer_popen.pid)
+            _save_pid(WEATHER_FFMPEG_PID_FILE, ffmpeg_popen.pid)
+            self.logger.info(
+                "weather",
+                f"Weather pipeline started "
+                f"(renderer PID {renderer_popen.pid}, ffmpeg PID {ffmpeg_popen.pid})",
+            )
+
+        _start_stderr_reader(renderer_popen, "weather.renderer", self.logger)
+        _start_stderr_reader(ffmpeg_popen,   "weather.ffmpeg",   self.logger)
+
+    def _stop_pipeline_locked(self) -> None:
+        """Terminate weather processes.  Caller must hold *_lock*."""
+        for pid, popen, label in [
+            (self._ffmpeg_pid,   self._ffmpeg_popen,   "weather-ffmpeg"),
+            (self._renderer_pid, self._renderer_popen, "weather-renderer"),
+        ]:
+            if pid is None:
+                continue
+            if popen is not None and popen.poll() is not None:
+                try:
+                    popen.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+            elif _pid_alive(pid):
+                _terminate_pid(pid, popen, self.logger, label)
+
+        WEATHER_RENDERER_PID_FILE.unlink(missing_ok=True)
+        WEATHER_FFMPEG_PID_FILE.unlink(missing_ok=True)
+
+        self._renderer_pid    = None
+        self._ffmpeg_pid      = None
+        self._renderer_popen  = None
+        self._ffmpeg_popen    = None
+        self._pipeline_active = False
+
+    def _stop_pipeline(self) -> None:
+        with self._lock:
+            self._stop_pipeline_locked()
+
+    def _clean_weather_output(self) -> None:
+        """Remove stale weather.m3u8 and weather_*.ts from a prior run."""
+        for path in OUTPUT_DIR.iterdir():
+            if path.name == "weather.m3u8" or path.name.startswith(WEATHER_SEGMENT_PREFIX):
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    self.logger.warning("weather", f"Could not remove {path}: {exc}")
+
+    def _ensure_pipeline_running(self) -> None:
+        if not self._pipeline_active:
+            self.start_pipeline()
+            return
+
+        if self._renderer_popen is not None:
+            renderer_dead = self._renderer_popen.poll() is not None
+        else:
+            renderer_dead = self._renderer_pid is None or not _pid_alive(self._renderer_pid)
+
+        if self._ffmpeg_popen is not None:
+            ffmpeg_dead = self._ffmpeg_popen.poll() is not None
+        else:
+            ffmpeg_dead = self._ffmpeg_pid is None or not _pid_alive(self._ffmpeg_pid)
+
+        if renderer_dead or ffmpeg_dead:
+            parts = []
+            if renderer_dead:
+                parts.append(f"weather-renderer (PID {self._renderer_pid})")
+            if ffmpeg_dead:
+                parts.append(f"weather-ffmpeg (PID {self._ffmpeg_pid})")
+            self.logger.warning(
+                "weather", f"Dead process(es): {', '.join(parts)} — restarting weather pipeline"
+            )
+
+            elapsed = time.time() - self._pipeline_started_at
+            if self._last_encoder_type == "hardware" and elapsed < HW_ENCODER_QUICK_FAILURE_WINDOW_SECS:
+                self._hw_failure_count += 1
+                if self._hw_failure_count >= HW_ENCODER_MAX_CONSECUTIVE_FAILURES and not self._hw_fallback_forced:
+                    self._hw_fallback_forced = True
+                    self.logger.warning(
+                        "weather",
+                        f"Hardware encoder has crashed {self._hw_failure_count} time(s) within "
+                        f"{HW_ENCODER_QUICK_FAILURE_WINDOW_SECS:.0f}s of startup; "
+                        "switching to software (libx264) fallback.",
+                    )
+            else:
+                self._hw_failure_count = 0
+
+            self.start_pipeline()
+
+    # ── Status helpers ────────────────────────────────────────────────────────
+
+    def is_weather_buffered(self, min_segments: int = 3) -> bool:
+        """Return True once the weather stream has at least *min_segments* ready."""
+        try:
+            text = WEATHER_PLAYLIST.read_text(encoding="utf-8")
+            count = sum(
+                1 for line in text.splitlines()
+                if line.strip().endswith(".ts") and line.strip().startswith(WEATHER_SEGMENT_PREFIX)
+            )
+            return count >= min_segments
+        except OSError:
+            return False
+
+    def status(self) -> dict:
+        return {
+            "pipeline_active":  self._pipeline_active,
+            "renderer_running": self._renderer_pid is not None and _pid_alive(self._renderer_pid),
+            "ffmpeg_running":   self._ffmpeg_pid   is not None and _pid_alive(self._ffmpeg_pid),
+            "buffered":         self.is_weather_buffered(),
         }
