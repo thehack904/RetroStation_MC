@@ -1,0 +1,30 @@
+{
+  "channel": "preview-channel",
+  "items": [
+    {
+      "type": "video",
+      "source": "/media/promos/intro.mp4",
+      "duration": 90
+    },
+    {
+      "type": "promo",
+      "source": "/media/promos/network_id.mp4",
+      "duration": 30
+    },
+    {
+      "type": "virtual_channel",
+      "source": "weather",
+      "duration": 300
+    },
+    {
+      "type": "standby",
+      "source": "default",
+      "duration": 60
+    },
+    {
+      "type": "preview_channel",
+      "source": "guide",
+      "duration": 120
+    }
+  ]
+}

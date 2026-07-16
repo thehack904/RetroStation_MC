@@ -12,6 +12,42 @@ This project uses a simple release-based changelog format with the following sec
 - `Known Issues` for confirmed limitations that remain open.
 
 ---
+
+## [v1.4.0] - 2026-07-15
+
+### Added
+
+* Added `app/playout_fallback.py` — standby video and fallback playout handling.
+
+  * `PlayoutFallbackHandler` inspects each scheduled playout item before it reaches
+    the renderer and replaces unavailable items with appropriate standby fallbacks.
+  * `video` and `promo` items whose source file does not exist on disk are replaced
+    by `FALLBACK_VIDEO_ITEM` (type `standby`, source `default`, duration 60 s).
+  * `virtual_channel` and `preview_channel` items whose source name is empty or
+    blank are replaced by `FALLBACK_VIRTUAL_CHANNEL_ITEM`.
+  * `standby` items are always passed through unchanged; they represent the
+    fallback content itself.
+  * Every fallback trigger is logged at WARNING level under the
+    `playout_fallback` category with the item type, source, reason, and a
+    human-readable detail string so administrators can identify why fallback
+    was activated.
+  * The most recent fallback event is exposed as `handler.last_fallback_event`
+    (a `PlayoutFallbackEvent` with a `.to_dict()` method) for admin diagnostics.
+  * The availability check and fallback item definitions are injectable, making
+    the handler straightforward to test and extend.
+
+### Changed
+- (empty)
+
+### Fixed
+- (empty)
+
+### Security
+- (empty)
+
+### Known Issues
+- (empty)
+
 ## [v1.3.0] - 2026-07-01
 
 ### Added
@@ -163,7 +199,7 @@ This project uses a simple release-based changelog format with the following sec
   - NVIDIA, Intel, AMD, VAAPI
 - Added `ffmpeg_profile` configuration key.
 - Added profile-based FFmpeg command generation for video codec, audio codec, resolution, preset, bitrate, and HLS segment length.
-- Added `uninstall-linux.sh`.
+- Added `uninstall-linux.sh` (later unified into `retrostation_linux.sh`).
 - Added `docs/ADDITIONAL_ROADMAP.md`.
 - Added new test coverage for:
   - FFmpeg profile resolution and command generation
@@ -182,7 +218,7 @@ This project uses a simple release-based changelog format with the following sec
 - Updated pipeline start/stop behavior to generate both standby and static segments.
 - Updated stale output cleanup to preserve both `standby.ts` and `static.ts`.
 - Updated Docker Compose service and container names from `RetroStation_MC` to lowercase `retrostation-mc`.
-- Reworked `install-linux.sh` into a root/systemd installer that:
+- Reworked `install-linux.sh` into a root/systemd installer (later unified into `retrostation_linux.sh`) that:
   - requires root/sudo
   - creates/uses an `iptv` system user
   - installs to `/home/iptv/retrostation-mc`

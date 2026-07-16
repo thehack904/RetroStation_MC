@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/thehack904/RetroStation_MC">
-    <img src="https://img.shields.io/badge/version-v1.3.0-blue?style=for-the-badge" alt="Version">
+    <img src="https://img.shields.io/badge/version-v1.4.0-blue?style=for-the-badge" alt="Version">
   </a>
   <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">
     <img src="https://img.shields.io/badge/license-CC--BY--NC--SA%204.0-lightgrey?style=for-the-badge" alt="License">
@@ -14,7 +14,7 @@
 
 RetroStation MC is an admin-driven retro TV guide channel generator. It ingests an M3U playlist and XMLTV guide data, renders a continuous guide-style video feed, packages that feed as HLS, and exposes M3U/XMLTV outputs for use in RetroIPTVGuide or another IPTV client.
 
-This repository is versioned as **v1.3.0**.
+This repository is versioned as **v1.4.0**.
 
 ## What it does
 
@@ -86,7 +86,7 @@ Requirements:
 - FFmpeg in `PATH`
 
 ```bash
-./install-linux.sh
+sudo ./retrostation_linux.sh install
 ```
 
 The installer creates and owns the app under the dedicated `iptv` system user at `/home/iptv/retrostation-mc`.
@@ -100,7 +100,7 @@ sudo systemctl status retrostation-mc
 To remove that install and `iptv` user/group:
 
 ```bash
-./uninstall-linux.sh
+sudo ./retrostation_linux.sh uninstall
 ```
 
 Or run the setup steps manually:

@@ -271,16 +271,16 @@ RetroStation MC
 
 **Tasks:**
 
-- [ ] Define fallback video behavior.
-- [ ] Define fallback virtual channel behavior.
-- [ ] Detect missing/unavailable scheduled item.
-- [ ] Route to standby content instead of failing.
+- [x] Define fallback video behavior.
+- [x] Define fallback virtual channel behavior.
+- [x] Detect missing/unavailable scheduled item.
+- [x] Route to standby content instead of failing.
 
 **Acceptance Criteria:**
 
-- [ ] Missing media does not stop the channel.
-- [ ] Fallback behavior is logged.
-- [ ] Admin can identify why fallback was used.
+- [x] Missing media does not stop the channel.
+- [x] Fallback behavior is logged.
+- [x] Admin can identify why fallback was used.
 
 ---
 

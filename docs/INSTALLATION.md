@@ -59,7 +59,7 @@ http://localhost:8787/
 ## Local Python installation
 
 ```bash
-./install-linux.sh
+sudo ./retrostation_linux.sh install
 ```
 
 The installer creates and owns the app under the dedicated `iptv` system user at `/home/iptv/retrostation-mc`.
@@ -73,7 +73,7 @@ sudo systemctl status retrostation-mc
 To remove that install and (when `/home/iptv` has no other files) the `iptv` user/group:
 
 ```bash
-./uninstall-linux.sh
+sudo ./retrostation_linux.sh uninstall
 ```
 
 Or run the setup steps manually:

@@ -7,8 +7,9 @@ from pathlib import Path
 class LinuxInstallerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.repo_root = Path(__file__).resolve().parents[1]
-        self.installer = (self.repo_root / "install-linux.sh").read_text(encoding="utf-8")
-        self.uninstaller = (self.repo_root / "uninstall-linux.sh").read_text(encoding="utf-8")
+        unified = (self.repo_root / "retrostation_linux.sh").read_text(encoding="utf-8")
+        self.installer = unified
+        self.uninstaller = unified
 
     def test_linux_installer_contains_required_setup_commands(self) -> None:
         self.assertIn('if [[ "$(uname -s)" != "Linux" ]]; then', self.installer)
