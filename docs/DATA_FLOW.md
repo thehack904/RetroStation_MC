@@ -32,7 +32,7 @@ Each parsed channel includes:
 }
 ```
 
-The source stream URL is parsed but not restreamed by RetroStation MC v1.3.0. The app uses playlist and EPG metadata to render the guide channel.
+The source stream URL is parsed but not directly restreamed by RetroStation MC v1.4.0. The app uses playlist and EPG metadata to render the guide channel. v1.4.0 also adds an internal playout document and scheduler layer for future scheduled video, promo, virtual channel, standby, and Preview Channel sequencing.
 
 ## 3. XMLTV parsing
 
@@ -65,13 +65,38 @@ The builder:
 6. Splits channels into pages based on `visible_rows`.
 7. Embeds theme data from `app/themes/<theme>/theme.json`.
 
-## 5. Rendering
+
+## 5. Playout scheduling foundation
+
+v1.4.0 adds a playout document schema and basic scheduler. This layer is separate from the current guide-state renderer path and is intended to become the future bridge between scheduled content and the Preview Channel renderer.
+
+The playout document flow is:
+
+```text
+playout JSON
+    │
+    ▼
+app/playout_schema.py validation
+    │
+    ▼
+app/playout_scheduler.py active/next item state
+    │
+    ▼
+app/playout_fallback.py availability check and standby fallback
+    │
+    ▼
+future renderer/transcoder consumer
+```
+
+The current guide-rendering path remains based on `data/guide_state.json`.
+
+## 6. Rendering
 
 `app/renderer.py` loads `guide_state.json`, renders frames using Pillow, and writes raw `rgb24` frames to stdout.
 
 Renderer output is continuous. Dynamic elements such as the clock and current-time line update per frame.
 
-## 6. Encoding and HLS packaging
+## 7. Encoding and HLS packaging
 
 `ffmpeg` reads raw RGB frames from the renderer and writes:
 
@@ -82,7 +107,7 @@ output/guide_<number>.ts
 
 Video is encoded as H.264. Audio is encoded as AAC, either from uploaded music or generated silence.
 
-## 7. HLS serving
+## 8. HLS serving
 
 Flask serves a stable master playlist:
 
@@ -97,7 +122,7 @@ The master playlist selects standby or live media based on buffer readiness:
 /hls/live.m3u8     # once enough live guide buffer exists
 ```
 
-## 8. IPTV import
+## 9. IPTV import
 
 Flask also generates:
 

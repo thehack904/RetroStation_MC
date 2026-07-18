@@ -6,7 +6,7 @@ The admin UI is available at the root path:
 http://YOUR_SERVER:8787/
 ```
 
-v1.3.0 still has no login screen. Keep the app local-only or place it behind external authentication.
+v1.4.0 still has no login screen. Keep the app local-only or place it behind external authentication.
 
 ## Header controls
 
@@ -167,3 +167,26 @@ View recent app events and download the full event log as JSONL or CSV.
 ### About
 
 Shows the application name, version, and description.
+
+## Playout documents and fallback behavior
+
+v1.4.0 introduces the internal playout document format used by the scheduler layer. This is not yet a full admin-driven playlist editor, but it establishes the contract for describing scheduled channel content.
+
+A playout document can contain:
+
+| Type | Purpose |
+|---|---|
+| `video` | A pre-recorded video file |
+| `promo` | A short promotional clip |
+| `virtual_channel` | A named virtual channel source, such as Weather |
+| `preview_channel` | A Preview Channel block |
+| `standby` | Standby or holding content |
+
+Fallback handling protects the channel from dead-air conditions:
+
+- Missing `video` or `promo` source files are replaced with standby content.
+- Blank `virtual_channel` or `preview_channel` sources are replaced with standby content.
+- `standby` items always pass through unchanged.
+- Fallback triggers are logged under the `playout_fallback` category so administrators can identify why standby was used.
+
+See [Playout Document Schema](PLAYOUT_DOCUMENT.md) for the full schema and example document.

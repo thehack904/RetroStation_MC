@@ -16,37 +16,59 @@ This project uses a simple release-based changelog format with the following sec
 ## [v1.4.0] - 2026-07-15
 
 ### Added
-
-* Added `app/playout_fallback.py` — standby video and fallback playout handling.
-
-  * `PlayoutFallbackHandler` inspects each scheduled playout item before it reaches
-    the renderer and replaces unavailable items with appropriate standby fallbacks.
-  * `video` and `promo` items whose source file does not exist on disk are replaced
-    by `FALLBACK_VIDEO_ITEM` (type `standby`, source `default`, duration 60 s).
-  * `virtual_channel` and `preview_channel` items whose source name is empty or
-    blank are replaced by `FALLBACK_VIRTUAL_CHANNEL_ITEM`.
-  * `standby` items are always passed through unchanged; they represent the
-    fallback content itself.
-  * Every fallback trigger is logged at WARNING level under the
-    `playout_fallback` category with the item type, source, reason, and a
-    human-readable detail string so administrators can identify why fallback
-    was activated.
-  * The most recent fallback event is exposed as `handler.last_fallback_event`
-    (a `PlayoutFallbackEvent` with a `.to_dict()` method) for admin diagnostics.
-  * The availability check and fallback item definitions are injectable, making
-    the handler straightforward to test and extend.
+- Added `app/playout_schema.py` for validating playout document JSON.
+- Added playout document support for the following item types:
+  - `video`
+  - `promo`
+  - `virtual_channel`
+  - `preview_channel`
+  - `standby`
+- Added playout document validation for required top-level fields:
+  - `channel`
+  - `items`
+- Added item-level validation for required fields:
+  - `type`
+  - `source`
+  - `duration`
+- Added positive-duration validation for playout items.
+- Added `parse_playout_document()` for loading playout documents from a file path or raw JSON string.
+- Added `parse_playout_items()` for returning a deep copy of validated playout items.
+- Added `app/playout_scheduler.py` for stepping through validated playout documents.
+- Added scheduler state output for active item, next item, item elapsed time, item remaining time, document duration, active index, next index, and loop cycle.
+- Added looping and non-looping scheduler modes.
+- Added `app/playout_fallback.py` for standby video and fallback playout handling.
+- Added fallback behavior for missing `video` and `promo` source files.
+- Added fallback behavior for blank `virtual_channel` and `preview_channel` source names.
+- Added `PlayoutFallbackEvent` diagnostics with JSON-serializable output.
+- Added warning-level fallback logging under the `playout_fallback` category.
+- Added `sample_data/playout_example.json` as a working playout document example.
+- Added `docs/PLAYOUT_DOCUMENT.md` documenting the playout schema, item types, validation rules, and parser helpers.
+- Added unified Linux helper script `retrostation_linux.sh` with `install` and `uninstall` commands.
+- Added regression tests for playout schema validation, scheduler behavior, fallback behavior, and the unified Linux helper script.
 
 ### Changed
-- (empty)
+- Updated repository version references from `v1.3.0` to `v1.4.0`.
+- Updated the admin About tab version from `v1.3.0` to `v1.4.0`.
+- Updated README Linux install command to use `sudo ./retrostation_linux.sh install`.
+- Updated README Linux uninstall command to use `sudo ./retrostation_linux.sh uninstall`.
+- Updated installation documentation to use the unified Linux helper script.
+- Updated the copy URL button styling to use theme button colors.
+- Updated the additional roadmap to mark v1.4.0 fallback behavior tasks and acceptance criteria as complete.
 
 ### Fixed
-- (empty)
+- Fixed scheduled playout handling so unavailable media items can be routed to standby instead of stopping the channel path.
+- Fixed fallback diagnostics so administrators can inspect the most recent fallback reason.
+- Fixed Linux installer tests to validate the unified install/uninstall script.
+- Fixed admin About section tests to expect `v1.4.0`.
 
-### Security
-- (empty)
+### Removed
+- Removed `install-linux.sh`.
+- Removed `uninstall-linux.sh`.
+- Replaced both scripts with `retrostation_linux.sh`.
 
 ### Known Issues
-- (empty)
+- Playout documents are schema-validated and schedulable, but they are not yet exposed through a full admin UI.
+- The Preview Channel renderer is not yet fully driven by playout scheduler state.
 
 ## [v1.3.0] - 2026-07-01
 

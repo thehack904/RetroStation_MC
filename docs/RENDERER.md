@@ -1,6 +1,6 @@
 # Renderer
 
-RetroStation MC v1.3.0 uses a Python/Pillow renderer implemented in `app/renderer.py`.
+RetroStation MC v1.4.0 uses a Python/Pillow renderer implemented in `app/renderer.py`.
 
 ## Renderer contract
 
@@ -80,3 +80,6 @@ guide_state.json in → raw RGB frames out
 ```
 
 That allows the Flask admin, config database, and HLS serving model to remain stable while replacing the frame generation engine.
+
+
+v1.4.0 adds the playout document and scheduler foundation, but the current renderer still consumes `data/guide_state.json`. Future integration work should allow playout scheduler state to drive the Preview Channel video area while preserving the renderer's stable input/output contract.

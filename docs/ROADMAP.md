@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap lists recommended post-v1.3.0 improvements.
+This roadmap lists recommended post-v1.4.0 improvements.
 
 ## Priority 1 — Reliability and operations
 
@@ -39,8 +39,10 @@ This roadmap lists recommended post-v1.3.0 improvements.
 - Add optional multi-variant HLS output.
 - Add configurable bitrate and encoder preset controls.
 - Add better player compatibility diagnostics.
-- Add stale segment and playlist watchdogs.
-- Add safer fallback behavior when live output crashes after clients are already live.
+- Expand HLS watchdog diagnostics into a one-click diagnostic bundle.
+- Integrate playout fallback status into the admin diagnostics view.
+- Connect playout scheduler state to the Preview Channel renderer.
+- Add admin controls for loading, validating, and previewing playout documents.
 
 ## Priority 6 — Packaging
 

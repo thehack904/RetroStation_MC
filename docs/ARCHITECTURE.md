@@ -1,6 +1,6 @@
 # Architecture
 
-RetroStation MC v1.3.0 is a Flask application with managed guide and Weather channel pipelines.
+RetroStation MC v1.4.0 is a Flask application with managed guide, Weather channel, HLS, and early playout scheduling components.
 
 ## Component overview
 
@@ -53,6 +53,10 @@ Flask app.py
 | `app/hls_playlist.py` | Live-edge trimming helper for HLS playlists |
 | `app/m3u_parser.py` | Basic M3U parser |
 | `app/xmltv_parser.py` | Basic XMLTV parser |
+| `app/playout_schema.py` | Validates playout documents and parses playout JSON from a file path or raw string |
+| `app/playout_scheduler.py` | Steps through a validated playout document and reports current/next item timing state |
+| `app/playout_fallback.py` | Replaces unavailable scheduled items with standby fallback content and records fallback diagnostics |
+| `sample_data/playout_example.json` | Example playout document covering video, promo, virtual channel, standby, and preview channel entries |
 | `app/logging_utils.py` | Event logger wrapper |
 | `app/templates/index.html` | Single-page admin dashboard |
 | `app/static/style.css` | Admin dashboard styling |
@@ -166,3 +170,50 @@ This boundary allows future issues to be split cleanly into separate tracks:
 3. Continuity/failover handling
 4. Preview Channel renderer and overlay model
 5. Admin UI/control-plane workflows
+
+## v1.4.0 playout scheduling foundation
+
+v1.4.0 introduces the first concrete playout-layer modules. These modules do not replace the current guide renderer yet; they define and test the scheduling contract that future renderer integration can consume.
+
+### Playout document schema
+
+`app/playout_schema.py` validates JSON playout documents. A valid document contains:
+
+- `channel`: non-empty string identifying the target channel.
+- `items`: non-empty list of scheduled item objects.
+
+Each item must include:
+
+- `type`: one of `video`, `promo`, `virtual_channel`, `preview_channel`, or `standby`.
+- `source`: string path, URL, or source name.
+- `duration`: positive number of seconds.
+
+Extra item fields are preserved so future renderer hints, transition metadata, or source-specific options can be added without breaking the base schema.
+
+### Playout scheduler
+
+`app/playout_scheduler.py` accepts a validated playout document and computes:
+
+- active item
+- next item
+- active index
+- next index
+- item elapsed seconds
+- item remaining seconds
+- document duration seconds
+- loop cycle count
+
+The scheduler supports looping and non-looping operation. In non-looping mode, the final item remains active after the schedule reaches the end.
+
+### Fallback handling
+
+`app/playout_fallback.py` sits between the scheduler and future consumers. It checks scheduled items before they reach the renderer/transcoder boundary.
+
+Fallback rules:
+
+- `video` and `promo` items require an accessible source file.
+- `virtual_channel` and `preview_channel` items require a non-empty source name.
+- `standby` items are always considered available.
+- Unavailable items are replaced with a standby fallback item.
+
+Every fallback trigger records a `PlayoutFallbackEvent` and logs a warning under the `playout_fallback` category. This gives the admin/diagnostics layer a clear reason when standby content was used.

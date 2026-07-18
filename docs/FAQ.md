@@ -34,7 +34,7 @@ A TV guide grid does not require cinematic frame rate. Lower FPS reduces rendere
 
 ## Can I expose this on the internet?
 
-No, not directly. v1.3.0 still has no authentication. Use LAN-only access, VPN, or an authenticated reverse proxy.
+No, not directly. v1.4.0 still has no authentication. Use LAN-only access, VPN, or an authenticated reverse proxy.
 
 ## Can I export more than one virtual channel?
 
@@ -59,3 +59,15 @@ Yes, the admin UI exposes `1920x1080`. Use it only if the host can keep up with 
 ## Where are uploaded music files stored?
 
 `data/music/`
+
+## What is a playout document?
+
+A playout document is a JSON schedule that describes a sequence of content items for a channel. v1.4.0 supports the base schema and scheduler for video, promo, virtual channel, preview channel, and standby items.
+
+## Does v1.4.0 make the Preview Channel fully scheduler-driven?
+
+Not yet. v1.4.0 adds the schema, scheduler, and fallback foundation. Full scheduler-to-renderer integration remains future work.
+
+## What happens if a scheduled item is missing?
+
+The fallback handler replaces unavailable items with standby content. Missing `video` and `promo` files, or blank virtual/preview channel source names, trigger fallback behavior and are logged under the `playout_fallback` category.

@@ -36,6 +36,14 @@ FFmpeg encodes H.264/AAC and writes HLS segments
 
 The output is designed to behave like a live virtual TV channel. The app renders a guide grid, rotates through pages of channels, keeps a clock/current-time marker active, and provides a standby stream while the live guide is warming up.
 
+## v1.4.0 highlights
+
+- Adds a structured playout document schema for describing scheduled channel items.
+- Adds a basic playout scheduler that tracks the active item, next item, elapsed time, remaining time, cycle count, and total document duration.
+- Adds standby fallback handling for missing video/promo files and unavailable virtual/preview channel sources.
+- Adds `sample_data/playout_example.json` as a working example playout document.
+- Replaces separate Linux install/uninstall scripts with the unified `retrostation_linux.sh` command.
+
 ## Key features
 
 - Flask-based local admin dashboard
@@ -62,7 +70,7 @@ The output is designed to behave like a live virtual TV channel. The app renders
 
 ## Local-only security model
 
-RetroStation MC v1.3.0 still has **no authentication**. Do not expose it directly to the public internet. Run it on a trusted LAN, behind a VPN, or behind an authenticated reverse proxy.
+RetroStation MC v1.4.0 still has **no authentication**. Do not expose it directly to the public internet. Run it on a trusted LAN, behind a VPN, or behind an authenticated reverse proxy.
 
 ## Quick start with Docker Compose
 
@@ -136,6 +144,7 @@ Start here:
 - [RetroIPTVGuide Integration](docs/RETROIPTVGUIDE_INTEGRATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [HLS Pipeline](docs/HLS_PIPELINE.md)
+- [Playout Document Schema](docs/PLAYOUT_DOCUMENT.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 
 ## Runtime directories

@@ -1,6 +1,6 @@
 # Installation
 
-RetroStation MC v1.3.0 can run either as a Docker container or as a local Python application.
+RetroStation MC v1.4.0 can run either as a Docker container or as a local Python application.
 
 ## Requirements
 
@@ -57,6 +57,8 @@ http://localhost:8787/
 ```
 
 ## Local Python installation
+
+> v1.4.0 uses a unified Linux helper script. The previous separate `install-linux.sh` and `uninstall-linux.sh` scripts have been replaced by this single command-driven script.
 
 ```bash
 sudo ./retrostation_linux.sh install

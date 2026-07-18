@@ -98,3 +98,11 @@ Typical fields:
 | `xmltv_source` | Configured XMLTV source |
 | `stream_url` | Public stream path, currently `/hls/master.m3u8` |
 | `gpu_capabilities` | Hardware detection, encoder readiness, and active-path information for the admin UI |
+
+## Playout document API status
+
+v1.4.0 adds internal playout schema, scheduler, and fallback modules, but does not expose playout document management through Flask routes yet. Playout documents are currently validated and consumed through Python helpers in:
+
+- `app/playout_schema.py`
+- `app/playout_scheduler.py`
+- `app/playout_fallback.py`
