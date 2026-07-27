@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -492,6 +493,17 @@ class VirtualChannelsWeatherConfigTests(unittest.TestCase):
     def test_weather_template_exists(self) -> None:
         tmpl = Path(__file__).resolve().parents[1] / "app" / "templates" / "weather.html"
         self.assertTrue(tmpl.exists())
+
+    def test_weather_template_alerts_use_top_aligned_wrapping_layout(self) -> None:
+        tmpl = Path(__file__).resolve().parents[1] / "app" / "templates" / "weather.html"
+        html = tmpl.read_text(encoding="utf-8")
+        item_rule = re.search(r"\.wx-alert-item\s*\{([^}]*)\}", html, re.DOTALL)
+        text_rule = re.search(r"\.wx-alert-text\s*\{([^}]*)\}", html, re.DOTALL)
+        self.assertIsNotNone(item_rule)
+        self.assertIsNotNone(text_rule)
+        self.assertIn("align-items: flex-start;", item_rule.group(1))
+        self.assertIn("min-width: 0;", text_rule.group(1))
+        self.assertIn("line-height: 1.25;", text_rule.group(1))
 
     def test_virtual_channels_template_contains_zip_lookup(self) -> None:
         tmpl = Path(__file__).resolve().parents[1] / "app" / "templates" / "virtual_channels.html"

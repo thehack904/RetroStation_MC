@@ -100,15 +100,23 @@
           </div>
         </section>
 
-        <!-- Render Settings -->
+        <!-- Guide Channel Render Settings -->
         <section class="section">
-          <div class="section__header">Render Settings</div>
+          <div class="section__header">Guide Channel Render Settings</div>
+          <div class="field-row">
+            <label class="field-label">Aspect Ratio</label>
+            <select name="aspect_ratio" id="aspect-ratio-select">
+              <option value="16:9" {% if config.aspect_ratio == '16:9' or not config.aspect_ratio %}selected{% endif %}>16:9 (Widescreen)</option>
+              <option value="4:3" {% if config.aspect_ratio == '4:3' %}selected{% endif %}>4:3 (Standard)</option>
+            </select>
+          </div>
           <div class="field-row">
             <label class="field-label">Resolution</label>
-            <select name="resolution">
-              {% for value in ['1280x720', '1920x1080'] %}
-                <option value="{{ value }}" {% if value == config.resolution %}selected{% endif %}>{{ value }}</option>
-              {% endfor %}
+            <select name="resolution" id="resolution-select">
+              <option value="1280x720" data-aspect="16:9" {% if config.resolution == '1280x720' %}selected{% endif %}>1280×720 (HD 720p)</option>
+              <option value="1920x1080" data-aspect="16:9" {% if config.resolution == '1920x1080' %}selected{% endif %}>1920×1080 (Full HD 1080p)</option>
+              <option value="960x720" data-aspect="4:3" {% if config.resolution == '960x720' %}selected{% endif %}>960×720 (SD 720)</option>
+              <option value="1440x1080" data-aspect="4:3" {% if config.resolution == '1440x1080' %}selected{% endif %}>1440×1080 (SD 1080)</option>
             </select>
           </div>
           <div class="field-row">
@@ -925,6 +933,39 @@
       }
       cb.addEventListener('change', syncTimes);
       syncTimes();
+    })();
+  </script>
+
+  <!-- Aspect ratio / resolution sync: hide resolution options that don't match the selected aspect ratio -->
+  <script>
+    (function () {
+      var arSel = document.getElementById('aspect-ratio-select');
+      var resSel = document.getElementById('resolution-select');
+      if (!arSel || !resSel) return;
+
+      function syncResolutionOptions() {
+        var selectedAr = arSel.value;
+        var firstVisible = null;
+        var currentValue = resSel.value;
+        var currentStillVisible = false;
+
+        Array.prototype.forEach.call(resSel.options, function (opt) {
+          var matches = (opt.getAttribute('data-aspect') === selectedAr);
+          opt.hidden = !matches;
+          opt.disabled = !matches;
+          if (matches) {
+            if (firstVisible === null) firstVisible = opt;
+            if (opt.value === currentValue) currentStillVisible = true;
+          }
+        });
+
+        if (!currentStillVisible && firstVisible) {
+          resSel.value = firstVisible.value;
+        }
+      }
+
+      arSel.addEventListener('change', syncResolutionOptions);
+      syncResolutionOptions();
     })();
   </script>
 

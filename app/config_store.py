@@ -22,6 +22,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "theme": "retrostation_mc",
     "ffmpeg_profile": "software_default",
     "hardware_acceleration_mode": "software_fallback",
+    "aspect_ratio": "16:9",  # "16:9" | "4:3"
     "resolution": "1280x720",
     "fps": 15,
     "segment_seconds": 6,
@@ -50,6 +51,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "music_single_file": "",     # selected filename for single mode
     "music_playlist_files": [],  # ordered list of filenames for playlist mode
     # Virtual Channels — Weather Channel
+    "weather_aspect_ratio": "16:9",  # "16:9" | "4:3" — independent of the guide channel
+    "weather_resolution": "1280x720",
     "weather_channel_enabled": False,
     "weather_logo_enabled": True,
     "weather_lat": "",

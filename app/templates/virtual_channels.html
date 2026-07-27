@@ -325,6 +325,22 @@
               </select>
               <p class="vc-hint">Time displayed on each of the 5 screens before rotating.</p>
             </div>
+            <div class="vc-field">
+              <label for="wx-aspect-ratio">Aspect Ratio</label>
+              <select id="wx-aspect-ratio-select" name="weather_aspect_ratio">
+                <option value="16:9" {% if weather.aspect_ratio == '16:9' or not weather.aspect_ratio %}selected{% endif %}>16:9 (Widescreen)</option>
+                <option value="4:3"  {% if weather.aspect_ratio == '4:3' %}selected{% endif %}>4:3 (Standard)</option>
+              </select>
+            </div>
+            <div class="vc-field">
+              <label for="wx-resolution">Resolution</label>
+              <select id="wx-resolution-select" name="weather_resolution">
+                <option value="1280x720"  data-aspect="16:9" {% if weather.resolution == '1280x720'  %}selected{% endif %}>1280×720 (HD 720p)</option>
+                <option value="1920x1080" data-aspect="16:9" {% if weather.resolution == '1920x1080' %}selected{% endif %}>1920×1080 (Full HD 1080p)</option>
+                <option value="960x720"   data-aspect="4:3"  {% if weather.resolution == '960x720'   %}selected{% endif %}>960×720 (SD 720)</option>
+                <option value="1440x1080" data-aspect="4:3"  {% if weather.resolution == '1440x1080' %}selected{% endif %}>1440×1080 (SD 1080)</option>
+              </select>
+            </div>
           </div>
 
           <!-- Animated background test panel -->
@@ -469,6 +485,39 @@
       });
     });
   })();
+  </script>
+
+  <!-- Weather channel aspect ratio / resolution sync -->
+  <script>
+    (function () {
+      var arSel  = document.getElementById('wx-aspect-ratio-select');
+      var resSel = document.getElementById('wx-resolution-select');
+      if (!arSel || !resSel) return;
+
+      function syncResolutionOptions() {
+        var selectedAr = arSel.value;
+        var firstVisible = null;
+        var currentValue = resSel.value;
+        var currentStillVisible = false;
+
+        Array.prototype.forEach.call(resSel.options, function (opt) {
+          var matches = (opt.getAttribute('data-aspect') === selectedAr);
+          opt.hidden = !matches;
+          opt.disabled = !matches;
+          if (matches) {
+            if (firstVisible === null) firstVisible = opt;
+            if (opt.value === currentValue) currentStillVisible = true;
+          }
+        });
+
+        if (!currentStillVisible && firstVisible) {
+          resSel.value = firstVisible.value;
+        }
+      }
+
+      arSel.addEventListener('change', syncResolutionOptions);
+      syncResolutionOptions();
+    })();
   </script>
 
 </body>

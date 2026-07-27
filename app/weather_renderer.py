@@ -109,18 +109,27 @@ class WeatherRenderer:
         self._last_mtime_check: float = 0.0
 
         h = height
+        w = width
         # Fixed layout geometry
         self._hdr_h  = max(36, h * 9  // 100)   # header bar
         self._tick_h = max(26, h * 7  // 100)   # ticker strip
         self._body_h = h - self._hdr_h - self._tick_h
         self._body_y = self._hdr_h
 
-        # Pre-load font sizes scaled to frame height
-        self._f_huge  = _load_font(max(24, h * 20 // 100))  # giant temperature
-        self._f_large = _load_font(max(18, h *  7 // 100))  # segment titles
-        self._f_med   = _load_font(max(14, h *  5 // 100))  # body text
-        self._f_small = _load_font(max(12, h *  4 // 100))  # details / labels
-        self._f_tiny  = _load_font(max(10, h *  3 // 100))  # ticker / fine print
+        # Font sizes scale with frame height and are additionally capped by
+        # frame width so that text never overflows on narrower (4:3) frames.
+        # On 16:9 frames the width cap always exceeds the height cap, so
+        # widescreen output is unaffected; on 4:3 frames the cap reduces each
+        # size proportionally to keep the layout clear.
+        self._f_huge  = _load_font(min(max(24, h * 20 // 100), max(20, w //  8)))  # giant temperature
+        self._f_large = _load_font(min(max(18, h *  7 // 100), max(16, w // 22)))  # segment titles
+        self._f_med   = _load_font(min(max(14, h *  5 // 100), max(12, w // 30)))  # body text
+        self._f_small = _load_font(min(max(12, h *  4 // 100), max(10, w // 40)))  # details / labels
+        self._f_tiny  = _load_font(min(max(10, h *  3 // 100), max( 8, w // 50)))  # ticker / fine print
+
+        # Header font reuses the same size as the details font; kept as a
+        # separate attribute so call-sites in _draw_header remain explicit.
+        self._f_hdr = self._f_small
 
     # ── State loading ─────────────────────────────────────────────────────────
 
@@ -180,6 +189,55 @@ class WeatherRenderer:
                 text: str, font, fill) -> None:
         w = self._tw(draw, text, font)
         draw.text((cx - w // 2, y), text, font=font, fill=fill)
+
+    def _wrap_text_to_width(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font,
+        max_width: int,
+    ) -> list[str]:
+        content = str(text or "").strip()
+        if not content:
+            return []
+        width = int(max_width)
+        if width <= 0:
+            raise ValueError("max_width must be greater than 0")
+        words = content.split()
+        if not words:
+            return [content]
+
+        lines: list[str] = []
+        line = ""
+
+        for word in words:
+            candidate = f"{line} {word}".strip() if line else word
+            if self._tw(draw, candidate, font) <= width:
+                line = candidate
+                continue
+
+            if line:
+                lines.append(line)
+                line = ""
+
+            if self._tw(draw, word, font) <= width:
+                line = word
+                continue
+
+            chunk = ""
+            for ch in word:
+                next_chunk = chunk + ch
+                if chunk and self._tw(draw, next_chunk, font) > width:
+                    lines.append(chunk)
+                    chunk = ch
+                else:
+                    chunk = next_chunk
+            if chunk:
+                line = chunk
+
+        if line:
+            lines.append(line)
+        return lines
 
     # ── Icon drawing helpers ─────────────────────────────────────────────────
 
@@ -301,18 +359,18 @@ class WeatherRenderer:
         draw.rectangle([0, 0, w - 1, hh - 1], fill=_BG_HDR)
 
         brand = "RETROSTATION WEATHER"
-        by    = (hh - self._th(draw, brand, self._f_small)) // 2
-        draw.text((12, by), brand, font=self._f_small, fill=_YELLOW)
+        by    = (hh - self._th(draw, brand, self._f_hdr)) // 2
+        draw.text((12, by), brand, font=self._f_hdr, fill=_YELLOW)
 
         location = str(self._state.get("location", ""))
         if location:
-            lw = self._tw(draw, location, self._f_small)
-            draw.text((w // 2 - lw // 2, by), location, font=self._f_small, fill=_WHITE)
+            lw = self._tw(draw, location, self._f_hdr)
+            draw.text((w // 2 - lw // 2, by), location, font=self._f_hdr, fill=_WHITE)
 
         ts    = self._apply_display_tz(datetime.fromtimestamp(epoch, tz=timezone.utc))
         clock = ts.strftime("%I:%M:%S %p")
-        cw    = self._tw(draw, clock, self._f_small)
-        draw.text((w - cw - 12, by), clock, font=self._f_small, fill=_LBLUE)
+        cw    = self._tw(draw, clock, self._f_hdr)
+        draw.text((w - cw - 12, by), clock, font=self._f_hdr, fill=_LBLUE)
 
         draw.line([0, hh - 2, w - 1, hh - 2], fill=_YELLOW, width=2)
 
@@ -591,6 +649,14 @@ class WeatherRenderer:
             title = "⚠  ACTIVE WEATHER ALERTS"
             self._center(draw, w // 2, by + 10, title, self._f_large, _RED)
 
+            left_x = 20
+            headline_offset = 8
+            right_padding = 20
+            min_text_width = 40
+            headline_x = left_x + headline_offset
+            max_event_width = max(min_text_width, w - left_x - right_padding)
+            max_headline_width = max(min_text_width, w - headline_x - right_padding)
+
             y = by + self._th(draw, title, self._f_large) + 28
             for alert in alerts[:4]:
                 event    = str(alert.get("event", ""))
@@ -599,22 +665,13 @@ class WeatherRenderer:
 
                 color = _RED if severity.lower() in {"extreme", "severe"} else _ORANGE
                 if event:
-                    draw.text((20, y), event, font=self._f_med, fill=color)
-                    y += self._th(draw, event, self._f_med) + 4
+                    for event_line in self._wrap_text_to_width(draw, event, self._f_med, max_event_width):
+                        draw.text((left_x, y), event_line, font=self._f_med, fill=color)
+                        y += self._th(draw, event_line, self._f_med) + 4
                 if headline:
-                    # Word-wrap headline to ~80 chars
-                    words   = headline.split()
-                    line    = ""
-                    for word in words:
-                        if len(line) + len(word) + 1 > 78:
-                            draw.text((28, y), line.rstrip(), font=self._f_small, fill=_LBLUE)
-                            y += self._th(draw, line, self._f_small) + 2
-                            line = word + " "
-                        else:
-                            line += word + " "
-                    if line.strip():
-                        draw.text((28, y), line.rstrip(), font=self._f_small, fill=_LBLUE)
-                        y += self._th(draw, line, self._f_small) + 2
+                    for headline_line in self._wrap_text_to_width(draw, headline, self._f_small, max_headline_width):
+                        draw.text((headline_x, y), headline_line, font=self._f_small, fill=_LBLUE)
+                        y += self._th(draw, headline_line, self._f_small) + 2
                 y += 12
                 if y > by + bh - 30:
                     break

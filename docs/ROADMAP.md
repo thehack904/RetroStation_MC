@@ -43,6 +43,8 @@ This roadmap lists recommended post-v1.4.0 improvements.
 - Integrate playout fallback status into the admin diagnostics view.
 - Connect playout scheduler state to the Preview Channel renderer.
 - Add admin controls for loading, validating, and previewing playout documents.
+- Add stale segment and playlist watchdogs.
+- Add safer fallback behavior when live output crashes after clients are already live.
 
 ## Priority 6 — Packaging
 

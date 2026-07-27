@@ -102,6 +102,13 @@ def _log_route_exception(route: str, action: str, phase: str, exc: Exception, **
     manager.logger.error("http.traceback", traceback.format_exc().strip())
 
 
+def _normalize_aspect_ratio(value: str | None) -> str:
+    """Return a validated aspect ratio string; defaults to ``'16:9'``."""
+    if value and value.strip() in ("16:9", "4:3"):
+        return value.strip()
+    return DEFAULT_CONFIG["aspect_ratio"]
+
+
 def _coerce_guide_logo_mode(value: str | None) -> str:
     mode = (value or DEFAULT_CONFIG["guide_logo_mode"]).strip().lower()
     if mode not in ("default", "custom", "disabled"):
@@ -152,6 +159,7 @@ def coerce_form(form) -> dict:
         "hardware_acceleration_mode": normalize_hardware_acceleration_mode(
             form.get("hardware_acceleration_mode")
         ),
+        "aspect_ratio": _normalize_aspect_ratio(form.get("aspect_ratio")),
         "fps": int(form.get("fps", DEFAULT_CONFIG["fps"])),
         "segment_seconds": int(form.get("segment_seconds", DEFAULT_CONFIG["segment_seconds"])),
         "page_seconds": int(form.get("page_seconds", DEFAULT_CONFIG["page_seconds"])),
@@ -1714,6 +1722,9 @@ def _get_weather_config() -> dict:
         "enabled":                cfg.get("weather_channel_enabled", False),
         "logo_enabled":           _coerce_bool(cfg.get("weather_logo_enabled"),
                                                DEFAULT_CONFIG["weather_logo_enabled"]),
+        "aspect_ratio":           _normalize_aspect_ratio(cfg.get("weather_aspect_ratio",
+                                                                   DEFAULT_CONFIG["weather_aspect_ratio"])),
+        "resolution":             cfg.get("weather_resolution", DEFAULT_CONFIG["weather_resolution"]),
         "music_mode":             cfg.get("weather_music_mode", DEFAULT_CONFIG["weather_music_mode"]),
         "music_loop":             _coerce_bool(cfg.get("weather_music_loop"), DEFAULT_CONFIG["weather_music_loop"]),
         "music_single_file":      cfg.get("weather_music_single_file", DEFAULT_CONFIG["weather_music_single_file"]),
@@ -2106,6 +2117,12 @@ def virtual_channels_weather_config():
             weather_music_single_file = ""
         weather_music_playlist_files = [name for name in weather_music_playlist_files if name in available_files]
 
+        weather_aspect_ratio = _normalize_aspect_ratio(request.form.get("weather_aspect_ratio"))
+        weather_resolution = request.form.get("weather_resolution", DEFAULT_CONFIG["weather_resolution"]).strip()
+        _VALID_RESOLUTIONS = {"1280x720", "1920x1080", "960x720", "1440x1080"}
+        if weather_resolution not in _VALID_RESOLUTIONS:
+            weather_resolution = DEFAULT_CONFIG["weather_resolution"]
+
         weather_cfg = {
             "lat":                   request.form.get("weather_lat", "").strip(),
             "lon":                   request.form.get("weather_lon", "").strip(),
@@ -2120,6 +2137,8 @@ def virtual_channels_weather_config():
         cfg = store.get_config()
         cfg.update(
             {
+                "weather_aspect_ratio": weather_aspect_ratio,
+                "weather_resolution": weather_resolution,
                 "weather_music_mode": weather_music_mode,
                 "weather_music_loop": weather_music_loop,
                 "weather_music_single_file": weather_music_single_file,

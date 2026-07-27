@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, PngImagePlugin
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 WEATHER_REGIONS_DIR = BASE_DIR / "runtime" / "weather" / "regions"
@@ -41,6 +41,18 @@ _OSM_TILE_UA = (
 
 _USER_AGENT = "RetroStation-MC/1.0"
 _LOG = logging.getLogger(__name__)
+_FALLBACK_BASEMAP_METADATA_KEY = "retrostation_basemap_kind"
+_FALLBACK_HEADER_COLOR = (8, 12, 24)
+_FALLBACK_BODY_COLOR = (16, 22, 42)
+_FALLBACK_GRID_COLOR = (38, 58, 96)
+_FALLBACK_BOX_COLOR = (90, 120, 180)
+_FALLBACK_HEADER_SAMPLE_Y = 20
+_FALLBACK_BODY_SAMPLE_X = 5
+_FALLBACK_BODY_SAMPLE_OFFSET_Y = 20
+_FALLBACK_FOOTER_SAMPLE_X = 10
+_FALLBACK_HEADER_HEIGHT = 40
+_FALLBACK_GRID_COLUMNS = 8
+_FALLBACK_GRID_ROWS = 6
 
 
 def bbox_for_16x9(
@@ -272,13 +284,18 @@ def ensure_basemap_cached(region: dict[str, Any]) -> Path:
 def download_or_generate_basemap(region: dict[str, Any]) -> Path:
     path = _path_from_region(region, "basemap")
     path.parent.mkdir(parents=True, exist_ok=True)
+    expected_size = (int(region["width"]), int(region["height"]))
+    had_cached_real_basemap = validate_basemap(path, expected_size)
     try:
         _stitch_basemap_from_tiles(region, path)
-        if not validate_basemap(path, (int(region["width"]), int(region["height"]))):
+        if not validate_basemap(path, expected_size):
             raise ValueError("Stitched basemap failed validation")
         _LOG.info("Weather basemap cached (OSM tiles)")
         return path
     except Exception as exc:
+        if had_cached_real_basemap:
+            _LOG.warning("Basemap tile stitching failed (%s); keeping existing cached basemap", exc)
+            return path
         _LOG.warning("Basemap tile stitching failed (%s); generating fallback basemap", exc)
         _generate_fallback_basemap(region, path)
         return path
@@ -289,7 +306,9 @@ def validate_basemap(path: Path, expected_size: tuple[int, int]) -> bool:
         if not path.exists():
             return False
         with Image.open(path) as img:
-            return img.size == expected_size
+            if img.size != expected_size:
+                return False
+            return not _looks_like_fallback_basemap(img)
     except Exception:
         return False
 
@@ -447,18 +466,17 @@ def _generate_fallback_basemap(region: dict[str, Any], destination: Path) -> Non
     draw = ImageDraw.Draw(img)
     font = ImageFont.load_default()
 
-    draw.rectangle((0, 0, width, 40), fill=(8, 12, 24))
+    draw.rectangle((0, 0, width, 40), fill=_FALLBACK_HEADER_COLOR)
     draw.text((12, 12), f"{region.get('name', 'Local')} basemap", fill=(220, 230, 255), font=font)
 
-    grid_color = (38, 58, 96)
     for i in range(1, 8):
         x = int(width * (i / 8))
-        draw.line((x, 40, x, height), fill=grid_color, width=1)
+        draw.line((x, 40, x, height), fill=_FALLBACK_GRID_COLOR, width=1)
     for j in range(1, 6):
         y = int(40 + (height - 40) * (j / 6))
-        draw.line((0, y, width, y), fill=grid_color, width=1)
+        draw.line((0, y, width, y), fill=_FALLBACK_GRID_COLOR, width=1)
 
-    draw.rectangle((10, height - 54, width - 10, height - 10), outline=(90, 120, 180), width=1)
+    draw.rectangle((10, height - 54, width - 10, height - 10), outline=_FALLBACK_BOX_COLOR, width=1)
     draw.text(
         (16, height - 44),
         f"BBOX W/S/E/N: {bbox[0]:.3f}, {bbox[1]:.3f}, {bbox[2]:.3f}, {bbox[3]:.3f}",
@@ -467,7 +485,43 @@ def _generate_fallback_basemap(region: dict[str, Any], destination: Path) -> Non
     )
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    img.save(destination, "PNG")
+    pnginfo = PngImagePlugin.PngInfo()
+    pnginfo.add_text(_FALLBACK_BASEMAP_METADATA_KEY, "fallback")
+    img.save(destination, "PNG", pnginfo=pnginfo)
+
+
+def _looks_like_fallback_basemap(img: Image.Image) -> bool:
+    if (img.info or {}).get(_FALLBACK_BASEMAP_METADATA_KEY) == "fallback":
+        return True
+
+    rgb = img.convert("RGB")
+    width, height = rgb.size
+    if width < 32 or height < 96:
+        return False
+
+    body_top = _FALLBACK_HEADER_HEIGHT if height > _FALLBACK_HEADER_HEIGHT else 0
+    body_height = max(1, height - body_top)
+    header_sample_y = min(_FALLBACK_HEADER_HEIGHT - 1, _FALLBACK_HEADER_SAMPLE_Y)
+    header_sample_y = min(height - 1, header_sample_y)
+    grid_x = min(width - 1, int(width * (1 / _FALLBACK_GRID_COLUMNS)))
+    grid_y = min(height - 1, int(body_top + body_height * (1 / _FALLBACK_GRID_ROWS)))
+    footer_y = height - 54
+    body_sample_pos = (
+        min(width - 1, _FALLBACK_BODY_SAMPLE_X),
+        min(height - 1, body_top + _FALLBACK_BODY_SAMPLE_OFFSET_Y),
+    )
+    footer_sample_pos = (
+        min(width - 1, _FALLBACK_FOOTER_SAMPLE_X),
+        min(height - 1, footer_y),
+    )
+    samples = (
+        ((width // 2, header_sample_y), _FALLBACK_HEADER_COLOR),
+        (body_sample_pos, _FALLBACK_BODY_COLOR),
+        ((grid_x, grid_y), _FALLBACK_GRID_COLOR),
+        (footer_sample_pos, _FALLBACK_BOX_COLOR),
+    )
+    pixels = rgb.load()
+    return all(pixels[x, y] == expected for (x, y), expected in samples)
 
 
 def _path_from_region(region: dict[str, Any], key: str) -> Path:

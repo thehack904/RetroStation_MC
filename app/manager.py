@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -1941,9 +1942,14 @@ class WeatherChannelManager:
                 "weather",
                 f"Selected encoder path: {encoder_path} (codec={selected_codec}, provider={profile.hardware_acceleration_provider or 'software'})",
             )
-            resolution = profile.resolution
+            resolution = cfg.get("weather_resolution") or profile.resolution
             fps        = str(cfg.get("fps", 10))
             start_num  = str(int(time.time()) // 6)
+
+            # Apply the weather-specific resolution to the profile so that
+            # _build_weather_ffmpeg_command uses the right frame dimensions.
+            if resolution != profile.resolution:
+                profile = replace(profile, resolution=resolution)
 
             renderer_cmd = [
                 sys.executable,

@@ -16,6 +16,7 @@ This project uses a simple release-based changelog format with the following sec
 ## [v1.4.0] - 2026-07-15
 
 ### Added
+
 - Added `app/playout_schema.py` for validating playout document JSON.
 - Added playout document support for the following item types:
   - `video`
@@ -46,6 +47,25 @@ This project uses a simple release-based changelog format with the following sec
 - Added unified Linux helper script `retrostation_linux.sh` with `install` and `uninstall` commands.
 - Added regression tests for playout schema validation, scheduler behavior, fallback behavior, and the unified Linux helper script.
 
+* Added `app/playout_fallback.py` — standby video and fallback playout handling.
+
+  * `PlayoutFallbackHandler` inspects each scheduled playout item before it reaches
+    the renderer and replaces unavailable items with appropriate standby fallbacks.
+  * `video` and `promo` items whose source file does not exist on disk are replaced
+    by `FALLBACK_VIDEO_ITEM` (type `standby`, source `default`, duration 60 s).
+  * `virtual_channel` and `preview_channel` items whose source name is empty or
+    blank are replaced by `FALLBACK_VIRTUAL_CHANNEL_ITEM`.
+  * `standby` items are always passed through unchanged; they represent the
+    fallback content itself.
+  * Every fallback trigger is logged at WARNING level under the
+    `playout_fallback` category with the item type, source, reason, and a
+    human-readable detail string so administrators can identify why fallback
+    was activated.
+  * The most recent fallback event is exposed as `handler.last_fallback_event`
+    (a `PlayoutFallbackEvent` with a `.to_dict()` method) for admin diagnostics.
+  * The availability check and fallback item definitions are injectable, making
+    the handler straightforward to test and extend.
+
 ### Changed
 - Updated repository version references from `v1.3.0` to `v1.4.0`.
 - Updated the admin About tab version from `v1.3.0` to `v1.4.0`.
@@ -65,6 +85,9 @@ This project uses a simple release-based changelog format with the following sec
 - Removed `install-linux.sh`.
 - Removed `uninstall-linux.sh`.
 - Replaced both scripts with `retrostation_linux.sh`.
+
+### Security
+- (empty)
 
 ### Known Issues
 - Playout documents are schema-validated and schedulable, but they are not yet exposed through a full admin UI.

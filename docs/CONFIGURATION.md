@@ -16,6 +16,7 @@ The `settings` table stores one key per setting. Values are JSON-encoded.
 | `xmltv_source` | `sample_data/xmltv.xml` | XMLTV input path or URL |
 | `theme` | `retrostation_mc` | Theme directory name under `app/themes/` |
 | `hardware_acceleration_mode` | `software_fallback` | Encoding mode: `software_fallback` or `hardware_if_available` |
+| `aspect_ratio` | `16:9` | Channel output aspect ratio: `16:9` (widescreen) or `4:3` (standard) |
 | `resolution` | `1280x720` | Render and encode resolution |
 | `fps` | `15` | Render and encode frame rate |
 | `segment_seconds` | `6` | HLS target segment duration |
@@ -63,6 +64,7 @@ The `settings` table stores one key per setting. Values are JSON-encoded.
 
 The manager treats these as FFmpeg-level settings:
 
+- `aspect_ratio`
 - `resolution`
 - `fps`
 - `segment_seconds`
