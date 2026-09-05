@@ -19,6 +19,9 @@ APP_HOME="/home/$APP_USER"
 APP_DIR="$APP_HOME/retrostation-mc"
 SERVICE_NAME="retrostation-mc"
 SYSTEMD_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+PYTHON_BIN=""
+MIN_PYTHON_MINOR=11
+MAX_PYTHON_MINOR=14
 
 # ---------------------------------------------------------------------------
 # Install helpers
@@ -39,6 +42,19 @@ ensure_user() {
   if ! id "$APP_USER" >/dev/null 2>&1; then
     useradd -r -m -d "$APP_HOME" -s "$no_login_shell" -g "$APP_USER" "$APP_USER"
   fi
+
+  # Hardware video acceleration uses DRM render nodes, which are normally
+  # owned by the render/video groups. Add the service account when those
+  # groups exist so VA-API/QSV can open /dev/dri without manual intervention.
+  local gpu_groups=()
+  getent group video >/dev/null 2>&1 && gpu_groups+=(video)
+  getent group render >/dev/null 2>&1 && gpu_groups+=(render)
+  if (( ${#gpu_groups[@]} > 0 )); then
+    local gpu_group_csv
+    gpu_group_csv="$(IFS=,; echo "${gpu_groups[*]}")"
+    usermod -aG "$gpu_group_csv" "$APP_USER"
+  fi
+
   chmod 755 "$APP_HOME" || true
 }
 
@@ -69,10 +85,63 @@ stage_project() {
   chown -R "$APP_USER":"$APP_USER" "$APP_DIR"
 }
 
+select_python() {
+  local candidate minor
+
+  # Prefer the newest explicitly supported interpreter. This keeps installs
+  # working if the system `python3` later advances beyond RSMC's tested range.
+  for minor in $(seq "$MAX_PYTHON_MINOR" -1 "$MIN_PYTHON_MINOR"); do
+    candidate="python3.${minor}"
+    if command -v "$candidate" >/dev/null 2>&1; then
+      PYTHON_BIN="$(command -v "$candidate")"
+      break
+    fi
+  done
+
+  # Fall back to python3 only when it is itself inside the supported range.
+  if [[ -z "$PYTHON_BIN" ]] && command -v python3 >/dev/null 2>&1; then
+    if python3 - "$MIN_PYTHON_MINOR" "$MAX_PYTHON_MINOR" <<'PY'
+import sys
+minimum = int(sys.argv[1])
+maximum = int(sys.argv[2])
+raise SystemExit(0 if sys.version_info.major == 3 and minimum <= sys.version_info.minor <= maximum else 1)
+PY
+    then
+      PYTHON_BIN="$(command -v python3)"
+    fi
+  fi
+
+  if [[ -z "$PYTHON_BIN" ]]; then
+    local detected="not found"
+    if command -v python3 >/dev/null 2>&1; then
+      detected="$(python3 --version 2>&1) at $(command -v python3)"
+    fi
+    cat >&2 <<MSG
+RetroStation MC requires a validated Python 3.${MIN_PYTHON_MINOR} through 3.${MAX_PYTHON_MINOR} interpreter.
+Detected system python3: ${detected}
+
+This safety check prevents installation against a newer, unvalidated Python
+release whose binary dependencies may not yet provide compatible wheels.
+Install a supported Python version and run the installer again. If multiple
+Python versions are installed, RSMC will automatically select the newest
+supported one.
+MSG
+    exit 1
+  fi
+
+  echo "Using Python interpreter: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
+
+  if ! "$PYTHON_BIN" -m venv --help >/dev/null 2>&1; then
+    echo "The venv module is unavailable for $PYTHON_BIN." >&2
+    echo "Install the matching Python venv package and run the installer again." >&2
+    exit 1
+  fi
+}
+
 setup_environment() {
-  run_as_app_user python3 -m venv "$APP_DIR/.venv"
-  run_as_app_user "$APP_DIR/.venv/bin/pip" install --upgrade pip
-  run_as_app_user "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+  run_as_app_user "$PYTHON_BIN" -m venv "$APP_DIR/.venv"
+  run_as_app_user "$APP_DIR/.venv/bin/python" -m pip install --upgrade pip
+  run_as_app_user "$APP_DIR/.venv/bin/python" -m pip install --only-binary=:all: -r "$APP_DIR/requirements.txt"
 }
 
 run_hwaccel_diagnostics() {
@@ -114,10 +183,7 @@ EOF
 }
 
 do_install() {
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 is required but was not found in PATH." >&2
-    exit 1
-  fi
+  select_python
 
   if ! command -v ffmpeg >/dev/null 2>&1; then
     cat >&2 <<'MSG'

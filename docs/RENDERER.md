@@ -1,6 +1,6 @@
 # Renderer
 
-RetroStation MC v1.4.0 uses a Python/Pillow renderer implemented in `app/renderer.py`.
+RetroStation MC v1.3.0 uses a Python/Pillow renderer implemented in `app/renderer.py`.
 
 ## Renderer contract
 
@@ -71,6 +71,13 @@ The renderer hides or abbreviates programme text when the rendered cell is too n
 
 The renderer advances frames against a frame deadline to reduce cumulative drift. It can emit telemetry when started with `--telemetry`; the manager passes that flag when `RETRO_TELEMETRY_DEBUG` is enabled.
 
+
+## Guide Channel video preview layout
+
+When `guide_preview_enabled` is true, the renderer reserves a themed information/preview region above the guide grid. The header title and clock retain the normal theme styling, the entire reserved region uses the theme `header_bg`, and the guide timeline/listings begin at a resolution-aware `guide_top` boundary.
+
+The layout supports the four Guide Channel output profiles: `1280x720`, `1920x1080`, `960x720`, and `1440x1080`. The state builder reduces the effective rows per page when the smaller guide viewport cannot display the configured row count, preventing clipped/skipped channels. FFmpeg overlays the configured preview source into the upper-right of the renderer-owned information region; the Pillow renderer still emits one full raw RGB frame stream.
+
 ## Replacement strategy
 
 The renderer is the most replaceable part of the architecture. A future implementation can preserve the same input/output contract:
@@ -80,6 +87,3 @@ guide_state.json in → raw RGB frames out
 ```
 
 That allows the Flask admin, config database, and HLS serving model to remain stable while replacing the frame generation engine.
-
-
-v1.4.0 adds the playout document and scheduler foundation, but the current renderer still consumes `data/guide_state.json`. Future integration work should allow playout scheduler state to drive the Preview Channel video area while preserving the renderer's stable input/output contract.

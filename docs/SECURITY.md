@@ -4,11 +4,11 @@
 
 | Version | Status |
 |---|---|
-| v1.4.0 | Current documented release |
+| v1.3.0 | Current documented release |
 
 ## Security model
 
-RetroStation MC v1.4.0 is a local-control application. It has no built-in authentication or authorization. Treat it as a trusted-LAN service.
+RetroStation MC v1.3.0 is a local-control application. It has no built-in authentication or authorization. Treat it as a trusted-LAN service.
 
 Do not expose the app directly to the public internet.
 
@@ -32,8 +32,6 @@ The admin UI can:
 - delete uploaded audio files
 - read logs
 - export logs
-- validate and parse playout documents
-- route unavailable scheduled playout items to standby fallback content
 
 These functions should not be reachable by untrusted users.
 
@@ -42,13 +40,6 @@ These functions should not be reachable by untrusted users.
 Music uploads are limited to known audio extensions and validated using magic bytes after saving. Filenames are sanitized with `secure_filename`.
 
 The upload handler is still not a substitute for authentication. A trusted-only network boundary remains required.
-
-
-## Playout fallback handling
-
-v1.4.0 fallback handling is a continuity feature, not a security boundary. It prevents missing or blank scheduled items from creating dead-air behavior by routing them to standby content.
-
-Operators should still treat configured local paths, source names, and future playout documents as trusted administrative input.
 
 ## External source handling
 

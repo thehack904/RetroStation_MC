@@ -1,7 +1,7 @@
 # RetroStation MC
 
 <p align="center">
-  <a href="https://github.com/thehack904/RetroStation_MC">
+  <a href="#">
     <img src="https://img.shields.io/badge/version-v1.4.0-blue?style=for-the-badge" alt="Version">
   </a>
   <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">
@@ -36,14 +36,6 @@ FFmpeg encodes H.264/AAC and writes HLS segments
 
 The output is designed to behave like a live virtual TV channel. The app renders a guide grid, rotates through pages of channels, keeps a clock/current-time marker active, and provides a standby stream while the live guide is warming up.
 
-## v1.4.0 highlights
-
-- Adds a structured playout document schema for describing scheduled channel items.
-- Adds a basic playout scheduler that tracks the active item, next item, elapsed time, remaining time, cycle count, and total document duration.
-- Adds standby fallback handling for missing video/promo files and unavailable virtual/preview channel sources.
-- Adds `sample_data/playout_example.json` as a working example playout document.
-- Replaces separate Linux install/uninstall scripts with the unified `retrostation_linux.sh` command.
-
 ## Key features
 
 - Flask-based local admin dashboard
@@ -59,7 +51,9 @@ The output is designed to behave like a live virtual TV channel. The app renders
 - Optional Weather virtual channel with dedicated HLS output
 - Guide and Weather logo metadata for exported playlists
 - Theme selection using JSON theme files
-- 720p and 1080p render profiles
+- Optional classic cable-guide video preview window with Guide / Preview / Silent audio modes
+- Widescreen and standard 4:3 render profiles: 1280x720, 1920x1080, 960x720, and 1440x1080
+- Optional secondary Guide output with a native SD renderer at 720x480 (default), 640x480, or 960x720; exported automatically through the normal M3U/XMLTV channel list
 - Cut or vertical scroll page transitions
 - Standby pattern uploads with selectable custom artwork and overlay controls
 - Daily off-air scheduling with optional static-noise playback
@@ -70,7 +64,7 @@ The output is designed to behave like a live virtual TV channel. The app renders
 
 ## Local-only security model
 
-RetroStation MC v1.4.0 still has **no authentication**. Do not expose it directly to the public internet. Run it on a trusted LAN, behind a VPN, or behind an authenticated reverse proxy.
+RetroStation MC v1.3.0 still has **no authentication**. Do not expose it directly to the public internet. Run it on a trusted LAN, behind a VPN, or behind an authenticated reverse proxy.
 
 ## Quick start with Docker Compose
 
@@ -84,13 +78,14 @@ Open:
 - HLS master playlist: `http://localhost:8787/hls/master.m3u8`
 - Single-channel M3U: `http://localhost:8787/channel.m3u`
 - Virtual channel XMLTV: `http://localhost:8787/channel.xmltv`
+- HDHomeRun-matched XMLTV: `http://localhost:8787/hdhr/guide.xml` (use this with Plex after adding the RSMC tuner)
 
 ## Quick start with Python
 
 
 Requirements:
 
-- Python 3.11 or newer
+- Python 3.11 through 3.14 (the Linux installer automatically selects the newest supported interpreter installed)
 - FFmpeg in `PATH`
 
 ```bash
@@ -115,7 +110,7 @@ Or run the setup steps manually:
 
 
 ```bash
-python3 -m venv .venv
+python3 -m venv .venv  # use Python 3.11-3.14
 source .venv/bin/activate
 pip install -r requirements.txt
 python app.py
@@ -144,7 +139,6 @@ Start here:
 - [RetroIPTVGuide Integration](docs/RETROIPTVGUIDE_INTEGRATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [HLS Pipeline](docs/HLS_PIPELINE.md)
-- [Playout Document Schema](docs/PLAYOUT_DOCUMENT.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 
 ## Runtime directories
@@ -178,3 +172,14 @@ Start here:
 ## Project status
 
 The renderer is intentionally Python/Pillow-based so the rest of the application flow can be validated before replacing the renderer with a lower-level implementation such as SDL, C, Rust, or another real-time rendering stack.
+
+### Plex XMLTV mapping
+
+When using the RSMC HDHomeRun tuner with Plex, use `/hdhr/guide.xml` as the XMLTV guide URL. This output is generated from the same effective channel set as `/lineup.json`: RSMC-owned channels are included automatically and imported source channels appear only when selected for rebroadcast. For selected imported channels, RSMC carries through matching programme data from the configured upstream XMLTV source when available.
+
+If Plex cannot fetch the guide when a `.lan` or `.local` hostname is used, enter the RSMC server's LAN IP instead (for example `http://192.168.50.10:8787/hdhr/guide.xml`) so guide retrieval does not depend on the Plex host resolving local DNS names.
+
+
+### Plex Live TV playback note
+
+If Plex can discover the RSMC tuner and complete guide mapping but playback fails with a generic tuner/source unavailable error, check **Settings → Server → Transcoder** in Plex and make sure **Disable video stream transcoding** is **unchecked**. Plex may still decide that Live TV playback requires a transcode/remux step even when the incoming RSMC tuner stream is already H.264/AAC in MPEG-TS.

@@ -19,6 +19,45 @@
       --theme-btn-bg: {{ c.get('header_bg', '#2f65d9') }};
       --theme-btn-text: {{ c.get('header_text', '#ffffff') }};
     }
+
+    .guide-render-accordion__head {
+      width: 100%;
+      border: 0;
+      font: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+    .guide-render-accordion__head:hover { background: rgba(255,255,255,0.025); }
+    .guide-render-accordion__head:focus-visible { outline: 2px solid var(--theme-btn-bg, #2f65d9); outline-offset: -2px; }
+    .guide-render-accordion__toggle { margin-left: auto; font-size: 1.05em; opacity: 0.8; transition: transform 0.16s ease; }
+    .guide-render-accordion__head[aria-expanded="true"] .guide-render-accordion__toggle { transform: rotate(180deg); }
+    .guide-render-accordion__body[hidden] { display: none !important; }
+
+    .pipeline-status-accordion__head {
+      width: 100%;
+      border: 0;
+      font: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+    .pipeline-status-accordion__head:hover { background: rgba(255,255,255,0.025); }
+    .pipeline-status-accordion__head:focus-visible { outline: 2px solid var(--theme-btn-bg, #2f65d9); outline-offset: -2px; }
+    .pipeline-status-accordion__toggle { margin-left: auto; font-size: 1.05em; opacity: 0.8; transition: transform 0.16s ease; }
+    .pipeline-status-accordion__head[aria-expanded="true"] .pipeline-status-accordion__toggle { transform: rotate(180deg); }
+    .pipeline-status-accordion__body[hidden] { display: none !important; }
+
+    .guide-message-accordion__head {
+      width: 100%;
+      border: 0;
+      font: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+    .guide-message-accordion__head:hover { background: rgba(255,255,255,0.025); }
+    .guide-message-accordion__head:focus-visible { outline: 2px solid var(--theme-btn-bg, #2f65d9); outline-offset: -2px; }
+    .guide-message-accordion__toggle { margin-left: auto; font-size: 1.05em; opacity: 0.8; transition: transform 0.16s ease; }
+    .guide-message-accordion__head[aria-expanded="true"] .guide-message-accordion__toggle { transform: rotate(180deg); }
+    .guide-message-accordion__body[hidden] { display: none !important; }
   </style>
 </head>
 <body>
@@ -101,8 +140,12 @@
         </section>
 
         <!-- Guide Channel Render Settings -->
-        <section class="section">
-          <div class="section__header">Guide Channel Render Settings</div>
+        <section class="section guide-render-accordion">
+          <button type="button" class="section__header guide-render-accordion__head" aria-expanded="false" aria-controls="guide-render-settings-body">
+            <span>Guide Channel Render Settings</span>
+            <span class="guide-render-accordion__toggle" aria-hidden="true">&#9650;</span>
+          </button>
+          <div id="guide-render-settings-body" class="guide-render-accordion__body" hidden>
           <div class="field-row">
             <label class="field-label">Aspect Ratio</label>
             <select name="aspect_ratio" id="aspect-ratio-select">
@@ -117,6 +160,27 @@
               <option value="1920x1080" data-aspect="16:9" {% if config.resolution == '1920x1080' %}selected{% endif %}>1920×1080 (Full HD 1080p)</option>
               <option value="960x720" data-aspect="4:3" {% if config.resolution == '960x720' %}selected{% endif %}>960×720 (SD 720)</option>
               <option value="1440x1080" data-aspect="4:3" {% if config.resolution == '1440x1080' %}selected{% endif %}>1440×1080 (SD 1080)</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Secondary Guide Output</label>
+            <div style="flex:1;min-width:0">
+              <label class="inline-check" style="min-width:auto">
+                <input type="hidden" name="guide_secondary_enabled" value="0">
+                <input type="checkbox" name="guide_secondary_enabled" value="1" {% if config.guide_secondary_enabled %}checked{% endif %}>
+                Enable a second Guide channel/output
+              </label>
+              <div style="margin-top:6px;opacity:0.76;font-size:0.86em;line-height:1.35">
+                Test feature. Reuses the Guide Channel hardware/software encoder setting and automatic software fallback. When enabled, the secondary Guide is added automatically to channel.m3u/channel.m3u8 and XMLTV.
+              </div>
+            </div>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Secondary Resolution</label>
+            <select name="guide_secondary_resolution">
+              <option value="720x480" {% if config.guide_secondary_resolution == '720x480' %}selected{% endif %}>720×480</option>
+              <option value="640x480" {% if config.guide_secondary_resolution == '640x480' %}selected{% endif %}>640×480</option>
+              <option value="960x720" {% if config.guide_secondary_resolution == '960x720' %}selected{% endif %}>960×720</option>
             </select>
           </div>
           <div class="field-row">
@@ -162,13 +226,20 @@
             </select>
           </div>
           <div class="field-row">
-            <label class="field-label">Weather Channel</label>
-            <label class="inline-check" style="min-width:auto">
-              <input type="hidden" name="weather_channel_enabled" value="0">
-              <input type="checkbox" name="weather_channel_enabled" value="1" {% if config.weather_channel_enabled %}checked{% endif %}>
-              Include Weather Channel in the exported M3U/XMLTV
-            </label>
+            <label class="field-label">Virtual Channel Export</label>
+            <div style="flex:1;min-width:0">
+              <label class="inline-check" style="min-width:auto">
+                <input type="hidden" name="virtual_channels_export_enabled" value="0">
+                <input type="checkbox" name="virtual_channels_export_enabled" value="1" {% if config.virtual_channels_export_enabled %}checked{% endif %}>
+                Include enabled RSMC Virtual Channels in the exported M3U/XMLTV
+              </label>
+              <div style="margin-top:6px;opacity:0.76;font-size:0.86em;line-height:1.35">
+                Channel enable/disable settings are managed independently on the Virtual Channels page.
+                This option only controls whether enabled optional channels are listed in M3U/XMLTV exports.
+              </div>
+            </div>
           </div>
+          </div><!-- /guide-render-settings-body -->
         </section>
 
         <!-- Theme Selection -->
@@ -239,16 +310,24 @@
             value="{{ url_for('channel_xmltv', _external=True) }}">
           <button type="button" class="btn btn--sm btn--copy" onclick="copyUrl('url-xmltv', this)">Copy</button>
         </div>
-        {% if config.weather_channel_enabled %}
+        {% if config.virtual_channels_export_enabled %}
         <div style="margin-top:8px;opacity:0.75;font-size:0.88em">
-          Weather Channel is currently included as its own channel entry in the exported M3U/XMLTV.
+          Enabled optional RSMC Virtual Channels are included in the exported M3U/XMLTV. Per-channel enablement is managed on the Virtual Channels page.
+        </div>
+        {% elif config.weather_channel_enabled or config.traffic_channel_enabled or config.news_channel_enabled or config.channel_mix_enabled %}
+        <div style="margin-top:8px;opacity:0.75;font-size:0.88em">
+          One or more optional Virtual Channels are enabled, but optional channels are currently excluded from M3U/XMLTV export.
         </div>
         {% endif %}
       </section>
 
       <!-- Pipeline Status -->
-      <section class="section">
-        <div class="section__header">Pipeline Status</div>
+      <section class="section pipeline-status-accordion">
+        <button type="button" class="section__header pipeline-status-accordion__head" aria-expanded="false" aria-controls="pipeline-status-body">
+          <span>Pipeline Status</span>
+          <span class="pipeline-status-accordion__toggle" aria-hidden="true">&#9650;</span>
+        </button>
+        <div id="pipeline-status-body" class="pipeline-status-accordion__body" hidden>
         <div class="status-grid">
           <div class="status-item">
             <span class="status-label">State</span>
@@ -271,11 +350,27 @@
               {{ 'Running' if status.ffmpeg_running else 'Stopped' }}
             </span>
           </div>
+          {% if config.guide_secondary_enabled %}
+          <div class="status-item">
+            <span class="status-label">Secondary Guide</span>
+            <span class="status-value">
+              <span class="dot {{ 'dot--green' if status.secondary_ffmpeg_running and status.secondary_guide_ready else 'dot--yellow' }}"></span>
+              {% if status.secondary_ffmpeg_running and status.secondary_guide_ready %}Running{% elif status.secondary_guide_error %}Error{% else %}Starting{% endif %}
+            </span>
+          </div>
+          {% endif %}
           <div class="status-item">
             <span class="status-label">Last Refresh</span>
             <span class="status-value">{{ status.last_refresh_status or '—' }}</span>
           </div>
+          {% if config.guide_secondary_enabled and status.secondary_guide_error %}
+          <div class="status-item" style="grid-column:1/-1">
+            <span class="status-label">Secondary Error</span>
+            <span class="status-value">{{ status.secondary_guide_error }}</span>
+          </div>
+          {% endif %}
         </div>
+        </div><!-- /pipeline-status-body -->
       </section>
 
       <!-- Preview Panel -->
@@ -296,7 +391,8 @@
   <div class="tabs-wrap">
     <div class="tabs-nav">
       <button class="tab-btn tab-btn--active" data-tab="general">General</button>
-      <button class="tab-btn" data-tab="music">Music</button>
+      <button class="tab-btn" data-tab="guide-preview">Guide Preview</button>
+      <button class="tab-btn" data-tab="music">Shared Music</button>
       <button class="tab-btn" data-tab="diagnostics">Diagnostics</button>
       <button class="tab-btn" data-tab="hardware-acceleration">Hardware Acceleration</button>
       <button class="tab-btn" data-tab="logs">Logs</button>
@@ -320,12 +416,207 @@
       </div>
     </div>
 
-    <!-- Music Tab -->
+    <!-- Guide Preview Tab -->
+    <div class="tab-panel" id="tab-guide-preview">
+      <div class="section" style="margin-bottom:14px">
+        <div class="section__header">Guide Channel Video Preview</div>
+        <div style="opacity:0.78;line-height:1.45">
+          Add an optional video window to the upper-right of the Guide Channel for a classic 1990s/2000s cable-guide layout.
+          When disabled, the normal full-height Guide Channel layout is used and no preview source is decoded.
+        </div>
+      </div>
+
+      <form method="post" action="{{ url_for('guide_preview_settings') }}" id="guide-preview-settings-form">
+        <div class="field-row">
+          <label class="field-label">Video Preview</label>
+          <div style="flex:1;min-width:0">
+            <input type="hidden" name="guide_preview_enabled" value="0">
+            <label class="inline-check" style="min-width:auto">
+              <input type="checkbox" name="guide_preview_enabled" value="1" {% if config.guide_preview_enabled %}checked{% endif %}>
+              Enable Guide Channel video preview
+            </label>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <label class="field-label">Video Source</label>
+          <select name="guide_preview_source_type" id="guide-preview-source-type">
+            <option value="file" {% if config.guide_preview_source_type == 'file' %}selected{% endif %}>Uploaded local video</option>
+            <option value="url" {% if config.guide_preview_source_type == 'url' %}selected{% endif %}>HTTP / HTTPS / HLS URL</option>
+            {% if config.weather_channel_enabled %}<option value="virtual_weather" {% if config.guide_preview_source_type == 'virtual_weather' %}selected{% endif %}>Virtual Channel — Weather Channel</option>{% endif %}
+            {% if config.traffic_channel_enabled %}<option value="virtual_traffic" {% if config.guide_preview_source_type == 'virtual_traffic' %}selected{% endif %}>Virtual Channel — Simulated Traffic</option>{% endif %}
+            {% if config.news_channel_enabled %}<option value="virtual_news" {% if config.guide_preview_source_type == 'virtual_news' %}selected{% endif %}>Virtual Channel — News Now</option>{% endif %}
+            {% if config.channel_mix_enabled %}<option value="virtual_channel_mix" {% if config.guide_preview_source_type == 'virtual_channel_mix' %}selected{% endif %}>Virtual Channel — {{ config.channel_mix_name or 'Channel Mix' }}</option>{% endif %}
+          </select>
+        </div>
+
+        <div class="field-row" id="guide-preview-file-row">
+          <label class="field-label">Selected File</label>
+          <div style="flex:1;min-width:0">
+            {% if config.guide_preview_file %}
+              <code>{{ config.guide_preview_file }}</code>
+            {% else %}
+              <span style="opacity:0.7">No local preview video uploaded.</span>
+            {% endif %}
+          </div>
+        </div>
+
+        <div class="field-row" id="guide-preview-url-row">
+          <label class="field-label">Preview URL</label>
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input type="url" id="guide-preview-url" name="guide_preview_url" value="{{ config.guide_preview_url }}" placeholder="http://server/video.m3u8 or http://server/channels.m3u" style="flex:1;min-width:280px">
+              <button type="button" class="btn" id="guide-preview-load-channels">Load Channels</button>
+            </div>
+            <div id="guide-preview-url-status" style="opacity:0.72;font-size:0.88em;margin-top:6px">
+              Enter a direct HTTP/HLS stream URL, or enter an M3U playlist URL and click <strong>Load Channels</strong>.
+            </div>
+          </div>
+        </div>
+
+        <div class="field-row" id="guide-preview-channel-row" {% if not config.guide_preview_url_channel %}style="display:none"{% endif %}>
+          <label class="field-label">Channel</label>
+          <div style="flex:1;min-width:0">
+            <select name="guide_preview_url_channel" id="guide-preview-url-channel" style="width:100%">
+              <option value="">Use URL directly</option>
+              {% if config.guide_preview_url_channel %}
+                <option value="{{ config.guide_preview_url_channel }}" selected>{{ config.guide_preview_url_channel_name or config.guide_preview_url_channel }}</option>
+              {% endif %}
+            </select>
+            <input type="hidden" name="guide_preview_url_channel_name" id="guide-preview-url-channel-name" value="{{ config.guide_preview_url_channel_name }}">
+          </div>
+        </div>
+
+        <div class="field-row">
+          <label class="field-label">Aspect Ratio</label>
+          <div style="flex:1;min-width:0">
+            <select name="guide_preview_aspect_mode" id="guide-preview-aspect-mode">
+              <option value="auto" {% if config.guide_preview_aspect_mode == 'auto' %}selected{% endif %}>Auto — detect in background (16:9 fallback)</option>
+              <option value="16:9" {% if config.guide_preview_aspect_mode == '16:9' %}selected{% endif %}>16:9 — force widescreen</option>
+              <option value="4:3" {% if config.guide_preview_aspect_mode == '4:3' %}selected{% endif %}>4:3 — force standard</option>
+            </select>
+            <div style="opacity:0.72;font-size:0.88em;margin-top:6px">
+              {% if config.guide_preview_aspect_mode == 'auto' %}
+                Auto currently uses <strong>{{ config.guide_preview_effective_aspect_ratio }}</strong>.
+                {% if config.guide_preview_detected_aspect_ratio and config.guide_preview_detected_source_key %}
+                  This value was detected and cached for the selected source.
+                {% else %}
+                  No cached detection yet; the Guide starts immediately with the 16:9 fallback while detection runs separately.
+                {% endif %}
+              {% else %}
+                Manual override; background detection is skipped.
+              {% endif %}
+            </div>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <label class="field-label">Audio</label>
+          <select name="guide_preview_audio_mode" id="guide-preview-audio-mode">
+            <option value="guide" {% if config.guide_preview_audio_mode == 'guide' %}selected{% endif %}>Guide — use configured Guide Channel music</option>
+            <option value="preview" {% if config.guide_preview_audio_mode == 'preview' %}selected{% endif %}>Preview — use audio from the preview video</option>
+            <option value="silent" {% if config.guide_preview_audio_mode == 'silent' %}selected{% endif %}>Silent — mute guide music and preview audio</option>
+          </select>
+        </div>
+
+        <div class="section guide-message-accordion" style="margin-top:16px;margin-bottom:14px">
+          <button type="button" class="section__header guide-message-accordion__head" aria-expanded="false" aria-controls="guide-message-settings-body">
+            <span>Guide Message</span>
+            <span class="guide-message-accordion__toggle" aria-hidden="true">&#9650;</span>
+          </button>
+          <div id="guide-message-settings-body" class="guide-message-accordion__body" hidden>
+          <div style="opacity:0.78;line-height:1.45;margin-bottom:10px">
+            Show understated rotating text opposite the video preview. Wrap each rotating item in <code>[message]</code> ... <code>[/message]</code>; blank lines inside a message are preserved as spacing.
+            Use <code>[message:45]</code> ... <code>[/message]</code> for a 45-second message, <code>[blank]</code> for one normal-duration blank interval, or <code>[blank:90]</code> for a 90-second blank interval.
+            Only one message is shown at a time, and timing controls are never displayed on the Guide Channel itself.
+          </div>
+
+          <div class="field-row">
+            <label class="field-label">Guide Message</label>
+            <div style="flex:1;min-width:0">
+              <input type="hidden" name="guide_message_enabled" value="0">
+              <label class="inline-check" style="min-width:auto">
+                <input type="checkbox" name="guide_message_enabled" value="1" {% if config.guide_message_enabled %}checked{% endif %}>
+                Enable rotating Guide text
+              </label>
+            </div>
+          </div>
+
+          <div class="field-row" style="align-items:flex-start">
+            <label class="field-label" for="guide-message-text">Messages</label>
+            <div style="flex:1;min-width:0">
+              <textarea id="guide-message-text" name="guide_message_text" rows="9" maxlength="12000" style="width:100%;resize:vertical" placeholder="Enter Guide Channel message text here...">{{ config.guide_message_text }}</textarea>
+              <div style="opacity:0.72;font-size:0.88em;margin-top:6px">
+                Use <code>[message]</code> ... <code>[/message]</code> to define each rotating message. Blank lines inside the block are preserved. <code>[message:seconds]</code> overrides Display Time for that message (for example, <code>[message:45]</code>). <code>[blank]</code> uses normal Display Time and <code>[blank:seconds]</code> sets a custom blank interval. Long lines wrap automatically; the on-screen message area is intentionally limited so it never competes with the preview or channel grid.
+              </div>
+            </div>
+          </div>
+
+          <div class="field-row">
+            <label class="field-label" for="guide-message-interval">Display Time</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input type="number" id="guide-message-interval" name="guide_message_interval_seconds" min="3" max="60" step="1" value="{{ config.guide_message_interval_seconds }}" style="width:90px">
+              <span style="opacity:0.78">seconds per message</span>
+            </div>
+          </div>
+
+          <div class="form-actions" style="margin-top:10px">
+            <button type="submit" formaction="{{ url_for('guide_message_settings') }}" formmethod="post" class="btn btn--primary">Save Guide Message</button>
+            <span style="opacity:0.72;font-size:0.88em">Saves only Guide Message settings and updates the running Guide live; preview settings are not changed.</span>
+          </div>
+          </div>
+        </div>
+
+        <div class="info-grid" style="margin-top:12px">
+          <div class="info-row"><span class="info-label">Current Guide Output</span><code>{{ config.resolution }} / {{ config.aspect_ratio }}</code></div>
+          <div class="info-row"><span class="info-label">Supported Widescreen</span><code>1280×720, 1920×1080</code></div>
+          <div class="info-row"><span class="info-label">Supported Standard 4:3</span><code>960×720, 1440×1080</code></div>
+        </div>
+
+        <div class="form-actions" style="margin-top:14px">
+          <button type="submit" name="action" value="save" class="btn">Save Preview Settings</button>
+          <button type="submit" name="action" value="restart" class="btn btn--primary">{% if status.pipeline_active %}Save &amp; Restart Guide{% else %}Save &amp; Start Guide{% endif %}</button>
+        </div>
+      </form>
+
+      <div class="section" style="margin-top:14px">
+        <div class="section__header">Local Preview Video</div>
+        <form method="post" action="{{ url_for('guide_preview_upload') }}" enctype="multipart/form-data">
+          <div class="field-row">
+            <label class="field-label">Upload Video</label>
+            <input type="file" name="guide_preview_file" accept="video/*,.mp4,.mkv,.mov,.m4v,.webm,.mpeg,.mpg,.ts" required>
+          </div>
+          <div style="opacity:0.72;font-size:0.88em;margin:4px 0 10px 0">
+            MP4, MKV, MOV, M4V, WebM, MPEG/MPG, or TS. Maximum 1 GB. Auto aspect detection runs in the background after selection; Guide startup never waits for ffprobe.
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn">Upload &amp; Select</button>
+          </div>
+        </form>
+        {% if config.guide_preview_file %}
+        <form method="post" action="{{ url_for('guide_preview_remove') }}" style="margin-top:10px">
+          <button type="submit" class="btn btn--danger">Remove {{ config.guide_preview_file }}</button>
+        </form>
+        {% endif %}
+      </div>
+
+      <div style="margin-top:10px;opacity:0.72;font-size:0.88em;line-height:1.45">
+        Layout is calculated from the selected Guide Channel resolution and aspect ratio. The preview uses a raised/beveled frame, is vertically centered between the clock/header band and the guide grid, and its right edge aligns with the clock's seconds field. Theme header colors automatically fill the surrounding preview/information area. When Guide Message is enabled, its understated text is aligned beneath the Guide Channel title and constrained to the left-side information area so it does not compete with the preview or guide grid.
+      </div>
+    </div>
+
+    <!-- Shared Music Library Tab -->
     <div class="tab-panel" id="tab-music">
+      <div class="section" style="margin-bottom:14px">
+        <div class="section__header">Shared Music Library</div>
+        <div style="opacity:0.78;line-height:1.45">
+          Upload music once here. Guide, Weather, Traffic, and News can each independently use none, one file, selected files, or the entire shared library. Channel Mix inherits the audio of whichever member channel is active.
+        </div>
+      </div>
       <form method="post" action="{{ url_for('music_upload') }}" enctype="multipart/form-data" class="music-upload-form">
         <div class="music-upload-row">
           <label class="music-file-label">
-            <span>Upload audio files (MP3, FLAC, WAV, OGG, M4A, AAC — max 100 MB each)</span>
+            <span>Upload shared music files (MP3, FLAC, WAV, OGG, M4A, AAC — max 100 MB each)</span>
             <input type="file" name="files" multiple accept=".mp3,.flac,.wav,.ogg,.m4a,.aac" style="width:auto">
           </label>
           <button type="submit" class="btn btn--sm">Upload</button>
@@ -338,7 +629,8 @@
           <select name="music_mode" id="music-mode-select" style="width:160px">
             <option value="none" {% if config.music_mode == 'none' %}selected{% endif %}>None (silence)</option>
             <option value="single" {% if config.music_mode == 'single' %}selected{% endif %}>Single file</option>
-            <option value="playlist" {% if config.music_mode == 'playlist' %}selected{% endif %}>Playlist</option>
+            <option value="playlist" {% if config.music_mode == 'playlist' %}selected{% endif %}>Selected files</option>
+            <option value="all" {% if config.music_mode == 'all' %}selected{% endif %}>All shared music</option>
           </select>
           <label class="inline-check" style="margin-left:20px">
             <input type="checkbox" name="music_loop" value="1" {% if config.music_loop %}checked{% endif %}>
@@ -348,7 +640,7 @@
 
         {% if music_files %}
         <div id="music-file-list" style="margin-top:14px">
-          <p class="music-list-heading">Uploaded files</p>
+          <p class="music-list-heading">Shared library files</p>
           {% for fname in music_files %}
           <div class="music-file-row" data-filename="{{ fname }}">
             <label class="music-single-selector" id="single-label-{{ loop.index }}">
@@ -745,6 +1037,120 @@
     })();
   </script>
 
+  <!-- Guide Preview source controls -->
+  <script>
+    (function () {
+      var sourceType = document.getElementById('guide-preview-source-type');
+      var fileRow = document.getElementById('guide-preview-file-row');
+      var urlRow = document.getElementById('guide-preview-url-row');
+      var channelRow = document.getElementById('guide-preview-channel-row');
+      var urlInput = document.getElementById('guide-preview-url');
+      var loadButton = document.getElementById('guide-preview-load-channels');
+      var channelSelect = document.getElementById('guide-preview-url-channel');
+      var channelName = document.getElementById('guide-preview-url-channel-name');
+      var statusText = document.getElementById('guide-preview-url-status');
+      if (!sourceType || !fileRow || !urlRow) return;
+
+      function updatePreviewSourceRows() {
+        var isFile = sourceType.value === 'file';
+        var isUrl = sourceType.value === 'url';
+        fileRow.style.display = isFile ? '' : 'none';
+        urlRow.style.display = isUrl ? '' : 'none';
+        if (channelRow) {
+          channelRow.style.display = (isUrl && channelSelect && (channelSelect.value || channelSelect.options.length > 1)) ? '' : 'none';
+        }
+      }
+
+      function clearChannelSelection() {
+        if (!channelSelect) return;
+        channelSelect.innerHTML = '<option value="">Use URL directly</option>';
+        channelSelect.value = '';
+        if (channelName) channelName.value = '';
+        if (channelRow) channelRow.style.display = 'none';
+      }
+
+      function channelLabel(channel) {
+        var label = channel.name || channel.id || channel.stream_url;
+        if (channel.number) label = channel.number + ' — ' + label;
+        if (channel.group) label += ' [' + channel.group + ']';
+        return label;
+      }
+
+      if (loadButton && urlInput && channelSelect) {
+        loadButton.addEventListener('click', function () {
+          var url = urlInput.value.trim();
+          var previousChannel = channelSelect.value;
+          if (!url) {
+            statusText.textContent = 'Enter a playlist URL first.';
+            clearChannelSelection();
+            return;
+          }
+          loadButton.disabled = true;
+          loadButton.textContent = 'Loading…';
+          statusText.textContent = 'Loading channels from playlist…';
+          fetch('{{ url_for("guide_preview_url_channels") }}', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({url: url})
+          })
+          .then(function (response) {
+            return response.json().then(function (data) {
+              if (!response.ok) throw new Error(data.error || 'Unable to load playlist.');
+              return data;
+            });
+          })
+          .then(function (data) {
+            clearChannelSelection();
+            if (!data.playlist || !data.channels || !data.channels.length) {
+              statusText.textContent = data.message || 'No playlist channels found. The URL will be used directly.';
+              return;
+            }
+            data.channels.forEach(function (channel) {
+              var option = document.createElement('option');
+              option.value = channel.stream_url;
+              option.textContent = channelLabel(channel);
+              option.dataset.channelName = channel.name || channel.id || channel.stream_url;
+              channelSelect.appendChild(option);
+            });
+            if (previousChannel) {
+              channelSelect.value = previousChannel;
+              if (channelSelect.value && channelName) {
+                var selected = channelSelect.options[channelSelect.selectedIndex];
+                channelName.value = selected.dataset.channelName || selected.textContent;
+              }
+            }
+            channelRow.style.display = '';
+            statusText.textContent = 'Loaded ' + data.channels.length + ' channels. Select the channel to show in the Guide Preview.';
+          })
+          .catch(function (error) {
+            clearChannelSelection();
+            statusText.textContent = error.message;
+          })
+          .finally(function () {
+            loadButton.disabled = false;
+            loadButton.textContent = 'Load Channels';
+          });
+        });
+
+        urlInput.addEventListener('input', function () {
+          // A channel belongs to the exact playlist it was loaded from. Do not
+          // silently retain an old stream selection after the URL is edited.
+          clearChannelSelection();
+          statusText.textContent = 'URL changed. Click Load Channels for an M3U playlist, or save to use it directly.';
+        });
+
+        channelSelect.addEventListener('change', function () {
+          var option = channelSelect.options[channelSelect.selectedIndex];
+          if (channelName) channelName.value = option && option.value ? (option.dataset.channelName || option.textContent) : '';
+          if (channelRow) channelRow.style.display = channelSelect.options.length > 1 ? '' : (channelSelect.value ? '' : 'none');
+        });
+      }
+
+      sourceType.addEventListener('change', updatePreviewSourceRows);
+      updatePreviewSourceRows();
+    })();
+  </script>
+
   <!-- Tab switching -->
   <script>
     (function () {
@@ -933,6 +1339,57 @@
       }
       cb.addEventListener('change', syncTimes);
       syncTimes();
+    })();
+  </script>
+
+  <!-- Guide render settings accordion: collapsed by default; ▲ collapsed / ▼ expanded. -->
+  <script>
+    (function () {
+      var head = document.querySelector('.guide-render-accordion__head[aria-controls]');
+      if (!head) return;
+      var body = document.getElementById(head.getAttribute('aria-controls'));
+      if (!body) return;
+      head.setAttribute('aria-expanded', 'false');
+      body.hidden = true;
+      head.addEventListener('click', function () {
+        var expanded = head.getAttribute('aria-expanded') === 'true';
+        head.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        body.hidden = expanded;
+      });
+    })();
+  </script>
+
+  <!-- Pipeline Status accordion: collapsed by default; ▲ collapsed / ▼ expanded. -->
+  <script>
+    (function () {
+      var head = document.querySelector('.pipeline-status-accordion__head[aria-controls]');
+      if (!head) return;
+      var body = document.getElementById(head.getAttribute('aria-controls'));
+      if (!body) return;
+      head.setAttribute('aria-expanded', 'false');
+      body.hidden = true;
+      head.addEventListener('click', function () {
+        var expanded = head.getAttribute('aria-expanded') === 'true';
+        head.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        body.hidden = expanded;
+      });
+    })();
+  </script>
+
+  <!-- Guide Message accordion: collapsed by default; ▲ collapsed / ▼ expanded. -->
+  <script>
+    (function () {
+      var head = document.querySelector('.guide-message-accordion__head[aria-controls]');
+      if (!head) return;
+      var body = document.getElementById(head.getAttribute('aria-controls'));
+      if (!body) return;
+      head.setAttribute('aria-expanded', 'false');
+      body.hidden = true;
+      head.addEventListener('click', function () {
+        var expanded = head.getAttribute('aria-expanded') === 'true';
+        head.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        body.hidden = expanded;
+      });
     })();
   </script>
 

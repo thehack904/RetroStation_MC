@@ -18,10 +18,6 @@ pytest
 | `tests/test_default_stream_tuning.py` | Default HLS/render tuning expectations |
 | `tests/test_hls_delayed_edge.py` | HLS live-edge playlist trimming |
 | `tests/test_renderer_layer_cache.py` | Renderer layer cache behavior |
-| `tests/test_playout_schema.py` | Playout document schema validation and parser behavior |
-| `tests/test_playout_scheduler.py` | Active/next item scheduling, looping, non-looping behavior, and timing state |
-| `tests/test_playout_fallback.py` | Missing media fallback, virtual/preview source fallback, diagnostics, and scheduler integration |
-| `tests/test_linux_installer.py` | Unified Linux install/uninstall script expectations |
 
 ## Manual regression checklist
 
@@ -42,11 +38,6 @@ Before release, validate:
 13. Logs export works in JSONL and CSV.
 14. Uploaded supported music can be selected and applied after restart.
 15. Unsupported or invalid audio uploads are rejected.
-16. `sudo ./retrostation_linux.sh install` installs the systemd service on a Linux/systemd host.
-17. `sudo ./retrostation_linux.sh uninstall` removes the service and install directory safely.
-18. `sample_data/playout_example.json` validates successfully through `app.playout_schema.parse_playout_document`.
-19. Missing video or promo items route to standby through `PlayoutFallbackHandler`.
-20. Blank virtual/preview channel sources route to standby through `PlayoutFallbackHandler`.
 
 ## HLS-specific regression checks
 

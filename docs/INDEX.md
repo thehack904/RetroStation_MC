@@ -1,6 +1,6 @@
 # RetroStation MC Documentation Index
 
-This documentation pack covers RetroStation MC v1.4.0.
+This documentation pack covers RetroStation MC v1.3.0.
 
 ## Operator documentation
 
@@ -13,10 +13,9 @@ This documentation pack covers RetroStation MC v1.4.0.
 
 ## Technical documentation
 
-- [Architecture](ARCHITECTURE.md) — Application components, process model, and playout-layer boundaries.
+- [Architecture](ARCHITECTURE.md) — Application components and process model.
 - [Data Flow](DATA_FLOW.md) — M3U/XMLTV ingestion through HLS output.
 - [HLS Pipeline](HLS_PIPELINE.md) — Standby/live playlists, delayed live edge, segment tuning, and client behavior.
-- [Playout Document Schema](PLAYOUT_DOCUMENT.md) — JSON playout document fields, item types, validation rules, and parser helpers.
 - [API Reference](API_REFERENCE.md) — Web endpoints exposed by the Flask app.
 - [Renderer](RENDERER.md) — Pillow renderer behavior, paging, caching, and timing.
 - [Themes](THEMES.md) — Theme directory layout and JSON color keys.
@@ -27,6 +26,6 @@ This documentation pack covers RetroStation MC v1.4.0.
 ## Project documentation
 
 - [Security](SECURITY.md) — Local-only threat model and safe deployment guidance.
-- [Roadmap](ROADMAP.md) — Suggested post-v1.4.0 work.
-- [Changelog](../CHANGELOG.md) — v1.4.0 release notes and prior history.
+- [Roadmap](ROADMAP.md) — Suggested post-v1.3.0 work.
+- [Changelog](../CHANGELOG.md) — v1.3.0 release notes and prior history.
 - [FAQ](FAQ.md) — Common operator and integration questions.

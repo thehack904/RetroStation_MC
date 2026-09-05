@@ -14,6 +14,10 @@ RetroStation MC exposes a small set of Flask routes. Most write routes are inten
 | `GET` | `/status` | Return JSON pipeline status |
 | `GET` | `/virtual-channels` | Virtual Channels admin page |
 | `POST` | `/virtual-channels/weather/config` | Save Weather Channel settings |
+| `POST` | `/virtual-channels/news/config` | Save News Now enablement, output profile, and up to six RSS/Atom feeds |
+| `GET` | `/api/news` | Return normalized headlines for the synchronized current News feed slot |
+| `GET` | `/news` | Browser preview of the News Now presentation |
+| `GET` | `/hls/news.m3u8` | Generated News Now HLS channel |
 | `POST` | `/off-air/settings` | Save off-air schedule settings |
 
 ## Diagnostics and logs
@@ -99,10 +103,11 @@ Typical fields:
 | `stream_url` | Public stream path, currently `/hls/master.m3u8` |
 | `gpu_capabilities` | Hardware detection, encoder readiness, and active-path information for the admin UI |
 
-## Playout document API status
 
-v1.4.0 adds internal playout schema, scheduler, and fallback modules, but does not expose playout document management through Flask routes yet. Playout documents are currently validated and consumed through Python helpers in:
+### `GET /api/channel_mix`
 
-- `app/playout_schema.py`
-- `app/playout_scheduler.py`
-- `app/playout_fallback.py`
+Returns Channel Mix playout state including display name, configured ordered members, nominal scheduled member, active available member, seconds until the next wall-clock boundary, and total cycle length. Alias: `/api/channel-mix`.
+
+### `GET /hls/channel-mix.m3u8`
+
+CH 5 HLS entrypoint. The playlist is selected in the RSMC playout layer from the currently active configured virtual channel. Disabled or unbuffered members fall forward to the next available member without changing the wall-clock schedule.

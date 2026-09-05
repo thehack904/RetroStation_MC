@@ -589,17 +589,17 @@ class WeatherRenderer:
             # Condition short label
             icon  = day.get("icon", "")
             short = _ICON_SHORT.get(icon, str(day.get("condition", ""))[:9])
-            self._center(draw, cx,
-                         icon_cy + icon_size // 2 + 4,
-                         short, self._f_tiny, _LBLUE)
+            condition_y = icon_cy + icon_size // 2 + 4
+            self._center(draw, cx, condition_y, short, self._f_tiny, _LBLUE)
 
-            # Hi / Lo
+            # Hi / Lo belongs visually to this forecast day.  Keep it directly
+            # beneath the condition instead of anchoring it to the bottom of
+            # the row, where it can look like part of the next day's card.
             hi = day.get("hi")
             lo = day.get("lo")
             hi_lo = f"{hi}{usym}/{lo}{usym}" if hi is not None and lo is not None else "--"
-            self._center(draw, cx,
-                         row_y + row_h - self._th(draw, hi_lo, self._f_tiny) - 6,
-                         hi_lo, self._f_tiny, _WHITE)
+            temp_y = condition_y + self._th(draw, short, self._f_tiny) + max(8, row_h // 28)
+            self._center(draw, cx, temp_y, hi_lo, self._f_tiny, _WHITE)
 
     # ── Segment 2 – Regional Radar ───────────────────────────────────────────
 

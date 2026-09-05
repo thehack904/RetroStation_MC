@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap lists recommended post-v1.4.0 improvements.
+This roadmap lists recommended post-v1.3.0 improvements.
 
 ## Priority 1 — Reliability and operations
 
@@ -39,17 +39,21 @@ This roadmap lists recommended post-v1.4.0 improvements.
 - Add optional multi-variant HLS output.
 - Add configurable bitrate and encoder preset controls.
 - Add better player compatibility diagnostics.
-- Expand HLS watchdog diagnostics into a one-click diagnostic bundle.
-- Integrate playout fallback status into the admin diagnostics view.
-- Connect playout scheduler state to the Preview Channel renderer.
-- Add admin controls for loading, validating, and previewing playout documents.
 - Add stale segment and playlist watchdogs.
 - Add safer fallback behavior when live output crashes after clients are already live.
 
-## Priority 6 — Packaging
+## Priority 7 — Virtual channels
+
+- ✅ **v1.4.0** Simulated Traffic virtual channel (CH 3) — OSM road geometry, deterministic synthetic congestion and incidents, configurable city rotation and time-of-day profiles, basemap caching. Adapted from RetroIPTVGuide v4.9.9-dev.
+- Add simulated News virtual channel.
+- Add simulated Sports scores virtual channel.
 
 - Publish versioned container images.
 - Add GHCR/Docker Hub release workflow.
 - Add TrueNAS custom app guidance.
 - Add systemd service example for non-container installs.
 - Add backup/restore docs for `data/`.
+
+- [x] v1.4.0 — Migrate News Now RSS/Atom virtual channel from RetroIPTVGuide (#119).
+
+- [x] v1.4.0 — Migrate Channel Mix virtual channel from RetroIPTVGuide.

@@ -17,11 +17,23 @@ class LinuxInstallerTests(unittest.TestCase):
         self.assertIn('APP_DIR="$APP_HOME/retrostation-mc"', self.installer)
         self.assertIn('SERVICE_NAME="retrostation-mc"', self.installer)
         self.assertIn('SYSTEMD_FILE="/etc/systemd/system/${SERVICE_NAME}.service"', self.installer)
-        self.assertIn("run_as_app_user python3 -m venv \"$APP_DIR/.venv\"", self.installer)
-        self.assertIn("run_as_app_user \"$APP_DIR/.venv/bin/pip\" install -r \"$APP_DIR/requirements.txt\"", self.installer)
+        self.assertIn('run_as_app_user "$PYTHON_BIN" -m venv "$APP_DIR/.venv"', self.installer)
+        self.assertIn('run_as_app_user "$APP_DIR/.venv/bin/python" -m pip install --only-binary=:all: -r "$APP_DIR/requirements.txt"', self.installer)
         self.assertIn("run_as_app_user \"$APP_DIR/.venv/bin/python\" \"$APP_DIR/gpu_hwaccel_detect_v3.py\"", self.installer)
         self.assertIn("Warning: GPU hardware acceleration diagnostics failed; continuing with software fallback.", self.installer)
         self.assertIn("systemctl enable --now \"$SERVICE_NAME\"", self.installer)
+
+
+    def test_linux_installer_selects_only_validated_python_versions(self) -> None:
+        self.assertIn('MIN_PYTHON_MINOR=11', self.installer)
+        self.assertIn('MAX_PYTHON_MINOR=14', self.installer)
+        self.assertIn('select_python()', self.installer)
+        self.assertIn('for minor in $(seq "$MAX_PYTHON_MINOR" -1 "$MIN_PYTHON_MINOR")', self.installer)
+        self.assertIn('requires a validated Python 3.${MIN_PYTHON_MINOR} through 3.${MAX_PYTHON_MINOR}', self.installer)
+        self.assertIn('Using Python interpreter:', self.installer)
+
+    def test_linux_installer_avoids_dependency_source_builds(self) -> None:
+        self.assertIn('--only-binary=:all:', self.installer)
 
     def test_linux_installer_checks_ffmpeg_dependency(self) -> None:
         self.assertIn("if ! command -v ffmpeg >/dev/null 2>&1; then", self.installer)

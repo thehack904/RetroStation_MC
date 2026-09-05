@@ -36,7 +36,7 @@ OSM_TILE_SERVERS = [
 _TILE_SIZE = 256  # standard OSM slippy-map tile size in pixels
 _OSM_TILE_UA = (
     "RetroStation-MC/1.0 (weather radar basemap; "
-    "see github.com/thehack904/RetroStation_MC-Private)"
+    "see RetroStation MC project)"
 )
 
 _USER_AGENT = "RetroStation-MC/1.0"

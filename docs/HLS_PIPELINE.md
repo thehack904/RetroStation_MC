@@ -154,3 +154,16 @@ This keeps clients away from the most recently written HLS edge, where file writ
 
 When the Weather channel is enabled, `/hls/weather.m3u8` is exposed as a dedicated media playlist.
 It follows the same guide readiness principles and uses standby fallback while weather output is warming up.
+
+## Guide preview composition and audio
+
+With Guide Channel preview disabled, the existing renderer/FFmpeg path is unchanged. With preview enabled, FFmpeg adds the configured local or HTTP/HTTPS/HLS preview source as a second video input and overlays it into the renderer-reserved upper-right viewport. The preview window itself can be Auto, 16:9, or 4:3; source video is aspect-fitted inside that window. Auto never probes synchronously during Guide startup: it uses cached detection when available, otherwise starts at 16:9 and performs bounded detection in a background worker.
+
+Preview audio mode is selected independently:
+
+- `guide`: use the normal configured Guide Channel music/silence path.
+- `preview`: map audio from the preview source.
+- `silent`: suppress Guide music and preview audio and emit compatibility silence.
+
+Changing preview enablement, source, audio mode, or effective preview aspect ratio requires rebuilding the FFmpeg pipeline. Auto detection is decoupled from startup; when Save & Restart was requested and a new detected ratio differs from the fallback, one follow-up restart applies the detected geometry.
+

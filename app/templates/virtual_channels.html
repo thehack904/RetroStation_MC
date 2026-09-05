@@ -24,9 +24,22 @@
       display: flex;
       align-items: center;
       gap: 12px;
+      width: 100%;
       padding: 14px 18px;
+      border: 0;
       border-bottom: 1px solid var(--theme-panel-border, #223454);
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      font: inherit;
+      cursor: pointer;
     }
+    .vc-card-head:hover { background: rgba(255,255,255,0.025); }
+    .vc-card-head:focus-visible { outline: 2px solid var(--theme-btn-bg, #2f65d9); outline-offset: -2px; }
+    .vc-card-icon { width: 24px; text-align: center; font-size: 1.25em; flex: 0 0 24px; }
+    .vc-card-toggle { margin-left: auto; font-size: 1.05em; opacity: 0.8; transition: transform 0.16s ease; }
+    .vc-card-head[aria-expanded="true"] .vc-card-toggle { transform: rotate(180deg); }
+    .vc-card-body[hidden] { display: none !important; }
     .vc-card-head h2 { font-size: 1.05em; font-weight: 700; margin: 0; }
     .vc-card-head .vc-channel-badge {
       font-size: 0.75em;
@@ -102,6 +115,12 @@
     }
     .vc-music-item code { margin-right: auto; }
 
+    .mix-row { flex-wrap: nowrap; }
+    .mix-row strong { min-width: 180px; margin-right: auto; }
+    .mix-duration-wrap { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+    .mix-duration-wrap input { width: 80px; }
+    .mix-duration-unit { font-size: 0.88em; opacity: 0.9; }
+
     .vc-segment-desc {
       background: rgba(0,0,0,0.25);
       border-left: 3px solid var(--theme-btn-bg, #2f65d9);
@@ -144,6 +163,42 @@
   </style>
 </head>
 <body>
+{% macro channel_music(prefix, channel, music_files, label) -%}
+  <div class="vc-segment-desc" style="margin-top:16px;margin-bottom:10px;">
+    <strong>{{ label }} Background Music</strong><br>
+    Uses the central Shared Music Library on the main RSMC page. Each channel has an independent selection.
+  </div>
+  <div class="vc-fields-grid">
+    <div class="vc-field">
+      <label for="{{ prefix }}music-mode">Music Mode</label>
+      <select id="{{ prefix }}music-mode" name="{{ prefix }}music_mode">
+        <option value="none" {% if channel.music_mode == 'none' %}selected{% endif %}>None (silence)</option>
+        <option value="single" {% if channel.music_mode == 'single' %}selected{% endif %}>Single file</option>
+        <option value="playlist" {% if channel.music_mode == 'playlist' %}selected{% endif %}>Selected files</option>
+        <option value="all" {% if channel.music_mode == 'all' %}selected{% endif %}>All shared music</option>
+      </select>
+    </div>
+    <div class="vc-field" style="justify-content:flex-end;">
+      <label>&nbsp;</label>
+      <label style="display:flex;align-items:center;gap:8px;opacity:1;">
+        <input type="checkbox" name="{{ prefix }}music_loop" value="1" {% if channel.music_loop %}checked{% endif %}> Loop music
+      </label>
+    </div>
+  </div>
+  {% if music_files %}
+  <div class="vc-music-list">
+    {% for fname in music_files %}
+    <div class="vc-music-item">
+      <label style="display:flex;align-items:center;gap:6px;"><input type="radio" name="{{ prefix }}music_single_file" value="{{ fname }}" {% if channel.music_single_file == fname %}checked{% endif %}> Single</label>
+      <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" name="{{ prefix }}music_playlist_files" value="{{ fname }}" {% if fname in channel.music_playlist_files %}checked{% endif %}> Selected</label>
+      <code>{{ fname }}</code>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="vc-hint">No files are in the Shared Music Library yet. Upload music from the main RSMC page.</p>
+  {% endif %}
+{%- endmacro %}
 
   <!-- Status header matching main admin page style -->
   <header class="status-bar">
@@ -171,20 +226,19 @@
 
     <div class="vc-header">
       <h1>&#127780; Virtual Channels</h1>
-      <p>Manage virtual channel overlays powered by live data. Each enabled channel is accessible as a web page that can be captured for broadcast.</p>
+      <p>Manage RSMC-owned generated channels. Enabled channels are exposed through the normal M3U/XMLTV and HDHomeRun outputs.</p>
     </div>
 
     <!-- ═══════════  Weather Channel Card  ═══════════ -->
     <div class="vc-card">
-      <div class="vc-card-head">
-        <span style="font-size:1.4em;">&#127780;</span>
+      <button type="button" class="vc-card-head" aria-expanded="false" aria-controls="vc-weather-body">
+        <span class="vc-card-icon" aria-hidden="true">&#127780;</span>
         <h2>Weather Channel</h2>
-        <span class="vc-channel-badge">Weather</span>
-        {% if weather.enabled %}
-          <span class="vc-channel-badge" style="background:#228b22;">Enabled</span>
-        {% endif %}
-      </div>
-      <div class="vc-card-body">
+        <span class="vc-channel-badge">CH 2</span>
+        {% if weather.enabled %}<span class="vc-channel-badge" style="background:#228b22;">Enabled</span>{% endif %}
+        <span class="vc-card-toggle" aria-hidden="true">&#9650;</span>
+      </button>
+      <div class="vc-card-body" id="vc-weather-body" hidden>
 
         <div class="vc-segment-desc">
           Cycles through 5 segments wall-clock aligned:
@@ -216,66 +270,7 @@
             <label for="wx-logo-enabled">Show Weather Icon in M3U / XMLTV</label>
           </div>
 
-          <div class="vc-segment-desc">
-            <strong>Weather Channel Background Music</strong><br>
-            Uses a separate uploaded music library for this virtual channel. Supports
-            <strong>single track</strong> or <strong>playlist</strong> modes with optional looping.
-          </div>
-
-          <div class="vc-enabled-toggle" style="margin-bottom:14px; display:block;">
-            <label style="display:block; margin-bottom:8px;">Upload Weather Channel music files</label>
-            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-              <input type="file" name="files" multiple accept=".mp3,.flac,.wav,.ogg,.m4a,.aac" style="width:auto">
-              <button type="submit" formaction="{{ url_for('weather_music_upload') }}" formmethod="post" class="btn btn--sm">Upload</button>
-            </div>
-          </div>
-
-          <div class="vc-fields-grid">
-            <div class="vc-field">
-              <label for="wx-music-mode">Music Mode</label>
-              <select id="wx-music-mode" name="weather_music_mode">
-                <option value="none" {% if weather.music_mode == 'none' %}selected{% endif %}>None (silence)</option>
-                <option value="single" {% if weather.music_mode == 'single' %}selected{% endif %}>Single file</option>
-                <option value="playlist" {% if weather.music_mode == 'playlist' %}selected{% endif %}>Playlist</option>
-              </select>
-            </div>
-            <div class="vc-field" style="justify-content:flex-end;">
-              <label>&nbsp;</label>
-              <label for="wx-music-loop" style="display:flex; align-items:center; gap:8px; opacity:1;">
-                <input type="checkbox" id="wx-music-loop" name="weather_music_loop" value="1"
-                       {% if weather.music_loop %}checked{% endif %}>
-                Loop music
-              </label>
-            </div>
-          </div>
-
-          {% if weather_music_files %}
-            <div class="vc-music-list">
-              {% for fname in weather_music_files %}
-                <div class="vc-music-item">
-                  <label style="display:flex; align-items:center; gap:6px;">
-                    <input type="radio" name="weather_music_single_file" value="{{ fname }}"
-                           {% if weather.music_single_file == fname %}checked{% endif %}>
-                    Single
-                  </label>
-                  <label style="display:flex; align-items:center; gap:6px;">
-                    <input type="checkbox" name="weather_music_playlist_files" value="{{ fname }}"
-                           {% if fname in weather.music_playlist_files %}checked{% endif %}>
-                    Playlist
-                  </label>
-                  <code>{{ fname }}</code>
-                  <button type="submit"
-                          formaction="{{ url_for('weather_music_delete', filename=fname) }}"
-                          formmethod="post"
-                          class="btn btn--sm">
-                    Delete
-                  </button>
-                </div>
-              {% endfor %}
-            </div>
-          {% else %}
-            <p class="vc-hint">No Weather Channel music files uploaded yet.</p>
-          {% endif %}
+          {{ channel_music("weather_", weather, music_files, "Weather Channel") }}
 
           <!-- US ZIP code quick-lookup -->
           <div class="vc-zip-row">
@@ -387,7 +382,286 @@
       </div><!-- /vc-card-body -->
     </div><!-- /vc-card -->
 
+    <!-- ═══════════  Simulated Traffic Channel Card  ═══════════ -->
+    <div class="vc-card">
+      <button type="button" class="vc-card-head" aria-expanded="false" aria-controls="vc-traffic-body">
+        <span class="vc-card-icon" aria-hidden="true">&#128663;</span>
+        <h2>Simulated Traffic Channel</h2>
+        <span class="vc-channel-badge">CH 3</span>
+        {% if traffic.enabled %}<span class="vc-channel-badge" style="background:#228b22;">Enabled</span>{% endif %}
+        <span class="vc-card-toggle" aria-hidden="true">&#9650;</span>
+      </button>
+      <div class="vc-card-body" id="vc-traffic-body" hidden>
+        <div class="vc-segment-desc" style="margin-bottom:14px;">
+          Retro-style simulated traffic channel. All congestion levels and incidents are
+          <strong>synthetically generated</strong> for demonstration purposes only.
+          Real road geometry (OpenStreetMap) is used for the map, but the traffic
+          conditions overlaid on the map are never based on live data.
+        </div>
+
+        <form method="post" action="{{ url_for('virtual_channels_traffic_config') }}">
+
+          <div class="vc-enabled-toggle">
+            <input type="hidden" name="traffic_channel_enabled" value="0">
+            <input type="checkbox" id="tc-enabled" name="traffic_channel_enabled" value="1"
+                   {% if traffic.enabled %}checked{% endif %}>
+            <label for="tc-enabled">Enable Simulated Traffic Channel</label>
+            <a href="{{ url_for('traffic_page') }}" target="_blank" rel="noopener"
+               class="vc-preview-link btn btn--sm">
+              &#128663; Preview Traffic Page &#8599;
+            </a>
+          </div>
+
+          <div class="vc-fields-grid" style="margin-bottom:14px;">
+            <div class="vc-field">
+              <label for="tc-rotation-mode">Rotation Mode</label>
+              <select id="tc-rotation-mode" name="traffic_rotation_mode">
+                <option value="admin_rotation" {% if traffic.rotation_mode == 'admin_rotation' %}selected{% endif %}>Admin rotation (cycle through enabled cities)</option>
+                <option value="random_pack" {% if traffic.rotation_mode == 'random_pack' %}selected{% endif %}>Random pack (shuffle a random subset)</option>
+              </select>
+            </div>
+            <div class="vc-field">
+              <label for="tc-rotation-seconds">Seconds per City</label>
+              <input type="number" id="tc-rotation-seconds" name="traffic_rotation_seconds"
+                     min="30" max="3600" value="{{ traffic.rotation_seconds }}">
+              <span class="vc-hint">How long each city is shown (30–3600 s)</span>
+            </div>
+            <div class="vc-field">
+              <label for="tc-pack-size">Random Pack Size</label>
+              <input type="number" id="tc-pack-size" name="traffic_pack_size"
+                     min="1" max="50" value="{{ traffic.pack_size }}">
+              <span class="vc-hint">Cities per random-pack draw (1–50)</span>
+            </div>
+            <div class="vc-field">
+              <label for="tc-aspect-ratio-select">Aspect Ratio</label>
+              <select id="tc-aspect-ratio-select" name="traffic_aspect_ratio">
+                <option value="16:9" {% if traffic.aspect_ratio == '16:9' or not traffic.aspect_ratio %}selected{% endif %}>16:9 (Widescreen)</option>
+                <option value="4:3"  {% if traffic.aspect_ratio == '4:3' %}selected{% endif %}>4:3 (Standard)</option>
+              </select>
+            </div>
+            <div class="vc-field">
+              <label for="tc-resolution-select">Resolution</label>
+              <select id="tc-resolution-select" name="traffic_resolution">
+                <option value="1280x720"  data-aspect="16:9" {% if traffic.resolution == '1280x720'  %}selected{% endif %}>1280×720 (HD 720p)</option>
+                <option value="1920x1080" data-aspect="16:9" {% if traffic.resolution == '1920x1080' %}selected{% endif %}>1920×1080 (Full HD 1080p)</option>
+                <option value="960x720"   data-aspect="4:3"  {% if traffic.resolution == '960x720'   %}selected{% endif %}>960×720 (SD 720)</option>
+                <option value="1440x1080" data-aspect="4:3"  {% if traffic.resolution == '1440x1080' %}selected{% endif %}>1440×1080 (SD 1080)</option>
+              </select>
+            </div>
+          </div>
+
+          {{ channel_music("traffic_", traffic, music_files, "Simulated Traffic Channel") }}
+
+          <button type="submit" class="btn">Save Traffic Settings</button>
+        </form>
+
+        <hr style="margin:20px 0; border-color: var(--theme-panel-border,#223454);">
+
+        <div class="vc-segment-desc" style="margin-bottom:12px;">
+          <strong>City Rotation List</strong> &mdash; Enable or disable individual cities.
+          Changes apply on the next rotation slot.
+        </div>
+
+        <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+          <button type="button" class="btn btn--sm" id="tc-enable-all">Enable All</button>
+          <button type="button" class="btn btn--sm" id="tc-disable-all">Disable All</button>
+          <span id="tc-bulk-status" style="font-size:0.85em; opacity:0.8; align-self:center;"></span>
+        </div>
+
+        <div class="vc-music-list" id="tc-city-list">
+          {% for city in traffic_cities %}
+          <div class="vc-music-item" data-city-id="{{ city.id }}" style="justify-content:space-between;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <input type="checkbox" id="tc-city-{{ city.id }}"
+                     class="tc-city-checkbox"
+                     data-city-id="{{ city.id }}"
+                     {% if city.enabled %}checked{% endif %}>
+              <label for="tc-city-{{ city.id }}" style="font-weight:600; cursor:pointer;">
+                {{ city.name }}, {{ city.state }}
+              </label>
+              <span style="font-size:0.8em;opacity:0.6;">pop. {{ '{:,}'.format(city.population) }}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <label style="font-size:0.8em;opacity:0.75;">Weight:</label>
+              <input type="number" min="1" max="10"
+                     class="tc-city-weight"
+                     data-city-id="{{ city.id }}"
+                     value="{{ city.weight }}"
+                     style="width:52px; padding:3px 5px; font-size:0.88em;
+                            background:var(--theme-input-bg,#0b1220);
+                            border:1px solid var(--theme-input-border,#35527e);
+                            border-radius:3px; color:inherit;">
+              <button type="button" class="btn btn--sm tc-save-city"
+                      data-city-id="{{ city.id }}">Save</button>
+              <span class="tc-city-status" data-city-id="{{ city.id }}"
+                    style="font-size:0.8em;opacity:0.7;min-width:50px;"></span>
+            </div>
+          </div>
+          {% else %}
+          <p class="vc-hint">No cities configured. Check configuration or reload.</p>
+          {% endfor %}
+        </div>
+
+      </div><!-- /vc-card-body -->
+    </div><!-- /vc-card traffic -->
+
+    <!-- News Now Channel -->
+    <div class="vc-card">
+      <button type="button" class="vc-card-head" aria-expanded="false" aria-controls="vc-news-body">
+        <span class="vc-card-icon" aria-hidden="true">&#127760;</span>
+        <h2>News Now</h2>
+        <span class="vc-channel-badge">CH 4</span>
+        {% if news.enabled %}<span class="vc-channel-badge" style="background:#228b22;">Enabled</span>{% endif %}
+        <span class="vc-card-toggle" aria-hidden="true">&#9650;</span>
+      </button>
+      <div class="vc-card-body" id="vc-news-body" hidden>
+        <div class="vc-segment-desc" style="margin-bottom:14px;">
+          Generated headline channel migrated from RetroIPTVGuide. Configure up to six RSS/Atom feeds.
+          Feed slots rotate on a synchronized 30-minute wall-clock block so all viewers see the same source at the same time.
+        </div>
+        <form method="post" action="{{ url_for('virtual_channels_news_config') }}">
+          <div class="vc-enabled-toggle">
+            <input type="hidden" name="news_channel_enabled" value="0">
+            <input type="checkbox" id="news-enabled" name="news_channel_enabled" value="1" {% if news.enabled %}checked{% endif %}>
+            <label for="news-enabled">Enable News Now Channel</label>
+            <a href="{{ url_for('news_page') }}" target="_blank" rel="noopener" class="vc-preview-link btn btn--sm">Preview News Page &#8599;</a>
+          </div>
+          <div class="vc-fields-grid" style="margin-bottom:14px;">
+            <div class="vc-field"><label for="news-aspect-ratio-select">Aspect Ratio</label><select id="news-aspect-ratio-select" name="news_aspect_ratio"><option value="16:9" {% if news.aspect_ratio == '16:9' %}selected{% endif %}>16:9 (Widescreen)</option><option value="4:3" {% if news.aspect_ratio == '4:3' %}selected{% endif %}>4:3 (Standard)</option></select></div>
+            <div class="vc-field"><label for="news-resolution-select">Resolution</label><select id="news-resolution-select" name="news_resolution"><option value="1280x720" data-aspect="16:9" {% if news.resolution == '1280x720' %}selected{% endif %}>1280×720 (HD 720p)</option><option value="1920x1080" data-aspect="16:9" {% if news.resolution == '1920x1080' %}selected{% endif %}>1920×1080 (Full HD 1080p)</option><option value="960x720" data-aspect="4:3" {% if news.resolution == '960x720' %}selected{% endif %}>960×720 (SD 720)</option><option value="1440x1080" data-aspect="4:3" {% if news.resolution == '1440x1080' %}selected{% endif %}>1440×1080 (SD 1080)</option></select></div>
+          </div>
+          <div class="vc-segment-desc"><strong>RSS / Atom Feeds</strong> &mdash; up to six sources. Blank slots are ignored.</div>
+          <div class="vc-fields-grid" style="margin-top:10px;">
+          {% for i in range(1,7) %}
+            <div class="vc-field"><label for="news-feed-{{ i }}">Feed {{ i }}</label><input type="url" id="news-feed-{{ i }}" name="news_feed_url_{{ i }}" placeholder="https://example.com/rss.xml" value="{{ news.feed_urls[i-1] if news.feed_urls|length >= i else '' }}"></div>
+          {% endfor %}
+          </div>
+          {{ channel_music("news_", news, music_files, "News Now") }}
+          <div class="form-actions"><button type="submit" class="btn btn--primary">Save News Settings</button></div>
+        </form>
+      </div>
+    </div><!-- /vc-card news -->
+
+    <!-- ═══════════  Channel Mix Card  ═══════════ -->
+    <div class="vc-card" id="channel-mix-card">
+      <button type="button" class="vc-card-head" aria-expanded="false" aria-controls="vc-mix-body">
+        <span class="vc-card-icon" aria-hidden="true">&#128256;</span>
+        <h2>Channel Mix</h2>
+        <span class="vc-channel-badge">CH 5</span>
+        {% if channel_mix_enabled %}<span class="vc-channel-badge" style="background:#228b22;">Enabled</span>{% endif %}
+        <span class="vc-card-toggle" aria-hidden="true">&#9650;</span>
+      </button>
+      <div class="vc-card-body" id="vc-mix-body" hidden>
+        <div class="vc-segment-desc">
+          Rotates through selected RSMC virtual channels on deterministic wall-clock boundaries. Channel Mix reuses each source channel's existing HLS playout; it does not duplicate Weather, Traffic, or News provider fetches.
+        </div>
+        <form method="post" action="{{ url_for('virtual_channels_channel_mix_config') }}" id="channel-mix-form">
+          <div class="vc-enabled-toggle">
+            <input type="hidden" name="channel_mix_enabled" value="0">
+            <input type="checkbox" id="channel_mix_enabled" name="channel_mix_enabled" value="1" {% if channel_mix_enabled %}checked{% endif %}>
+            <label for="channel_mix_enabled">Enable Channel Mix</label>
+            <a class="vc-preview-link" href="{{ url_for('hls_channel_mix_playlist') }}" target="_blank">HLS Playlist &#8599;</a>
+          </div>
+          <div class="vc-fields-grid">
+            <div class="vc-field vc-field-wide">
+              <label for="channel_mix_name">Display Name</label>
+              <input id="channel_mix_name" name="channel_mix_name" maxlength="120" value="{{ channel_mix.name }}">
+            </div>
+          </div>
+          <div class="vc-segment-desc">Select channels, set each duration, and use the arrows to define rotation order. Channel Mix cannot include itself.</div>
+          <div class="vc-segment-desc" style="margin-top:16px;">
+            <strong>Channel Mix Audio Override</strong><br>
+            Member-channel audio is always dropped. The selection below becomes one continuous audio bed across every Channel Mix source transition.
+          </div>
+          {{ channel_music("channel_mix_", channel_mix, music_files, "Channel Mix") }}
+          <div id="mix-rows">
+            {% set selected_ids = channel_mix.channels | map(attribute='channel_id') | list %}
+            {% for entry in channel_mix.channels %}
+              {% set meta = channel_mix_registry.get(entry.channel_id) %}
+              {% if meta %}
+              <div class="vc-music-item mix-row" data-id="{{ entry.channel_id }}">
+                <input type="hidden" name="channel_mix_id" value="{{ entry.channel_id }}">
+                <strong>{{ meta.name }}</strong>
+                <label class="mix-duration-wrap"><input type="number" name="channel_mix_duration" min="1" max="1440" value="{{ entry.duration_minutes }}"><span class="mix-duration-unit">Minutes</span></label>
+                <button type="button" class="btn btn--sm mix-up">&#8593;</button><button type="button" class="btn btn--sm mix-down">&#8595;</button>
+                <button type="button" class="btn btn--sm mix-remove">Remove</button>
+              </div>
+              {% endif %}
+            {% endfor %}
+          </div>
+          <div class="vc-fields-grid" style="margin-top:14px">
+            <div class="vc-field">
+              <label for="mix-add-select">Add Virtual Channel</label>
+              <select id="mix-add-select">
+                <option value="">Select channel…</option>
+                {% for cid, meta in channel_mix_registry.items() %}
+                  {% if cid not in selected_ids %}<option value="{{ cid }}">{{ meta.name }}</option>{% endif %}
+                {% endfor %}
+              </select>
+            </div>
+            <div class="vc-field"><label>&nbsp;</label><button type="button" id="mix-add" class="btn btn--sm">Add Channel</button></div>
+          </div>
+          <div class="form-actions"><button type="submit" class="btn btn--primary">Save Channel Mix Settings</button></div>
+        </form>
+      </div>
+    </div>
+
   </div><!-- /vc-page -->
+
+  <!-- Traffic channel city management -->
+  <script>
+  (function () {
+    function saveCityState(cityId, enabled, weight, statusEl) {
+      statusEl.textContent = 'Saving\u2026';
+      fetch('/api/traffic/cities/' + cityId, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: enabled, weight: parseInt(weight, 10) || 1})
+      })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        statusEl.textContent = d.ok ? '\u2713 Saved' : 'Error';
+        statusEl.style.color = d.ok ? '#80e080' : '#e07070';
+        setTimeout(function() { statusEl.textContent = ''; statusEl.style.color = ''; }, 2000);
+      })
+      .catch(function() { statusEl.textContent = 'Failed'; statusEl.style.color = '#e07070'; });
+    }
+
+    document.querySelectorAll('.tc-save-city').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var id       = btn.getAttribute('data-city-id');
+        var cbEl     = document.getElementById('tc-city-' + id);
+        var weightEl = document.querySelector('.tc-city-weight[data-city-id="' + id + '"]');
+        var statEl   = document.querySelector('.tc-city-status[data-city-id="' + id + '"]');
+        saveCityState(id, cbEl ? cbEl.checked : true, weightEl ? weightEl.value : 1, statEl);
+      });
+    });
+
+    function bulkEnable(enabled) {
+      var statusEl = document.getElementById('tc-bulk-status');
+      statusEl.textContent = 'Saving\u2026';
+      var url = enabled ? '/api/traffic/cities/enable-all' : '/api/traffic/cities/disable-all';
+      fetch(url, {method: 'POST', credentials: 'same-origin'})
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.ok) {
+          document.querySelectorAll('.tc-city-checkbox').forEach(function(cb) {
+            cb.checked = enabled;
+          });
+          statusEl.textContent = enabled ? 'All enabled' : 'All disabled';
+          setTimeout(function() { statusEl.textContent = ''; }, 2500);
+        }
+      })
+      .catch(function() { statusEl.textContent = 'Failed'; });
+    }
+
+    var enableAllBtn  = document.getElementById('tc-enable-all');
+    var disableAllBtn = document.getElementById('tc-disable-all');
+    if (enableAllBtn)  enableAllBtn.addEventListener('click',  function() { bulkEnable(true); });
+    if (disableAllBtn) disableAllBtn.addEventListener('click', function() { bulkEnable(false); });
+  })();
+  </script>
 
   <!-- Zip code lookup -->
   <script>
@@ -487,6 +761,39 @@
   })();
   </script>
 
+  <!-- Traffic channel aspect ratio / resolution sync -->
+  <script>
+    (function () {
+      var arSel  = document.getElementById('tc-aspect-ratio-select');
+      var resSel = document.getElementById('tc-resolution-select');
+      if (!arSel || !resSel) return;
+
+      function syncResolutionOptions() {
+        var selectedAr = arSel.value;
+        var firstVisible = null;
+        var currentValue = resSel.value;
+        var currentStillVisible = false;
+
+        Array.prototype.forEach.call(resSel.options, function (opt) {
+          var matches = (opt.getAttribute('data-aspect') === selectedAr);
+          opt.hidden = !matches;
+          opt.disabled = !matches;
+          if (matches) {
+            if (firstVisible === null) firstVisible = opt;
+            if (opt.value === currentValue) currentStillVisible = true;
+          }
+        });
+
+        if (!currentStillVisible && firstVisible) {
+          resSel.value = firstVisible.value;
+        }
+      }
+
+      arSel.addEventListener('change', syncResolutionOptions);
+      syncResolutionOptions();
+    })();
+  </script>
+
   <!-- Weather channel aspect ratio / resolution sync -->
   <script>
     (function () {
@@ -518,6 +825,46 @@
       arSel.addEventListener('change', syncResolutionOptions);
       syncResolutionOptions();
     })();
+  </script>
+
+<script>
+(function(){
+  const a=document.getElementById('news-aspect-ratio-select'), r=document.getElementById('news-resolution-select');
+  function sync(){ if(!a||!r)return; let first=null, selectedVisible=false; for(const o of r.options){ const show=o.dataset.aspect===a.value; o.hidden=!show; o.disabled=!show; if(show&&!first)first=o; if(show&&o.selected)selectedVisible=true;} if(!selectedVisible&&first)first.selected=true; }
+  if(a&&r){a.addEventListener('change',sync);sync();}
+})();
+</script>
+
+
+
+<script>
+(function(){
+ const rows=document.getElementById('mix-rows'), sel=document.getElementById('mix-add-select'), add=document.getElementById('mix-add');
+ if(!rows||!sel||!add) return;
+ function bind(row){
+   row.querySelector('.mix-up').onclick=()=>{const p=row.previousElementSibling;if(p)rows.insertBefore(row,p)};
+   row.querySelector('.mix-down').onclick=()=>{const n=row.nextElementSibling;if(n)rows.insertBefore(n,row)};
+   row.querySelector('.mix-remove').onclick=()=>{const id=row.dataset.id,name=row.querySelector('strong').textContent;row.remove();const o=document.createElement('option');o.value=id;o.textContent=name;sel.appendChild(o)};
+ }
+ rows.querySelectorAll('.mix-row').forEach(bind);
+ add.onclick=()=>{if(!sel.value)return;const id=sel.value,name=sel.options[sel.selectedIndex].text;const row=document.createElement('div');row.className='vc-music-item mix-row';row.dataset.id=id;row.innerHTML='<input type="hidden" name="channel_mix_id" value="'+id+'"><strong></strong><label class="mix-duration-wrap"><input type="number" name="channel_mix_duration" min="1" max="1440" value="120"><span class="mix-duration-unit">Minutes</span></label><button type="button" class="btn btn--sm mix-up">&#8593;</button><button type="button" class="btn btn--sm mix-down">&#8595;</button><button type="button" class="btn btn--sm mix-remove">Remove</button>';row.querySelector('strong').textContent=name;rows.appendChild(row);bind(row);sel.options[sel.selectedIndex].remove();};
+})();
+</script>
+
+  <script>
+  (function () {
+    document.querySelectorAll('.vc-card-head[aria-controls]').forEach(function (head) {
+      var body = document.getElementById(head.getAttribute('aria-controls'));
+      if (!body) return;
+      head.setAttribute('aria-expanded', 'false');
+      body.hidden = true;
+      head.addEventListener('click', function () {
+        var expanded = head.getAttribute('aria-expanded') === 'true';
+        head.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        body.hidden = expanded;
+      });
+    });
+  })();
   </script>
 
 </body>

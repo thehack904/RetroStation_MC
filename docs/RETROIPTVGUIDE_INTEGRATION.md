@@ -16,7 +16,7 @@ Do not import `/hls/live.m3u8`, `/hls/standby.m3u8`, or individual HLS segment U
 
 The generated M3U always contains the guide channel entry:
 
-- `tvg-id="retro-guide-channel"`
+- `tvg-id="rsmc-guide"`
 - `tvg-name` from the configured title
 - `tvg-chno="1"`
 - `group-title="Virtual Channels"`
@@ -25,7 +25,7 @@ The generated M3U always contains the guide channel entry:
 
 If the Weather Channel toggle is enabled on the main admin page, the playlist also includes:
 
-- `tvg-id="retro-weather-channel"`
+- `tvg-id="rsmc-weather"`
 - `tvg-chno="2"`
 - stream URL pointing to `/hls/weather.m3u8`
 - `tvg-logo` metadata in the exported M3U when **Show Weather Icon in M3U / XMLTV** is enabled on `/virtual-channels`

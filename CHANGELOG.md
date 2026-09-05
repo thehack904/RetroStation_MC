@@ -11,87 +11,113 @@ This project uses a simple release-based changelog format with the following sec
 - `Security` for vulnerability or hardening changes.
 - `Known Issues` for confirmed limitations that remain open.
 
----
-
-## [v1.4.0] - 2026-07-15
+## [v1.4.0] - Unreleased
 
 ### Added
 
-- Added `app/playout_schema.py` for validating playout document JSON.
-- Added playout document support for the following item types:
-  - `video`
-  - `promo`
-  - `virtual_channel`
-  - `preview_channel`
-  - `standby`
-- Added playout document validation for required top-level fields:
-  - `channel`
-  - `items`
-- Added item-level validation for required fields:
-  - `type`
-  - `source`
-  - `duration`
-- Added positive-duration validation for playout items.
-- Added `parse_playout_document()` for loading playout documents from a file path or raw JSON string.
-- Added `parse_playout_items()` for returning a deep copy of validated playout items.
-- Added `app/playout_scheduler.py` for stepping through validated playout documents.
-- Added scheduler state output for active item, next item, item elapsed time, item remaining time, document duration, active index, next index, and loop cycle.
-- Added looping and non-looping scheduler modes.
-- Added `app/playout_fallback.py` for standby video and fallback playout handling.
-- Added fallback behavior for missing `video` and `promo` source files.
-- Added fallback behavior for blank `virtual_channel` and `preview_channel` source names.
-- Added `PlayoutFallbackEvent` diagnostics with JSON-serializable output.
-- Added warning-level fallback logging under the `playout_fallback` category.
-- Added `sample_data/playout_example.json` as a working playout document example.
-- Added `docs/PLAYOUT_DOCUMENT.md` documenting the playout schema, item types, validation rules, and parser helpers.
-- Added unified Linux helper script `retrostation_linux.sh` with `install` and `uninstall` commands.
-- Added regression tests for playout schema validation, scheduler behavior, fallback behavior, and the unified Linux helper script.
+#### Guide Channel video preview
 
-* Added `app/playout_fallback.py` — standby video and fallback playout handling.
+- Added an optional classic cable-guide video preview window to the Guide Channel, disabled by default.
+- Added Web UI controls for enabling/disabling preview video, choosing an uploaded local file, HTTP/HTTPS/HLS source, enabled RSMC Virtual Channel, or a channel from an M3U playlist.
+- Added three preview audio modes: **Guide** (existing Guide Channel music), **Preview** (preview-source audio), and **Silent**.
+- Added resolution- and aspect-ratio-aware preview layout for all supported Guide output profiles: `1920x1080`, `1280x720`, `1440x1080`, and `960x720`.
+- Added Guide Preview aspect controls: **Auto**, **16:9**, and **4:3**. Auto begins immediately with a 16:9 fallback, detects the selected source aspect ratio asynchronously, caches the result for that source, and does not block Guide startup.
+- Added an adaptive raised/beveled preview frame that preserves the approved vertical position and right-edge clock alignment across supported resolutions and themes.
+- Added optional rotating **Guide Message** text opposite the video preview.
+- Added `[message]...[/message]` blocks so multi-line messages, including intentional blank lines, remain together as one displayed message.
+- Added `[message:seconds]...[/message]` to set a per-message display duration.
+- Added `[blank]` and `[blank:seconds]` directives for timed empty intervals between messages.
 
-  * `PlayoutFallbackHandler` inspects each scheduled playout item before it reaches
-    the renderer and replaces unavailable items with appropriate standby fallbacks.
-  * `video` and `promo` items whose source file does not exist on disk are replaced
-    by `FALLBACK_VIDEO_ITEM` (type `standby`, source `default`, duration 60 s).
-  * `virtual_channel` and `preview_channel` items whose source name is empty or
-    blank are replaced by `FALLBACK_VIRTUAL_CHANNEL_ITEM`.
-  * `standby` items are always passed through unchanged; they represent the
-    fallback content itself.
-  * Every fallback trigger is logged at WARNING level under the
-    `playout_fallback` category with the item type, source, reason, and a
-    human-readable detail string so administrators can identify why fallback
-    was activated.
-  * The most recent fallback event is exposed as `handler.last_fallback_event`
-    (a `PlayoutFallbackEvent` with a `.to_dict()` method) for admin diagnostics.
-  * The availability check and fallback item definitions are injectable, making
-    the handler straightforward to test and extend.
+#### Secondary Guide output
+
+- Added an optional second Guide Channel output controlled from **Guide Channel Render Settings**.
+- Added native secondary resolutions `720x480` (default), `640x480`, and `960x720`.
+- Secondary output uses its own resolution-aware renderer instead of scaling the completed primary stream, preserving SD/CRT geometry and readable UI proportions.
+- Secondary rendering reuses the primary Guide data, theme, Guide Message, preview source, timing, and encoder-selection policy.
+- Added SD-specific scaling for fonts, row heights, header/footer, channel column, clock, padding, and preview geometry.
+- Added conservative secondary-output bitrate caps for lower-power IPTV clients.
+- Enabled secondary Guide export through the normal M3U/XMLTV output when the secondary channel is enabled.
+
+#### Virtual Channels
+
+- Added News Now as RSMC CH 4 with a native generated HLS pipeline based on the previous RetroIPTVGuide RSS/Atom behavior.
+- Added up to six configurable News Now feeds, synchronized wall-clock feed rotation, parser normalization, cached/rate-limited polling, safe text rendering, and graceful empty/error states.
+- Added independent News Now HD/SD aspect-ratio and resolution settings, `/api/news`, `/news`, and `/hls/news.m3u8`.
+- Added Simulated Traffic as RSMC CH 3 with synthetic congestion and incident generation applied to real OpenStreetMap road geometry.
+- Bundled seed-city basemaps and road GeoJSON so Simulated Traffic can operate without a first-run map download.
+- Added independent Traffic 16:9/4:3 and HD/SD output selection.
+- Added Channel Mix as RSMC CH 5 with deterministic wall-clock source rotation, ordered per-channel durations, disabled-source fallback, and HLS-level source switching that reuses existing virtual-channel playout.
+- Added `app/playout_fallback.py` to replace unavailable scheduled video, promo, virtual-channel, or preview-channel items with standby fallback content and expose the most recent fallback event for diagnostics.
+- Added XMLTV `<icon>` metadata for virtual channels.
+- Added a PNG Weather Channel icon for broader IPTV-client compatibility.
+
+#### Shared music library
+
+- Consolidated virtual-channel background audio around the central `data/music/` shared library.
+- Guide, Weather, Simulated Traffic, and News Now can independently select silence, one track, selected tracks, or all tracks from the shared library, with independent loop settings.
+- Added AAC/silent-audio output to Traffic and News HLS so both channels can use shared background music natively.
+- Added a Channel Mix audio override that drops member-channel audio and keeps Mix music continuous across source changes.
+
+#### Hardware acceleration
+
+- Added `RSMC_VAAPI_DEVICE` as an optional VA-API render-node override; the default remains `/dev/dri/renderD128`.
+- Linux install/upgrade now adds the RSMC service account to existing `video` and `render` groups so supported hardware encoders can access `/dev/dri` without a manual group change.
 
 ### Changed
-- Updated repository version references from `v1.3.0` to `v1.4.0`.
-- Updated the admin About tab version from `v1.3.0` to `v1.4.0`.
-- Updated README Linux install command to use `sudo ./retrostation_linux.sh install`.
-- Updated README Linux uninstall command to use `sudo ./retrostation_linux.sh uninstall`.
-- Updated installation documentation to use the unified Linux helper script.
-- Updated the copy URL button styling to use theme button colors.
-- Updated the additional roadmap to mark v1.4.0 fallback behavior tasks and acceptance criteria as complete.
+
+- The Guide renderer now reserves the preview/header information area natively and starts the guide grid below it instead of vertically squashing a completed guide frame.
+- Preview-enabled pagination reduces visible rows when necessary so lower-resolution layouts do not clip or skip channels.
+- Enabled RSMC Virtual Channels can be selected directly as Guide preview sources.
+- Guide Preview M3U/URL sources can expose their contained channels for explicit preview-channel selection.
+- Moved **Guide Message** into its own collapsed accordion so live message changes are separated from Preview save/restart controls.
+- Standardized Weather (CH 2), Simulated Traffic (CH 3), News Now (CH 4), and Channel Mix (CH 5) card headers.
+- Added collapsed-by-default controls to the virtual-channel cards and moved Channel Mix into the same Virtual Channels page layout.
+- Decoupled optional virtual-channel M3U/XMLTV export from per-channel enablement; export includes only virtual channels individually enabled on the Virtual Channels page.
+- News Now video output now mirrors the browser-preview layout and caches feed artwork asynchronously.
+- Extended live wall-clock displays to Simulated Traffic and News Now using the configured display/browser timezone.
+- Reordered Channel Mix duration controls so the numeric value is followed by the `Minutes` unit before the move controls.
+- Updated Pillow from the legacy `10.4.0` pin to `Pillow>=12.0.0,<13` for supported Python 3.11-3.14 environments.
+- Linux installation now selects the newest installed, explicitly supported Python 3.11-3.14 interpreter instead of blindly using the system `python3`.
+- Python dependency installation now uses binary wheels only to avoid unexpected native source builds during normal installation.
 
 ### Fixed
-- Fixed scheduled playout handling so unavailable media items can be routed to standby instead of stopping the channel path.
-- Fixed fallback diagnostics so administrators can inspect the most recent fallback reason.
-- Fixed Linux installer tests to validate the unified install/uninstall script.
-- Fixed admin About section tests to expect `v1.4.0`.
+
+#### Guide preview and rendering
+
+- Fixed Guide Preview + VA-API by keeping the completed preview overlay graph intact before converting/uploading the final Guide composite for hardware encoding.
+- Normalized external HTTP/HLS Guide preview video to the Guide frame rate and `yuv420p` before scaling/overlay so source changes between common frame rates and pixel formats do not destabilize the hardware-upload boundary.
+- Kept VA-API `nv12` conversion and `hwupload` after the completed Guide composite.
+- Kept local-file and RSMC-owned virtual preview paths on their existing handling paths.
+- Fixed secondary Guide startup ordering, FFmpeg scale syntax, native preview-overlay alignment, and pipeline status/error reporting.
+- Fixed SD preview sizing and positioning so 4:3 preview content remains properly sized and centered on SD Guide output.
+
+#### Hardware acceleration reliability
+
+- Fixed VA-API live encoding for software-rendered RGB24 Guide, Weather, Simulated Traffic, and News Now frames by explicitly opening the DRM render node and converting/uploading frames with `format=nv12,hwupload` before `h264_vaapi`.
+- Fixed hardware-encoder fallback loops: an encoder process that exits before producing HLS segments now counts as an initialization failure even when detected by the manager watchdog after the original quick-failure timer.
+- After the configured failure threshold, the affected channel uses `libx264` for the remainder of the process session.
+- Added equivalent hardware-failure fallback handling to News Now and improved exited child-process reaping.
+
+#### Virtual Channels and shared media
+
+- Fixed the Simulated Traffic HLS renderer to use the same OpenStreetMap basemap and real road GeoJSON used by its browser display instead of schematic placeholder roads.
+- Fixed Shared Music uploads after the central-library migration: uploads return to the Shared Music tab, enforce the documented 100 MB per-file limit, recreate the music directory when needed, and validate audio headers without reading entire files into memory.
+- Fixed Linux installation failures on Python 3.14 caused by the legacy Pillow 10.4.0 dependency falling back to an unsupported source build.
+- Added a future-Python safety check so an unvalidated Python release fails early with an actionable message rather than failing during dependency compilation.
 
 ### Removed
-- Removed `install-linux.sh`.
-- Removed `uninstall-linux.sh`.
-- Replaced both scripts with `retrostation_linux.sh`.
+
+- Removed the previous behavior where blank lines alone acted as Guide Message separators; message grouping is now explicit through `[message]...[/message]` blocks.
 
 ### Security
-- (empty)
+
+- No security-specific changes in this release.
 
 ### Known Issues
-- Playout documents are schema-validated and schedulable, but they are not yet exposed through a full admin UI.
-- The Preview Channel renderer is not yet fully driven by playout scheduler state.
+
+- RetroStation MC does not include built-in authentication. Keep the Web UI LAN-only, behind a VPN, or behind an authenticated reverse proxy.
+- Hardware acceleration remains dependent on the host GPU, driver stack, FFmpeg build, permissions, and container/device visibility. Software encoding remains the fallback path when hardware initialization fails.
+- Automatic Guide preview aspect detection is asynchronous by design; Auto mode initially uses 16:9 until detection completes and falls back to 16:9 when a source cannot be identified reliably.
 
 ## [v1.3.0] - 2026-07-01
 
@@ -175,7 +201,7 @@ This project uses a simple release-based changelog format with the following sec
 
   * `RETROGUIDE_HOST_ALIASES` should remain unset by default.
   * Host aliases are now documented as optional deployment-specific overrides, for example:
-    `RETROGUIDE_HOST_ALIASES=iptv.lan=<media-server-ip>,epg.lan=<epg-server-ip>`
+    `RETROGUIDE_HOST_ALIASES=media.lan=<media-server-ip>,guide.lan=<epg-server-ip>`
 
 ### Fixed
 

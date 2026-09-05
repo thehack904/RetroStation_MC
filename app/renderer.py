@@ -212,6 +212,7 @@ class GuideRenderer:
         self.state_path = state_path
         self._last_load = 0.0
         self.state: dict[str, Any] = {}
+        self._ui_scale = 1.0
         self.font_small = load_font(20)
         self.font_medium = load_font(26)
         self.font_large = load_font(36)
@@ -219,11 +220,30 @@ class GuideRenderer:
         # every 0.5 s rather than on every call to draw_frame().  The full
         # read+parse only runs when the mtime actually changes.
         self._last_mtime_check: float = 0.0
+        self._guide_message_signature: tuple[Any, ...] | None = None
+        self._guide_message_cycle_started_at: float = time.time()
         self._cache_generation = 0
         self._static_frame_cache_key: tuple[Any, ...] | None = None
         self._static_frame_layer: Image.Image | None = None
         self._static_content_cache: OrderedDict[tuple[Any, ...], Image.Image] = OrderedDict()
         self._max_static_content_cache_entries = 16
+
+    def _set_ui_scale(self, value: Any) -> None:
+        try:
+            scale = float(value)
+        except (TypeError, ValueError):
+            scale = 1.0
+        scale = max(0.50, min(1.0, scale))
+        if abs(scale - self._ui_scale) < 0.001:
+            return
+        self._ui_scale = scale
+        self.font_small = load_font(max(10, round(20 * scale)))
+        self.font_medium = load_font(max(12, round(26 * scale)))
+        self.font_large = load_font(max(16, round(36 * scale)))
+        self._invalidate_static_layers()
+
+    def _px(self, value: float, minimum: int = 1) -> int:
+        return max(minimum, int(round(float(value) * self._ui_scale)))
 
     def _invalidate_static_layers(self) -> None:
         self._cache_generation += 1
@@ -246,9 +266,19 @@ class GuideRenderer:
         if mtime <= self._last_load:
             return
         try:
-            self.state = json.loads(self.state_path.read_text(encoding="utf-8"))
+            new_state = json.loads(self.state_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return
+        display = new_state.get("display", {}) or {}
+        message_signature = (
+            bool(display.get("guide_message_enabled", False)),
+            str(display.get("guide_message_text", "") or ""),
+            str(display.get("guide_message_interval_seconds", 8)),
+        )
+        if message_signature != self._guide_message_signature:
+            self._guide_message_signature = message_signature
+            self._guide_message_cycle_started_at = time.time()
+        self.state = new_state
         self._last_load = mtime
         self._invalidate_static_layers()
 
@@ -352,6 +382,278 @@ class GuideRenderer:
                 hi = mid - 1
         return best
 
+    @staticmethod
+    def _split_guide_messages(raw_text: str) -> list[list[str]]:
+        """Return plain-text content as one message while preserving blank lines.
+
+        Blank lines are formatting now, not message separators. Explicit
+        ``[message]`` blocks control rotation boundaries. This helper remains
+        for callers/tests that need the normalized plain-text representation.
+        """
+        normalized = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
+        if not normalized.strip():
+            return []
+        lines = [line.rstrip() for line in normalized.split("\n")]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return [lines] if lines else []
+
+    @staticmethod
+    def _parse_guide_message_slides(raw_text: str) -> list[dict[str, Any]]:
+        """Parse explicit message blocks and blank-screen directives.
+
+        Supported syntax::
+
+            [message]
+            Normal-duration message
+
+            Blank lines inside are preserved.
+            [/message]
+
+            [message:45]
+            This message displays for 45 seconds.
+            [/message]
+
+            [blank]
+            [blank:90]
+
+        Blank lines never separate rotating messages. Text outside explicit
+        tags is treated as one normal-duration message for a forgiving/simple
+        single-message configuration. Durations are capped at one hour.
+        """
+        import re
+
+        normalized = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n")
+        if not normalized.strip():
+            return []
+
+        message_open_re = re.compile(r"^\[message(?::\s*(\d+))?\]$", re.IGNORECASE)
+        message_close_re = re.compile(r"^\[/message\]$", re.IGNORECASE)
+        blank_re = re.compile(r"^\[blank(?::\s*(\d+))?\]$", re.IGNORECASE)
+
+        slides: list[dict[str, Any]] = []
+        outside: list[str] = []
+        inside: list[str] | None = None
+        inside_duration: int | None = None
+
+        def trim_edge_blanks(lines: list[str]) -> list[str]:
+            result = [line.rstrip() for line in lines]
+            while result and not result[0].strip():
+                result.pop(0)
+            while result and not result[-1].strip():
+                result.pop()
+            return result
+
+        def flush_outside() -> None:
+            nonlocal outside
+            block = trim_edge_blanks(outside)
+            if block:
+                slides.append({"lines": block, "blank": False, "duration": None})
+            outside = []
+
+        for raw_line in normalized.split("\n"):
+            stripped = raw_line.strip()
+
+            if inside is not None:
+                if message_close_re.match(stripped):
+                    block = trim_edge_blanks(inside)
+                    if block:
+                        slides.append({
+                            "lines": block,
+                            "blank": False,
+                            "duration": inside_duration,
+                        })
+                    inside = None
+                    inside_duration = None
+                else:
+                    inside.append(raw_line.rstrip())
+                continue
+
+            open_match = message_open_re.match(stripped)
+            if open_match:
+                flush_outside()
+                raw_seconds = open_match.group(1)
+                inside_duration = None
+                if raw_seconds:
+                    seconds = int(raw_seconds)
+                    if seconds > 0:
+                        inside_duration = min(seconds, 3600)
+                inside = []
+                continue
+
+            blank_match = blank_re.match(stripped)
+            if blank_match:
+                flush_outside()
+                raw_seconds = blank_match.group(1)
+                duration = None
+                if raw_seconds:
+                    seconds = int(raw_seconds)
+                    if seconds <= 0:
+                        # Invalid non-positive directives remain visible text
+                        # rather than silently creating an unexpected pause.
+                        outside.append(raw_line.rstrip())
+                        continue
+                    duration = min(seconds, 3600)
+                slides.append({"lines": [], "blank": True, "duration": duration})
+                continue
+
+            # A stray closing tag is treated literally.
+            outside.append(raw_line.rstrip())
+
+        # An unclosed [message] block is still useful admin content; preserve it
+        # as a message instead of dropping the text.
+        if inside is not None:
+            block = trim_edge_blanks(inside)
+            if block:
+                slides.append({"lines": block, "blank": False, "duration": inside_duration})
+        else:
+            flush_outside()
+
+        return slides
+
+    @staticmethod
+    def _select_guide_message_slide(
+        slides: list[dict[str, Any]], epoch_time: float, default_interval: int
+    ) -> dict[str, Any] | None:
+        """Select the active slide using each slide's effective duration."""
+        if not slides:
+            return None
+        durations = [
+            max(1, int(slide.get("duration") or default_interval))
+            for slide in slides
+        ]
+        cycle_seconds = sum(durations)
+        if cycle_seconds <= 0:
+            return slides[0]
+        position = float(epoch_time) % cycle_seconds
+        elapsed = 0.0
+        for slide, duration in zip(slides, durations):
+            elapsed += duration
+            if position < elapsed:
+                return slide
+        return slides[-1]
+
+    def _wrap_guide_message_lines(
+        self,
+        draw: ImageDraw.ImageDraw,
+        source_lines: list[str],
+        max_width: int,
+        max_lines: int = 4,
+    ) -> list[str]:
+        """Wrap one message while preserving intentional blank display lines."""
+        wrapped: list[str] = []
+        truncated = False
+        for source_index, source in enumerate(source_lines):
+            # Blank lines inside [message] blocks are intentional vertical
+            # spacing and consume one of the bounded on-screen lines.
+            if not source.strip():
+                wrapped.append("")
+                if len(wrapped) >= max_lines:
+                    truncated = source_index < len(source_lines) - 1
+                    break
+                continue
+
+            words = source.split()
+            line = words[0]
+            for word in words[1:]:
+                candidate = f"{line} {word}"
+                if self._text_width(draw, candidate, self.font_small) <= max_width:
+                    line = candidate
+                    continue
+                clipped = self._ellipsize_text(draw, line, self.font_small, max_width)
+                if clipped:
+                    wrapped.append(clipped)
+                if len(wrapped) >= max_lines:
+                    truncated = True
+                    break
+                line = word
+            if truncated:
+                break
+            clipped = self._ellipsize_text(draw, line, self.font_small, max_width)
+            if clipped:
+                wrapped.append(clipped)
+            if len(wrapped) >= max_lines:
+                truncated = source_index < len(source_lines) - 1
+                break
+
+        wrapped = wrapped[:max_lines]
+        if truncated and wrapped:
+            # Put the ellipsis on the last visible text line. If the final
+            # visible line is intentionally blank, walk backward to find text.
+            last_text_index = next(
+                (index for index in range(len(wrapped) - 1, -1, -1) if wrapped[index]),
+                None,
+            )
+            if last_text_index is not None and not wrapped[last_text_index].endswith("…"):
+                candidate = wrapped[last_text_index].rstrip(".") + "…"
+                clipped = self._ellipsize_text(draw, candidate, self.font_small, max_width)
+                if clipped:
+                    wrapped[last_text_index] = clipped
+        return wrapped
+
+    def _draw_guide_message(
+        self,
+        draw: ImageDraw.ImageDraw,
+        width: int,
+        colors: dict[str, Any],
+        display: dict[str, Any],
+        epoch_time: float,
+    ) -> None:
+        """Draw one low-emphasis rotating message opposite the video preview."""
+        if not bool(display.get("preview_enabled", False)):
+            return
+        if not bool(display.get("guide_message_enabled", False)):
+            return
+        slides = self._parse_guide_message_slides(display.get("guide_message_text", ""))
+        if not slides:
+            return
+
+        preview_layout = display.get("preview_layout", {}) or {}
+        frame_x = int(preview_layout.get("preview_frame_x", width))
+        frame_y = int(preview_layout.get("preview_frame_y", 100))
+        guide_top = int(preview_layout.get("guide_top", 288))
+
+        # Begin approximately under the left edge of the 'u' in 'Guide Channel'.
+        title_x = self._px(24)
+        message_x = int(title_x + self._text_width(draw, "G", self.font_large))
+
+        # Keep text firmly in the left information area. The 44% cap matches the
+        # approved mockup near the 9:30/current-time divider at 1280x720 and
+        # scales proportionally across the four supported Guide resolutions.
+        right_cap = min(frame_x - max(self._px(24), round(width * 0.018)), round(width * 0.44))
+        max_width = right_cap - message_x
+        if max_width < self._px(120, minimum=60):
+            return
+
+        try:
+            interval = max(3, min(60, int(display.get("guide_message_interval_seconds", 8))))
+        except (TypeError, ValueError):
+            interval = 8
+        cycle_elapsed = max(0.0, float(epoch_time) - self._guide_message_cycle_started_at)
+        slide = self._select_guide_message_slide(slides, cycle_elapsed, interval)
+        if slide is None or bool(slide.get("blank", False)):
+            return
+        lines = self._wrap_guide_message_lines(
+            draw, list(slide.get("lines", [])), max_width, max_lines=4
+        )
+        if not lines:
+            return
+
+        bbox = self.font_small.getbbox("Ag")
+        line_height = max(self._px(22, minimum=12), (bbox[3] - bbox[1]) + self._px(8, minimum=4))
+        block_h = line_height * len(lines)
+        usable_top = max(self._px(72, minimum=36), frame_y)
+        usable_bottom = guide_top - self._px(18, minimum=9)
+        message_y = max(usable_top, round((usable_top + usable_bottom - block_h) / 2))
+
+        primary = colors.get("header_text", "#ffffff")
+        secondary = colors.get("footer_text", primary)
+        for i, line in enumerate(lines):
+            fill = primary if i == 0 else secondary
+            draw.text((message_x, message_y + i * line_height), line, font=self.font_small, fill=fill)
+
     def _program_text_for_cell(
         self,
         draw: ImageDraw.ImageDraw,
@@ -360,10 +662,10 @@ class GuideRenderer:
         cell_width: int,
     ) -> str | None:
         """Choose a safe in-cell label based on width thresholds or return None for tiny cells."""
-        if cell_width < PROGRAM_TEXT_HIDE_WIDTH:
+        if cell_width < self._px(PROGRAM_TEXT_HIDE_WIDTH, minimum=20):
             return None
         width_limit = max_text_width
-        if cell_width <= PROGRAM_TEXT_ABBREV_WIDTH:
+        if cell_width <= self._px(PROGRAM_TEXT_ABBREV_WIDTH, minimum=45):
             width_limit = int(max_text_width * 0.75)
         return self._ellipsize_text(draw, title, self.font_medium, width_limit)
 
@@ -400,22 +702,103 @@ class GuideRenderer:
                 pass
         return dt.astimezone()
 
-    @staticmethod
-    def _timeline_bounds(width: int, layout: dict, total_seconds: float) -> tuple[int, int]:
+    def _timeline_bounds(self, width: int, layout: dict, total_seconds: float) -> tuple[int, int]:
         """Compute timeline x-bounds while preserving a minimum pixels-per-minute density."""
         guide_minutes = max(1.0, total_seconds / 60.0)
         min_pixels_per_minute = float(layout.get("min_pixels_per_minute", DEFAULT_MIN_PIXELS_PER_MINUTE))
         min_timeline_w = int(math.ceil(guide_minutes * min_pixels_per_minute))
         channel_col_requested = int(layout.get("channel_column_width", 250))
-        max_channel_col = max(120, width - min_timeline_w - 12)
+        edge = self._px(12)
+        min_channel = self._px(120, minimum=60)
+        max_channel_col = max(min_channel, width - min_timeline_w - edge)
         channel_col = min(channel_col_requested, max_channel_col)
-        channel_col = max(120, min(channel_col, width - 80))
-        return channel_col, width - 12
+        channel_col = max(min_channel, min(channel_col, width - self._px(80, minimum=40)))
+        return channel_col, width - edge
 
     @staticmethod
     def _format_footer_text(page_num: int, total_pages: int, channel_range: str, rotation_secs: int) -> str:
         """Build footer pagination/context text shown in the guide chrome."""
         return f"Page {page_num}/{total_pages} | Channels {channel_range} | Rotation interval {rotation_secs}s"
+
+    @staticmethod
+    def _draw_preview_frame(
+        draw: ImageDraw.ImageDraw, preview_layout: dict[str, Any], colors: dict[str, Any]
+    ) -> None:
+        """Draw a theme-safe raised/beveled surround behind the preview.
+
+        Shadow tones are blended against the active theme header color instead
+        of using one opaque near-black block.  This keeps the lift visible on
+        bright themes without becoming harsh, while retaining separation on
+        dark themes.
+        """
+
+        def _rgb(value: str, fallback: str = "#142850") -> tuple[int, int, int]:
+            raw = str(value or fallback).lstrip("#")
+            if len(raw) != 6:
+                raw = fallback.lstrip("#")
+            try:
+                return tuple(int(raw[i : i + 2], 16) for i in (0, 2, 4))
+            except ValueError:
+                return (20, 40, 80)
+
+        def _blend(base: str, target: str, amount: float) -> str:
+            b = _rgb(base)
+            t = _rgb(target)
+            amount = max(0.0, min(1.0, float(amount)))
+            vals = [round(bv * (1.0 - amount) + tv * amount) for bv, tv in zip(b, t)]
+            return "#" + "".join(f"{v:02X}" for v in vals)
+        x = int(preview_layout.get("preview_frame_x", 0))
+        y = int(preview_layout.get("preview_frame_y", 0))
+        w = int(preview_layout.get("preview_frame_width", 0))
+        h = int(preview_layout.get("preview_frame_height", 0))
+        inset = max(2, int(preview_layout.get("preview_frame_inset", 8)))
+        depth = max(2, int(preview_layout.get("preview_frame_depth", 3)))
+        shadow = max(2, int(preview_layout.get("preview_shadow_offset", 4)))
+        if w <= 0 or h <= 0:
+            return
+
+        x2 = x + w - 1
+        y2 = y + h - 1
+        radius = max(5, inset)
+
+        header_bg = str(colors.get("header_bg", "#142850"))
+
+        # A stepped, neutral shadow approximates a soft alpha shadow in the RGB
+        # renderer.  Each layer is blended with the current theme background.
+        # This avoids a heavy black rectangle on light/bright themes.
+        shadow_layers = (
+            (shadow + 3, 0.16),
+            (shadow + 2, 0.22),
+            (shadow + 1, 0.30),
+            (shadow, 0.40),
+        )
+        for offset, strength in shadow_layers:
+            draw.rounded_rectangle(
+                [x + offset, y + offset, x2 + offset, y2 + offset],
+                radius=radius,
+                fill=_blend(header_bg, "#000000", strength),
+            )
+
+        # Neutral metallic body and bevel remain intentionally independent of
+        # theme hue so the window reads as raised hardware on every theme.
+        draw.rounded_rectangle([x, y, x2, y2], radius=radius, fill="#30333F", outline="#8A8E9E", width=1)
+
+        # Multi-line bevel: light on top/left, dark on bottom/right creates the
+        # raised edge without requiring transparency or post-processing.
+        for i in range(depth):
+            hi = "#7D8192" if i == 0 else "#555968"
+            lo = "#151721" if i == 0 else "#20232E"
+            draw.line([x + radius, y + i, x2 - radius, y + i], fill=hi, width=1)
+            draw.line([x + i, y + radius, x + i, y2 - radius], fill=hi, width=1)
+            draw.line([x + radius, y2 - i, x2 - radius, y2 - i], fill=lo, width=1)
+            draw.line([x2 - i, y + radius, x2 - i, y2 - radius], fill=lo, width=1)
+
+        # Recessed black inner lip directly surrounds the video surface.
+        ix = x + inset - 2
+        iy = y + inset - 2
+        ix2 = x2 - inset + 2
+        iy2 = y2 - inset + 2
+        draw.rectangle([ix, iy, ix2, iy2], fill="#080A10", outline="#111522", width=2)
 
     def _get_static_frame_layer(
         self,
@@ -427,12 +810,18 @@ class GuideRenderer:
     ) -> Image.Image:
         header_height = int(layout.get("header_height", 88))
         footer_height = int(layout.get("footer_height", 42))
+        preview_enabled = bool(display.get("preview_enabled", False))
+        preview_layout = display.get("preview_layout", {}) if preview_enabled else {}
+        guide_top = int(preview_layout.get("guide_top", header_height)) if preview_enabled else header_height
         cache_key = (
             self._cache_generation,
             width,
             height,
             header_height,
             footer_height,
+            preview_enabled,
+            guide_top,
+            tuple(sorted(preview_layout.items())) if preview_enabled else (),
             self.state.get("title", "Guide Channel"),
             int(display.get("page_seconds", 12)),
             colors.get("background", "#0a1020"),
@@ -446,9 +835,15 @@ class GuideRenderer:
 
         static_frame = Image.new("RGB", (width, height), colors.get("background", "#0a1020"))
         draw = ImageDraw.Draw(static_frame)
-        draw.rectangle([0, 0, width, header_height], fill=colors.get("header_bg", "#142850"))
+        # When preview video is enabled, the entire upper information region uses
+        # the theme's header color. This keeps custom theme colors consistent
+        # around the preview video and reserves the left side for future text.
+        upper_fill_bottom = guide_top if preview_enabled else header_height
+        draw.rectangle([0, 0, width, upper_fill_bottom], fill=colors.get("header_bg", "#142850"))
         draw.rectangle([0, height - footer_height, width, height], fill=colors.get("footer_bg", "#102040"))
-        draw.text((24, 22), self.state.get("title", "Guide Channel"), font=self.font_large, fill=colors.get("header_text", "#ffffff"))
+        if preview_enabled:
+            self._draw_preview_frame(draw, preview_layout, colors)
+        draw.text((self._px(24), self._px(22)), self.state.get("title", "Guide Channel"), font=self.font_large, fill=colors.get("header_text", "#ffffff"))
         self._static_frame_layer = static_frame
         self._static_frame_cache_key = cache_key
         return static_frame
@@ -491,10 +886,10 @@ class GuideRenderer:
             if timeline_x0 <= x <= timeline_x1:
                 draw.line([x, 0, x, content_height], fill=colors.get("grid_line", "#2d4a7a"), width=1)
                 label = self._apply_display_tz(t, tz_setting, browser_timezone).strftime("%I:%M %p").lstrip("0")
-                draw.text((x + 4, 8), label, font=self.font_small, fill=colors.get("time_text", "#d9e6ff"))
+                draw.text((x + self._px(4), self._px(8)), label, font=self.font_small, fill=colors.get("time_text", "#d9e6ff"))
             t += timedelta(minutes=30)
 
-        row_y = 40
+        row_y = self._px(40, minimum=20)
         for channel in page:
             if row_y + row_height > content_height:
                 break
@@ -505,7 +900,7 @@ class GuideRenderer:
             chan_bbox = draw.textbbox((0, 0), chan_label, font=self.font_medium)
             chan_h = chan_bbox[3] - chan_bbox[1]
             chan_y = row_y + max(0, (row_height - chan_h) // 2)
-            draw.text((18, chan_y), chan_label, font=self.font_medium, fill=colors.get("channel_text", "#ffffff"))
+            draw.text((self._px(18), chan_y), chan_label, font=self.font_medium, fill=colors.get("channel_text", "#ffffff"))
 
             for prog in self._build_display_programs(channel.get("programs", []), program_merge_gap_seconds):
                 left_seconds = (prog["start"] - start_dt).total_seconds()
@@ -524,16 +919,16 @@ class GuideRenderer:
                 cell_x1 = x1 - right_inset
                 if cell_x1 - cell_x0 < 3:
                     continue
-                cell_y0 = row_y + 8
-                cell_y1 = row_y + row_height - 8
+                cell_y0 = row_y + self._px(8, minimum=4)
+                cell_y1 = row_y + row_height - self._px(8, minimum=4)
                 draw.rounded_rectangle(
                     [cell_x0, cell_y0, cell_x1, cell_y1],
-                    radius=min(10, max(2, (cell_y1 - cell_y0) // 2)),
+                    radius=min(self._px(10, minimum=4), max(2, (cell_y1 - cell_y0) // 2)),
                     fill=program_bg,
                     outline=colors.get("program_outline", "#7db2ff"),
                     width=1,
                 )
-                text_padding = 8
+                text_padding = self._px(8, minimum=4)
                 available_text_w = max(0, cell_x1 - cell_x0 - (text_padding * 2))
                 label = self._program_text_for_cell(draw, prog["title"], available_text_w, cell_x1 - cell_x0)
                 if label:
@@ -629,6 +1024,7 @@ class GuideRenderer:
             epoch_time = time.time()
         self.reload_if_needed()
         display = self.state.get("display", {})
+        self._set_ui_scale(display.get("ui_scale", 1.0))
         resolution = display.get("resolution", "1280x720")
         width, height = [int(x) for x in resolution.lower().split("x", 1)]
         theme = self.state.get("theme_data", {})
@@ -637,7 +1033,9 @@ class GuideRenderer:
 
         header_height = int(layout.get("header_height", 88))
         footer_height = int(layout.get("footer_height", 42))
-        content_top = header_height
+        preview_enabled = bool(display.get("preview_enabled", False))
+        preview_layout = display.get("preview_layout", {}) if preview_enabled else {}
+        content_top = int(preview_layout.get("guide_top", header_height)) if preview_enabled else header_height
         content_bottom = height - footer_height
         content_h = content_bottom - content_top
         now = datetime.fromtimestamp(epoch_time, tz=timezone.utc)
@@ -727,7 +1125,8 @@ class GuideRenderer:
 
         clock_text = self._apply_display_tz(now, tz_setting, browser_timezone).strftime("%Y-%m-%d %I:%M:%S %p")
         clock_bbox = draw.textbbox((0, 0), clock_text, font=self.font_medium)
-        draw.text((width - (clock_bbox[2] - clock_bbox[0]) - 24, 28), clock_text, font=self.font_medium, fill=colors.get("header_text", "#ffffff"))
+        draw.text((width - (clock_bbox[2] - clock_bbox[0]) - self._px(24), self._px(28)), clock_text, font=self.font_medium, fill=colors.get("header_text", "#ffffff"))
+        self._draw_guide_message(draw, width, colors, display, epoch_time)
 
         total_pages = max(1, len(pages))
         active_page_idx = page_index
@@ -745,8 +1144,8 @@ class GuideRenderer:
             max(3, int(display.get("page_seconds", 12))),
         )
         footer_bbox = draw.textbbox((0, 0), footer_text, font=self.font_small)
-        footer_y = height - footer_height + max(2, (footer_height - (footer_bbox[3] - footer_bbox[1])) // 2)
-        draw.text((24, footer_y), footer_text, font=self.font_small, fill=colors.get("footer_text", "#d9e6ff"))
+        footer_y = height - footer_height + max(self._px(2), (footer_height - (footer_bbox[3] - footer_bbox[1])) // 2)
+        draw.text((self._px(24), footer_y), footer_text, font=self.font_small, fill=colors.get("footer_text", "#d9e6ff"))
 
         return img
 

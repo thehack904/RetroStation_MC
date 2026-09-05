@@ -17,7 +17,9 @@ The `settings` table stores one key per setting. Values are JSON-encoded.
 | `theme` | `retrostation_mc` | Theme directory name under `app/themes/` |
 | `hardware_acceleration_mode` | `software_fallback` | Encoding mode: `software_fallback` or `hardware_if_available` |
 | `aspect_ratio` | `16:9` | Channel output aspect ratio: `16:9` (widescreen) or `4:3` (standard) |
-| `resolution` | `1280x720` | Render and encode resolution |
+| `resolution` | `1280x720` | Render and encode resolution: 1280x720 / 1920x1080 widescreen or 960x720 / 1440x1080 standard 4:3 |
+| `guide_secondary_enabled` | `false` | Enable a second native Guide HLS output using the same Guide data/theme and encoder policy as the primary output |
+| `guide_secondary_resolution` | `720x480` | Secondary Guide resolution: `720x480` (default), `640x480`, or `960x720` |
 | `fps` | `15` | Render and encode frame rate |
 | `segment_seconds` | `6` | HLS target segment duration |
 | `page_seconds` | `12` | Seconds each guide page stays on screen |
@@ -31,6 +33,16 @@ The `settings` table stores one key per setting. Values are JSON-encoded.
 | `transition` | `scroll` | Page transition mode: `scroll` or `cut` |
 | `guide_logo_mode` | `default` | `default`, `custom`, or `disabled` for exported guide-channel logo metadata |
 | `guide_logo_custom_file` | empty | Selected custom guide logo filename stored under `data/guide_logo/` |
+| `guide_preview_enabled` | `false` | Enable the optional Guide Channel video preview/information layout |
+| `guide_preview_source_type` | `file` | Preview source type: local `file`, `url`, or an enabled RSMC virtual channel |
+| `guide_preview_file` | empty | Selected uploaded preview filename under `data/guide_preview/` |
+| `guide_preview_url` | empty | Direct HTTP/HLS stream URL or M3U playlist URL when source type is `url` |
+| `guide_preview_url_channel` | empty | Selected stream URL from `guide_preview_url` when it is an M3U playlist |
+| `guide_preview_url_channel_name` | empty | Display name of the selected M3U playlist channel |
+| `guide_preview_audio_mode` | `guide` | Preview audio mode: `guide`, `preview`, or `silent` |
+| `guide_preview_aspect_mode` | `auto` | Preview window aspect mode: `auto`, `16:9`, or `4:3` |
+| `guide_preview_detected_aspect_ratio` | empty | Cached Auto detection result (`16:9` or `4:3`); empty uses immediate 16:9 fallback |
+| `guide_preview_detected_source_key` | empty | Source identity associated with the cached Auto detection so stale results are not reused after source changes |
 | `standby_custom_file` | empty | Active uploaded standby pattern filename (empty uses generated default) |
 | `standby_overlay_enabled` | `true` | Whether custom standby images render the standby text band/title overlay |
 | `standby_overlay_opacity` | `50` | Black standby text-band opacity percent when custom standby image is active |
@@ -73,6 +85,16 @@ The manager treats these as FFmpeg-level settings:
 - `music_loop`
 - `music_single_file`
 - `music_playlist_files`
+- `guide_preview_enabled`
+- `guide_preview_source_type`
+- `guide_preview_file`
+- `guide_preview_url`
+- `guide_preview_url_channel`
+- `guide_preview_url_channel_name`
+- `guide_preview_audio_mode`
+- `guide_preview_aspect_mode`
+- `guide_preview_detected_aspect_ratio`
+- `guide_preview_detected_source_key`
 - `weather_music_mode`
 - `weather_music_loop`
 - `weather_music_single_file`
@@ -141,3 +163,40 @@ No guide data
 ```
 
 This keeps the grid visually complete instead of leaving empty rows.
+
+
+### Plex Live TV compatibility
+
+When using the RSMC HDHomeRun-compatible tuner with Plex, ensure Plex's **Disable video stream transcoding** option is not enabled. Live TV playback may need Plex to perform its own transcode/remux decision even when RSMC already delivers H.264/AAC MPEG-TS.
+
+
+## News Now virtual channel
+
+News Now is RSMC channel 4 and supports up to six HTTP(S) RSS/Atom feed URLs. Feeds divide a synchronized 30-minute wall-clock block equally (six feeds = five minutes each; three = ten minutes each; one = thirty minutes). Results are cached to limit polling. Configure enablement, 16:9/4:3 aspect ratio, HD/SD resolution, and feed URLs on **Virtual Channels**. RSMC owns all News configuration/state and exposes the generated channel through `/hls/news.m3u8`, normal M3U/XMLTV export, and optional HDHomeRun output.
+
+The feed-slot timing, multi-feed semantics, and RSS/Atom model were adapted from RetroIPTVGuide v4.9.9-dev. Browser-only overlay assumptions were replaced with RSMC's native renderer → FFmpeg → HLS playout pipeline.
+
+
+## Channel Mix
+
+Channel Mix is RSMC virtual channel 5. Configure an ordered set of RSMC-owned virtual channels and a 1–1440 minute duration for each. The schedule uses Unix wall-clock time modulo the complete cycle, so all viewers tune to the same nominal slot. If a selected source is disabled or not buffered, RSMC temporarily falls forward to the next available selected source without changing the wall-clock schedule. Channel Mix operates at the HLS playout layer and reuses source-channel streams/provider caches rather than starting duplicate Weather, Traffic, or News fetchers.
+
+
+## Shared Music Library
+
+RSMC stores uploaded background music centrally in `data/music/`. Upload files from the **Shared Music** tab on the main admin page. The library accepts MP3 and the existing compatible audio formats supported by RSMC.
+
+Music selection is independent per generated channel:
+
+- Guide Channel
+- Weather Channel
+- Simulated Traffic
+- News Now
+
+Each generated channel can use **None (silence)**, a **Single file**, **Selected files**, or **All shared music**, with an independent loop setting. Channel Mix has its own audio override: member-channel audio is dropped and the Mix selection is muxed continuously over the selected member video.
+
+Legacy Weather-specific music files under `data/weather_music/` are copied into the shared library at startup when the destination filename does not already exist.
+
+## HDHomeRun / Plex status in v1.4.0 development
+
+The HDHomeRun emulation implementation remains in the codebase, but its admin controls are temporarily hidden and the feature is forced disabled while Plex compatibility work is deferred. This does **not** disable RSMC's HLS segmenter or standard M3U/XMLTV outputs. `/channel.m3u` and the individual `/hls/*.m3u8` channels remain the supported output path for RetroStation Player, RetroIPTVGuide, TiViMate, VLC, and similar IPTV clients.

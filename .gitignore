@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+
+# Runtime-generated local state
+/data/config.db*
+/data/guide_state.json
+/data/guide_logo/
+/runtime/

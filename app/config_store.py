@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict
@@ -24,6 +25,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "hardware_acceleration_mode": "software_fallback",
     "aspect_ratio": "16:9",  # "16:9" | "4:3"
     "resolution": "1280x720",
+    # Optional secondary Guide HLS output. Uses the same encoder policy as the primary Guide.
+    "guide_secondary_enabled": False,
+    "guide_secondary_resolution": "720x480",
     "fps": 15,
     "segment_seconds": 6,
     "page_seconds": 12,
@@ -37,6 +41,23 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "transition": "scroll",
     "guide_logo_mode": "default",  # "default" | "custom" | "disabled"
     "guide_logo_custom_file": "",
+    # Optional classic cable-guide preview video. Disabled by default so existing
+    # Guide Channel behavior and resource usage remain unchanged.
+    "guide_preview_enabled": False,
+    "guide_preview_source_type": "file",  # "file" | "url" | enabled virtual-channel source
+    "guide_preview_file": "",
+    "guide_preview_url": "",
+    "guide_preview_url_channel": "",      # selected stream URL when guide_preview_url is an M3U playlist
+    "guide_preview_url_channel_name": "", # display label for the selected playlist channel
+    "guide_preview_audio_mode": "guide",  # "guide" | "preview" | "silent"
+    "guide_preview_aspect_mode": "auto",  # "auto" | "16:9" | "4:3"
+    "guide_preview_detected_aspect_ratio": "",  # cached Auto detection: "16:9" | "4:3" | empty
+    "guide_preview_detected_source_key": "",    # source identity associated with cached detection
+    # Optional rotating informational text shown opposite the Guide preview.
+    # Blank lines separate slides; each slide may contain multiple display lines.
+    "guide_message_enabled": False,
+    "guide_message_text": "",
+    "guide_message_interval_seconds": 8,
     "standby_custom_file": "",
     "standby_overlay_enabled": True,
     "standby_overlay_opacity": 50,
@@ -50,6 +71,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "music_loop": False,         # loop the audio
     "music_single_file": "",     # selected filename for single mode
     "music_playlist_files": [],  # ordered list of filenames for playlist mode
+    # Virtual Channels — exported playlist inclusion. Individual channel enablement is separate.
+    "virtual_channels_export_enabled": True,
     # Virtual Channels — Weather Channel
     "weather_aspect_ratio": "16:9",  # "16:9" | "4:3" — independent of the guide channel
     "weather_resolution": "1280x720",
@@ -64,7 +87,46 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "weather_music_mode": "none",             # "none" | "single" | "playlist"
     "weather_music_loop": False,              # loop selected weather music
     "weather_music_single_file": "",          # selected filename for weather single mode
-    "weather_music_playlist_files": [],       # ordered filenames for weather playlist mode
+    "weather_music_playlist_files": [],       # ordered filenames from shared music library
+    # Virtual Channels — Simulated Traffic Channel
+    # All traffic conditions are synthetically generated; no live data is used.
+    "traffic_channel_enabled": False,
+    "traffic_aspect_ratio": "16:9",  # independent of Guide and Weather
+    "traffic_resolution": "1280x720",
+    "traffic_rotation_mode": "admin_rotation",   # "admin_rotation" | "random_pack"
+    "traffic_rotation_seconds": 120,             # seconds per city rotation slot
+    "traffic_pack_size": 10,                     # cities per random pack
+    "traffic_pack": [],                          # city ids for random_pack mode
+    "traffic_music_mode": "none",
+    "traffic_music_loop": False,
+    "traffic_music_single_file": "",
+    "traffic_music_playlist_files": [],
+    # traffic_cities: list of city dicts (id, name, state, lat, lon, population, enabled, weight)
+    # Empty list means "use seed defaults" — populated on first save.
+    "traffic_cities": [],
+    # Virtual Channels — News Now RSS/Atom Channel
+    "news_channel_enabled": False,
+    "news_aspect_ratio": "16:9",
+    "news_resolution": "1280x720",
+    "news_feed_urls": [],  # up to six HTTP(S) RSS/Atom feeds
+    "news_music_mode": "none",
+    "news_music_loop": False,
+    "news_music_single_file": "",
+    "news_music_playlist_files": [],
+    # Virtual Channels — Channel Mix
+    "channel_mix_enabled": False,
+    "channel_mix_name": "Channel Mix",
+    "channel_mix_channels": [],  # ordered list of {channel_id, duration_minutes}
+    "channel_mix_music_mode": "none",
+    "channel_mix_music_loop": False,
+    "channel_mix_music_single_file": "",
+    "channel_mix_music_playlist_files": [],
+    # Optional HDHomeRun-compatible discovery + lineup export
+    "hdhomerun_enabled": False,
+    "hdhomerun_device_id": "",
+    # Source-playlist channels are opt-in for HDHomeRun rebroadcast. RSMC-owned
+    # virtual channels are exported automatically when enabled.
+    "hdhomerun_rebroadcast_channels": [],
     # Diagnostics / HLS live-edge tuning
     "diag_delay_segments": 2,
     "diag_min_buffer_secs": 18,
@@ -96,7 +158,7 @@ class ConfigStore:
     def _run_write(self, writer: Callable[[sqlite3.Connection], None]) -> None:
         for attempt in range(LOCKED_WRITE_RETRIES):
             try:
-                with self._connect() as conn:
+                with closing(self._connect()) as conn:
                     writer(conn)
                     conn.commit()
                 return
@@ -106,7 +168,7 @@ class ConfigStore:
                 time.sleep(LOCKED_WRITE_RETRY_BASE_SECONDS * (2 ** attempt))
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS settings (
@@ -141,7 +203,7 @@ class ConfigStore:
     def _enforce_event_storage_limit(self) -> None:
         if self._event_db_size_bytes() <= MAX_APP_EVENTS_DB_BYTES:
             return
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             row = conn.execute("SELECT COUNT(*) AS n FROM app_events").fetchone()
             total = int(row["n"]) if row else 0
             keep_rows = max(APP_EVENTS_MIN_KEEP_ROWS, int(total * APP_EVENTS_KEEP_FRACTION_ON_TRIM))
@@ -158,12 +220,12 @@ class ConfigStore:
                 conn.commit()
         # VACUUM must run outside any active write transaction; use a fresh
         # connection after the DELETE commit so SQLite can reclaim disk pages.
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             conn.execute("VACUUM")
             conn.commit()
 
     def get_config(self) -> Dict[str, Any]:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
         config: Dict[str, Any] = {}
         for row in rows:
@@ -197,7 +259,7 @@ class ConfigStore:
         self._enforce_event_storage_limit()
 
     def get_recent_events(self, limit: int = 100):
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             rows = conn.execute(
                 "SELECT created_at, level, category, message FROM app_events ORDER BY id DESC LIMIT ?",
                 (limit,),
@@ -210,11 +272,11 @@ class ConfigStore:
         if limit is not None:
             query += " LIMIT ? OFFSET ?"
             params = (limit, max(0, offset))
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
 
     def count_events(self) -> int:
-        with self._connect() as conn:
+        with closing(self._connect()) as conn:
             row = conn.execute("SELECT COUNT(*) AS n FROM app_events").fetchone()
         return int(row["n"]) if row else 0
