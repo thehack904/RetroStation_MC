@@ -65,9 +65,8 @@ This project uses a simple release-based changelog format with the following sec
 - Added optional rotating **Guide Message** text opposite the video preview. Admin-entered messages support explicit multiline `[message]` blocks, a configurable 3–60 second default interval, automatic wrapping/clipping, and continuous looping; blank lines inside a message are preserved as spacing. Only one understated message is shown at a time; the text is aligned beneath the Guide Channel title, constrained to the left information area, and never displays timing/status controls on the broadcast output.
 - Added Guide Message blank-screen directives: **`[blank]`** holds the message area empty for the normal Display Time, while **`[blank:seconds]`** (for example, `[blank:90]`) holds it empty for an explicit duration up to one hour. Saving changed message text/timing restarts the message rotation at the first slide without restarting the Guide pipeline.
 
-### Shared virtual-channel music library and HDHomeRun UI pause
+### Shared virtual-channel music library
 
-- Temporarily hid and disabled the HDHomeRun/Plex export controls while retaining the backend implementation for later work. Normal RSMC HLS outputs and M3U/XMLTV exports remain available for RetroStation Player, RetroIPTVGuide, TiViMate, VLC, and other IPTV clients.
 - Consolidated virtual-channel background audio around the central `data/music/` shared library. Existing legacy Weather music files are copied into the shared library on startup when needed.
 - Guide, Weather, Simulated Traffic, and News Now can independently select silence, one track, selected tracks, or all files from the shared library, with independent loop settings.
 - Added AAC/silent-audio output to Traffic and News HLS so those channels can use shared background music natively. Channel Mix now has its own shared-library audio override that drops member audio and keeps Mix audio independent of source changes.
@@ -78,7 +77,7 @@ This project uses a simple release-based changelog format with the following sec
 
 - Migrated RetroIPTVGuide News Now RSS/Atom behavior into RSMC as CH 4 with a native generated HLS pipeline.
 - Added up to six configurable feeds, synchronized 30-minute wall-clock feed rotation, parser normalization, cached/rate-limited polling, safe text rendering, and graceful empty/error states.
-- Added independent News HD/SD aspect-ratio and resolution settings, `/api/news`, `/news` preview, `/hls/news.m3u8`, M3U/XMLTV, and HDHomeRun export support.
+- Added independent News HD/SD aspect-ratio and resolution settings, `/api/news`, `/news` preview, `/hls/news.m3u8`, M3U/XMLTV.
 
 - Fixed the Simulated Traffic HLS renderer to use the same OpenStreetMap basemap and real road GeoJSON used by the working RetroIPTVGuide traffic display instead of drawing schematic placeholder lines.
 - Bundled the ten seed-city basemaps and road GeoJSON datasets from the released RetroIPTVGuide implementation so Traffic works immediately without requiring first-run map downloads.
@@ -86,8 +85,8 @@ This project uses a simple release-based changelog format with the following sec
 - Changed the main-page Weather Channel export checkbox to a Virtual Channels master checkbox; enabling it includes Guide, Weather, and Simulated Traffic in RSMC M3U/XMLTV output and enables both optional virtual-channel pipelines.
 - Traffic continues to support independent 16:9/4:3 and HD/SD resolution selection.
 
-### HDHomeRun export and channel icon compatibility
-- Changed HDHomeRun export to include RSMC-owned channels by default (Guide Channel plus enabled virtual/integration channels).
+### Channel export and channel icon compatibility
+- Changed export to include RSMC-owned channels by default (Guide Channel plus enabled virtual/integration channels).
 - Added opt-in per-channel rebroadcast selection for imported source-playlist channels instead of mirroring the entire upstream playlist.
 - Added XMLTV `<icon>` metadata for virtual channels.
 - Added a PNG Weather Channel icon and prefer it over SVG for broader IPTV-client compatibility, including clients that do not render SVG `tvg-logo` images.
@@ -98,7 +97,7 @@ This project uses a simple release-based changelog format with the following sec
 
 ### Fixed
 
-- Fixed a Plex/HDHomeRun file-descriptor exhaustion regression that could leave RetroStation MC running but make the Flask UI and SQLite event store inaccessible after several minutes of tuner playback. RSMC-owned tuner channels now remux directly from local HLS playlists instead of recursively fetching their own HLS over Flask, Channel Mix is materialized to a local continuously refreshed playlist, and every SQLite connection is explicitly closed after use.
+- Fixed a Plex file-descriptor exhaustion regression that could leave RetroStation MC running but make the Flask UI and SQLite event store inaccessible after several minutes of tuner playback. RSMC-owned tuner channels now remux directly from local HLS playlists instead of recursively fetching their own HLS over Flask, Channel Mix is materialized to a local continuously refreshed playlist, and every SQLite connection is explicitly closed after use.
 
 
 ### Virtual Channels UI / export controls
@@ -110,15 +109,11 @@ This project uses a simple release-based changelog format with the following sec
 
 
 - News Now HLS renderer now mirrors the browser preview layout and caches feed artwork asynchronously for the generated video channel.
-- Fixed HDHomeRun playback in Plex by serving tuner URLs as continuous MPEG-TS streams instead of HTTP redirects to HLS playlists. The tuner path remuxes with FFmpeg stream copy (`-c copy`) and does not add a second video transcode.
-- Added an HDHomeRun-specific XMLTV endpoint (`/hdhr/guide.xml`, alias `/hdhr/xmltv.xml`) that mirrors the effective tuner lineup and carries through upstream programme data for selected rebroadcast channels.
 - Added a simulated Traffic virtual channel (CH 3) migrated and adapted from RetroIPTVGuide v4.9.9-dev. The channel generates synthetic congestion levels and incidents using real OSM road geometry; all traffic conditions are simulated and explicitly labeled as such in the UI.
 
 ### Added
 - Migrated RetroIPTVGuide Channel Mix as RSMC CH 5 with deterministic wall-clock source rotation, ordered per-channel durations, disabled-source fallback, and HLS-level source switching that reuses existing virtual-channel playout.
 
-- Added native HDHomeRun tuner discovery on UDP port `65001` when HDHomeRun Mode is enabled. Discovery replies advertise the tuner DeviceID, tuner count, HTTP BaseURL, and LineupURL for Plex and other libhdhomerun-compatible clients.
-- Added deterministic migration from the previous UUID-style HDHomeRun identifier to a persistent checksum-valid 8-character HDHomeRun DeviceID.
 - Added `app/traffic_channel.py` — standalone simulated traffic channel engine. Provides deterministic per-time-slot congestion distributions, synthetic incident generation, city rotation, and OSM road geometry / basemap caching. Adapted from RetroIPTVGuide `app.py` (traffic demo section); RSMC-native configuration storage via `ConfigStore`; no DB or Flask dependency within the module itself.
 - Added `app/templates/traffic.html` — retro-styled virtual traffic channel display page with CRT scanline effect, road overlay canvas, incident log, congestion legend, and simulated-only disclaimer.
 - Added `/traffic` display page, `/api/traffic` JSON API, `/api/traffic/roads/<city_id>` road GeoJSON API, and `/traffic-map/<filename>` basemap image endpoint.
@@ -154,11 +149,11 @@ This project uses a simple release-based changelog format with the following sec
 - Python dependency installation now uses binary wheels only, preventing unexpected native source builds during normal installation.
 
 ### Fixed
-- Added Plex troubleshooting documentation noting that **Disable video stream transcoding** must remain unchecked for Live TV playback through the RSMC HDHomeRun tuner.
+- Added Plex troubleshooting documentation noting that **Disable video stream transcoding** must remain unchecked for Live TV playback through the RSMC  tuner.
 - Renamed the built-in Guide and Weather XMLTV/M3U channel IDs from the old `retro-*` format to clearer `rsmc-*` identifiers so Plex channel mapping does not show the legacy `retro-guide-channel` style label.
-- Fixed HDHomeRun Mode being unreachable from Plex automatic or targeted discovery because RSMC previously exposed only HTTP lineup endpoints and did not answer the native HDHomeRun UDP discovery protocol.
-- Fixed `/discover.json` to advertise `BaseURL` and a libhdhomerun-valid DeviceID rather than a UUID.
-- Docker Compose now publishes UDP `65001` in addition to TCP `8787` so HDHomeRun discovery can reach the container.
+- Fixed  Mode being unreachable from Plex automatic or targeted discovery because RSMC previously exposed only HTTP lineup endpoints and did not answer the native  UDP discovery protocol.
+- Fixed `/discover.json` to advertise `BaseURL` and a lib-valid DeviceID rather than a UUID.
+- Docker Compose now publishes UDP `65001` in addition to TCP `8787` so  discovery can reach the container.
 - Fixed Linux installation failures on Python 3.14 caused by the legacy Pillow 10.4.0 dependency falling back to an unsupported source build.
 - Added an explicit future-Python safety check so an unvalidated Python release fails early with an actionable message rather than failing deep inside dependency compilation.
 
