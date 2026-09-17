@@ -20,6 +20,7 @@ from app.weather_radar import (
     _lat_lon_to_tile_float,
     _stitch_basemap_from_tiles,
     download_or_generate_basemap,
+    validate_basemap,
 )
 
 
@@ -148,6 +149,54 @@ class WeatherRadarModuleTests(unittest.TestCase):
             self.assertTrue(result.exists())
             with Image.open(result) as img:
                 self.assertEqual(img.size, (800, 450))
+
+    def test_validate_basemap_rejects_generated_fallback_basemap(self) -> None:
+        region = {
+            "bbox": [-76.0, 39.0, -72.0, 41.0],
+            "lat": 40.0,
+            "lon": -74.0,
+            "width": 800,
+            "height": 450,
+            "name": "Test",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "basemap.png"
+            region["basemap"] = str(dest)
+
+            with mock.patch(
+                "app.weather_radar._stitch_basemap_from_tiles",
+                side_effect=RuntimeError("all servers down"),
+            ):
+                download_or_generate_basemap(region)
+
+            self.assertFalse(validate_basemap(dest, (800, 450)))
+
+    def test_download_or_generate_basemap_keeps_existing_real_basemap_on_tile_failure(self) -> None:
+        region = {
+            "bbox": [-76.0, 39.0, -72.0, 41.0],
+            "lat": 40.0,
+            "lon": -74.0,
+            "width": 800,
+            "height": 450,
+            "name": "Test",
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "basemap.png"
+            region["basemap"] = str(dest)
+            Image.new("RGB", (800, 450), (12, 34, 56)).save(dest)
+
+            with mock.patch(
+                "app.weather_radar._stitch_basemap_from_tiles",
+                side_effect=RuntimeError("all servers down"),
+            ):
+                result = download_or_generate_basemap(region)
+
+            self.assertEqual(result, dest)
+            self.assertTrue(validate_basemap(dest, (800, 450)))
+            with Image.open(dest) as img:
+                self.assertEqual(img.getpixel((0, 0)), (12, 34, 56))
 
     # ── Existing stale/fresh radar tests ─────────────────────────────────────
 

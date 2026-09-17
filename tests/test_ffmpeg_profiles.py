@@ -12,7 +12,7 @@ from app.ffmpeg_profiles import (
     FFmpegProfile,
     resolve_ffmpeg_profile,
 )
-from app.manager import _build_audio_ffmpeg_args, _build_ffmpeg_command, _build_weather_ffmpeg_command, _resolve_hw_device_init_args
+from app.manager import _build_audio_ffmpeg_args, _build_ffmpeg_command, _build_guide_preview_audio_relay_args, _build_weather_ffmpeg_command, _resolve_hw_device_init_args
 
 
 class FFmpegProfileTests(unittest.TestCase):
@@ -587,7 +587,6 @@ class FFmpegProfileTests(unittest.TestCase):
             "h264_nvenc": "yuv420p",
             "h264_qsv":   "nv12",
             "h264_amf":   "nv12",
-            "h264_vaapi": "nv12",
         }
         for codec, expected_fmt in expected_pix_fmts.items():
             with self.subTest(codec=codec):
@@ -632,10 +631,74 @@ class FFmpegProfileTests(unittest.TestCase):
 
     def test_resolve_hw_device_init_args_returns_empty_for_non_qsv(self) -> None:
         """Non-QSV encoders must not inject any device init arguments."""
-        for codec in ("libx264", "h264_nvenc", "h264_amf", "h264_vaapi", ""):
+        for codec in ("libx264", "h264_nvenc", "h264_amf", ""):
             with self.subTest(codec=codec):
                 args = _resolve_hw_device_init_args(codec)
                 self.assertEqual(args, [])
+
+    def test_vaapi_device_and_hwupload_are_added_for_guide(self) -> None:
+        profile = FFmpegProfile(
+            name="vaapi", resolution="1280x720", video_codec="h264_vaapi",
+            audio_codec="aac", bitrate=None, preset=None, tune=None,
+            hls_segment_length=6, encoder_type="hardware",
+            hardware_acceleration_provider="vaapi",
+        )
+        audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args({}, profile.audio_codec)
+        command = _build_ffmpeg_command(
+            profile, "15", audio_input_args, audio_codec_args, audio_map_args,
+            "600", Path("/tmp/output/guide.m3u8"),
+        )
+        self.assertIn("-vaapi_device", command)
+        self.assertEqual(command[command.index("-vaapi_device") + 1], "/dev/dri/renderD128")
+        self.assertLess(command.index("-vaapi_device"), command.index("-i"))
+        self.assertIn("-vf", command)
+        self.assertEqual(command[command.index("-vf") + 1], "format=nv12,hwupload")
+        # VA-API consumes a hardware surface; do not force an output -pix_fmt nv12.
+        pix_fmt_indices = [i for i, arg in enumerate(command) if arg == "-pix_fmt"]
+        self.assertEqual(len(pix_fmt_indices), 1)
+        self.assertEqual(command[pix_fmt_indices[0] + 1], "rgb24")
+
+    def test_preview_audio_uses_local_shared_relay(self) -> None:
+        input_args, filter_args, video_map_args, active = _build_guide_preview_audio_relay_args(18790)
+        self.assertTrue(active)
+        self.assertIn("-f", input_args)
+        self.assertIn("mpegts", input_args)
+        self.assertTrue(any("udp://127.0.0.1:18790" in arg for arg in input_args))
+        self.assertEqual(filter_args, [])
+        self.assertEqual(video_map_args, ["-map", "0:v"])
+
+    def test_preview_source_pacing_distinguishes_hls_from_live_mpegts(self) -> None:
+        from app.manager import _preview_source_input_args
+        hls_args = _preview_source_input_args("http://media.lan/channel/2.m3u8")
+        ts_args = _preview_source_input_args("http://media.lan/channel/2")
+        file_args = _preview_source_input_args("/tmp/bbb.mp4")
+        self.assertIn("-re", hls_args)
+        self.assertNotIn("-re", ts_args)
+        self.assertIn("-re", file_args)
+        self.assertIn("-stream_loop", file_args)
+
+    def test_vaapi_preview_filter_uploads_filter_complex_output(self) -> None:
+        profile = FFmpegProfile(
+            name="vaapi", resolution="1280x720", video_codec="h264_vaapi",
+            audio_codec="aac", bitrate=None, preset=None, tune=None,
+            hls_segment_length=6, encoder_type="hardware",
+            hardware_acceleration_provider="vaapi",
+        )
+        audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args({}, profile.audio_codec)
+        command = _build_ffmpeg_command(
+            profile, "15", audio_input_args, audio_codec_args, audio_map_args,
+            "601", Path("/tmp/output/guide.m3u8"),
+            preview_input_args=["-f", "lavfi", "-i", "testsrc=size=320x180"],
+            video_filter_args=["-filter_complex", "[0:v][1:v]overlay=0:0[vout]"],
+            video_map_args=["-map", "[vout]"],
+        )
+        graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("[vout]format=nv12,hwupload[vout_hw]", graph)
+        self.assertIn("[vout_hw]", command)
+
+    def test_resolve_hw_device_init_args_returns_vaapi_device(self) -> None:
+        args = _resolve_hw_device_init_args("h264_vaapi")
+        self.assertEqual(args, ["-vaapi_device", "/dev/dri/renderD128"])
 
     def test_intel_qsv_guide_command_includes_init_hw_device_before_first_input(self) -> None:
         """Intel QSV guide pipeline must include -init_hw_device qsv=hw before -i."""

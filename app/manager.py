@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -17,7 +18,8 @@ from werkzeug.utils import secure_filename
 from .config_store import ConfigStore
 from .ffmpeg_profiles import FFmpegProfile, normalize_hardware_acceleration_mode, resolve_ffmpeg_profile
 from .gpu_capabilities import detect_gpu_capabilities
-from .guide_state import STATE_PATH, build_state
+from .guide_state import STATE_PATH, SECONDARY_STATE_PATH, build_state, _scaled_secondary_theme
+from .guide_preview import cached_preview_transport, calculate_preview_layout, effective_preview_aspect_ratio, normalize_preview_audio_mode, resolve_preview_source
 from .logging_utils import AppLogger
 from .m3u_parser import parse_m3u
 from .xmltv_parser import parse_xmltv
@@ -27,10 +29,19 @@ OUTPUT_DIR = BASE_DIR / "output"
 DATA_DIR = BASE_DIR / "data"
 MUSIC_DIR = DATA_DIR / "music"
 WEATHER_MUSIC_DIR = DATA_DIR / "weather_music"
+GUIDE_PREVIEW_DIR = DATA_DIR / "guide_preview"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 WEATHER_MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+GUIDE_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+
+# The shared preview worker fans its normalized audio out to two independent
+# loopback UDP ports so the primary and secondary Guide encoders never reopen
+# the original preview source.  Each Guide joins the current audio timeline
+# when it starts, matching the latest video frame published by that same worker.
+GUIDE_PREVIEW_AUDIO_PORT_PRIMARY = 18790
+GUIDE_PREVIEW_AUDIO_PORT_SECONDARY = 18791
 
 STANDBY_SEGMENT = OUTPUT_DIR / "standby.ts"
 STATIC_SEGMENT = OUTPUT_DIR / "static.ts"
@@ -173,6 +184,18 @@ FFMPEG_PID_FILE = DATA_DIR / "ffmpeg.pid"
 # ---------------------------------------------------------------------------
 # Low-level PID helpers
 # ---------------------------------------------------------------------------
+
+def playlist_path_has_segments(path: Path, prefix: str) -> bool:
+    """Return True if an HLS playlist contains at least one real segment."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return any(
+        line.strip().startswith(prefix) and line.strip().endswith(".ts")
+        for line in text.splitlines()
+    )
+
 
 def _pid_alive(pid: int) -> bool:
     """Return True if a process with *pid* is currently running (not a zombie).
@@ -429,6 +452,8 @@ def _build_audio_ffmpeg_args(
     key_prefix: str = "music_",
     music_dir: Path | None = None,
     playlist_filename: str = "music_playlist.txt",
+    input_index_start: int = 1,
+    include_video_map: bool = True,
 ) -> tuple[list[str], list[str], list[str]]:
     """Return (input_args, codec_args, map_args) for the audio portion of the
     ffmpeg pipeline based on the music configuration in *config*.
@@ -447,7 +472,10 @@ def _build_audio_ffmpeg_args(
     """
     silence_input = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
     silence_codec = ["-c:a", audio_codec, "-b:a", "32k"]
-    silence_map = ["-map", "0:v", "-map", "1:a"]
+    video_map = ["-map", "0:v"] if include_video_map else []
+    silence_index = int(input_index_start)
+    music_index = silence_index + 1
+    silence_map = [*video_map, "-map", f"{silence_index}:a"]
 
     mode_key = f"{key_prefix}mode"
     loop_key = f"{key_prefix}loop"
@@ -467,7 +495,7 @@ def _build_audio_ffmpeg_args(
                     return (
                         ["-stream_loop", "-1", "-i", str(file_path)],
                         ["-c:a", audio_codec, "-b:a", "128k"],
-                        ["-map", "0:v", "-map", "1:a"],
+                        [*video_map, "-map", f"{silence_index}:a"],
                     )
                 else:
                     # Mix finite music file with infinite silence so encoding
@@ -481,13 +509,19 @@ def _build_audio_ffmpeg_args(
                         ["-c:a", audio_codec, "-b:a", "128k"],
                         [
                             "-filter_complex",
-                            "[2:a][1:a]amix=inputs=2:duration=longest:normalize=0[outa]",
-                            "-map", "0:v", "-map", "[outa]",
+                            f"[{music_index}:a][{silence_index}:a]amix=inputs=2:duration=longest:normalize=0[outa]",
+                            *video_map, "-map", "[outa]",
                         ],
                     )
 
-    elif music_mode == "playlist":
-        playlist_files = config.get(playlist_files_key, [])
+    elif music_mode in ("playlist", "all"):
+        if music_mode == "all":
+            playlist_files = sorted(
+                path.name for path in music_dir.iterdir()
+                if path.is_file() and path.suffix.lower() in {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac"}
+            ) if music_dir.is_dir() else []
+        else:
+            playlist_files = config.get(playlist_files_key, [])
         valid_files = [
             music_dir / Path(f).name
             for f in playlist_files
@@ -511,7 +545,7 @@ def _build_audio_ffmpeg_args(
                 return (
                     ["-stream_loop", "-1"] + concat_input,
                     ["-c:a", audio_codec, "-b:a", "128k"],
-                    ["-map", "0:v", "-map", "1:a"],
+                    [*video_map, "-map", f"{silence_index}:a"],
                 )
             else:
                 # See normalize=0 comment above for the same pattern.
@@ -520,8 +554,8 @@ def _build_audio_ffmpeg_args(
                     ["-c:a", audio_codec, "-b:a", "128k"],
                     [
                         "-filter_complex",
-                        "[2:a][1:a]amix=inputs=2:duration=longest:normalize=0[outa]",
-                        "-map", "0:v", "-map", "[outa]",
+                        f"[{music_index}:a][{silence_index}:a]amix=inputs=2:duration=longest:normalize=0[outa]",
+                        *video_map, "-map", "[outa]",
                     ],
                 )
 
@@ -560,6 +594,117 @@ def _start_stderr_reader(
     return t
 
 
+
+def _preview_source_is_hls(source: str) -> bool:
+    """Return True for playlist-style HLS preview inputs.
+
+    HLS playlists can be consumed ahead from already-downloaded segments, so
+    the preview worker explicitly applies real-time pacing.  Continuous HTTP
+    MPEG-TS is already naturally paced by the sender and must not receive
+    another ``-re`` throttle.
+    """
+    clean = str(source or "").lower().split("?", 1)[0].split("#", 1)[0]
+    return clean.endswith(".m3u8")
+
+
+def _preview_source_input_args(source: str, transport: str = "") -> list[str]:
+    """Build source-specific input pacing for the shared preview worker."""
+    if source.startswith(("http://", "https://")):
+        args = ["-thread_queue_size", "1024"]
+        if transport == "hls" or (not transport and _preview_source_is_hls(source)):
+            args.append("-re")
+        args.extend([
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
+        ])
+        return args
+    return ["-thread_queue_size", "1024", "-re", "-stream_loop", "-1"]
+
+
+def _probe_preview_has_audio(source: str) -> bool:
+    """Best-effort check used only when Preview audio mode is selected."""
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=index", "-of", "csv=p=0", source,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=6)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _build_guide_preview_audio_relay_args(port: int) -> tuple[list[str], list[str], list[str], bool]:
+    """Build a low-latency audio input from the shared preview worker.
+
+    The Guide FFmpeg processes consume only this local relay.  They never open
+    the original MP4/HLS/MPEG-TS source, keeping preview video and audio on one
+    source clock while preserving the renderer's independent video cadence.
+    """
+    url = (
+        f"udp://127.0.0.1:{int(port)}?"
+        "fifo_size=1000000&overrun_nonfatal=1&buffer_size=262144"
+    )
+    return ([
+        "-thread_queue_size", "1024",
+        "-probesize", "65536",
+        "-analyzeduration", "1000000",
+        "-f", "mpegts", "-i", url,
+    ], [], ["-map", "0:v"], True)
+
+def _build_guide_preview_overlay_args(
+    config: dict,
+    source: str,
+) -> tuple[list[str], list[str], list[str], bool]:
+    """Build the proven FFmpeg overlay path used for normalized MPEG-TS previews."""
+    if not source:
+        return [], [], ["-map", "0:v"], False
+    try:
+        theme_name = str(config.get("theme", "retrostation_mc"))
+        theme_path = BASE_DIR / "app" / "themes" / theme_name / "theme.json"
+        theme = json.loads(theme_path.read_text(encoding="utf-8")) if theme_path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        theme = {}
+    if bool(config.get("_secondary_guide_output", False)):
+        theme, _ = _scaled_secondary_theme(theme, str(config.get("resolution", "720x480")))
+    layout = calculate_preview_layout(
+        str(config.get("resolution", "1280x720")),
+        str(config.get("aspect_ratio", "16:9")),
+        theme.get("layout", {}),
+        effective_preview_aspect_ratio(config),
+    )
+    max_w = int(layout["preview_max_width"])
+    max_h = int(layout["preview_max_height"])
+    x = int(layout["preview_x"])
+    y = int(layout["preview_y"])
+    filters = [
+        f"scale={max_w}:{max_h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bilinear",
+        "setsar=1",
+        f"pad={max_w}:{max_h}:(ow-iw)/2:(oh-ih)/2:black",
+    ]
+    graph = (
+        f"[1:v]{','.join(filters)}[guidepreview];"
+        f"[0:v][guidepreview]overlay={x}:{y}:eof_action=pass:repeatlast=1[vout]"
+    )
+    return ["-i", source], ["-filter_complex", graph], ["-map", "[vout]"], True
+
+
+def _secondary_guide_bitrate(resolution: str) -> str:
+    """Conservative SD bitrate caps for low-power IPTV clients.
+
+    Guide frames contain sharp text/edges that can create high instantaneous
+    bitrates under CRF-only encoding. Capping the secondary output keeps HLS
+    segments smaller and reduces boundary stalls on devices such as Raspberry
+    Pi 3 while retaining ample quality for the selected raster sizes.
+    """
+    return {
+        "640x480": "900k",
+        "720x480": "1100k",
+        "960x720": "1800k",
+    }.get(str(resolution), "1100k")
+
+
 def _build_ffmpeg_command(
     profile: FFmpegProfile,
     fps: str,
@@ -568,6 +713,10 @@ def _build_ffmpeg_command(
     audio_map_args: list[str],
     start_number: str,
     playlist_path: Path,
+    preview_input_args: list[str] | None = None,
+    video_filter_args: list[str] | None = None,
+    video_map_args: list[str] | None = None,
+    segment_prefix: str = "guide",
 ) -> list[str]:
     segment_seconds = str(profile.hls_segment_length)
     # GOP size in frames. A 2-second keyframe interval keeps each segment
@@ -576,6 +725,12 @@ def _build_ffmpeg_command(
     gop_frames = int(fps) * HLS_KEYFRAME_INTERVAL_SECS
     video_codec, video_codec_args, preset, tune, _, pix_fmt = _resolve_video_encoder_path(profile)
     hw_device_init_args = _resolve_hw_device_init_args(video_codec)
+    preview_input_args = preview_input_args or []
+    video_filter_args = video_filter_args or []
+    video_map_args = video_map_args or []
+    video_filter_args, video_map_args = _apply_hw_filter_to_guide(
+        video_codec, video_filter_args, video_map_args
+    )
     ffmpeg_cmd = [
         "ffmpeg",
         "-hide_banner", "-loglevel", "error", "-y",
@@ -585,7 +740,9 @@ def _build_ffmpeg_command(
         "-s", profile.resolution,
         "-r", fps,
         "-i", "-",
+        *preview_input_args,
         *audio_input_args,
+        *video_filter_args,
         "-c:v", video_codec,
     ]
     ffmpeg_cmd.extend(video_codec_args)
@@ -608,10 +765,22 @@ def _build_ffmpeg_command(
         "-sc_threshold", "0",
     ])
     if profile.bitrate:
-        ffmpeg_cmd.extend(["-b:v", profile.bitrate])
+        ffmpeg_cmd.extend(["-b:v", profile.bitrate, "-maxrate", profile.bitrate])
+        try:
+            if str(profile.bitrate).lower().endswith("k"):
+                bufsize = f"{int(str(profile.bitrate)[:-1]) * 2}k"
+            elif str(profile.bitrate).lower().endswith("m"):
+                bufsize = f"{float(str(profile.bitrate)[:-1]) * 2:g}m"
+            else:
+                bufsize = str(int(profile.bitrate) * 2)
+            ffmpeg_cmd.extend(["-bufsize", bufsize])
+        except (TypeError, ValueError):
+            pass
+    if pix_fmt:
+        ffmpeg_cmd.extend(["-pix_fmt", pix_fmt])
     ffmpeg_cmd.extend([
-        "-pix_fmt", pix_fmt,
         *audio_codec_args,
+        *video_map_args,
         *audio_map_args,
         "-f", "hls",
         "-hls_time", segment_seconds,
@@ -638,7 +807,7 @@ def _build_ffmpeg_command(
         # increasing across pipeline restarts so clients never stall waiting
         # for a sequence they already consumed.
         "-start_number", start_number,
-        "-hls_segment_filename", str(OUTPUT_DIR / "guide_%d.ts"),
+        "-hls_segment_filename", str(OUTPUT_DIR / f"{segment_prefix}_%d.ts"),
         str(playlist_path),
     ])
     return ffmpeg_cmd
@@ -654,6 +823,18 @@ class GuideManager:
         # Popen objects – only set for processes WE spawned so we can waitpid.
         self._renderer_popen: Optional[subprocess.Popen] = None
         self._ffmpeg_popen: Optional[subprocess.Popen] = None
+        # Optional secondary Guide output uses its own native renderer and encoder.
+        self._secondary_renderer_pid: Optional[int] = None
+        self._secondary_renderer_popen: Optional[subprocess.Popen] = None
+        self._secondary_ffmpeg_pid: Optional[int] = None
+        self._secondary_ffmpeg_popen: Optional[subprocess.Popen] = None
+        self._secondary_last_error: Optional[str] = None
+        # Shared Guide preview A/V worker. One FFmpeg input session owns preview
+        # decoding, publishes the latest normalized video frame, and fans its
+        # audio out to the primary/secondary Guide encoders over loopback UDP.
+        self._preview_normalizer_pid: Optional[int] = None
+        self._preview_normalizer_popen: Optional[subprocess.Popen] = None
+        self._preview_normalized_playlist: Optional[Path] = None
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
@@ -815,6 +996,18 @@ class GuideManager:
                 )
                 raise
         build_state(config, channels, programmes)
+        if bool(config.get("guide_secondary_enabled", False)):
+            secondary_resolution = str(config.get("guide_secondary_resolution", "720x480") or "720x480")
+            if secondary_resolution not in {"960x720", "720x480", "640x480"}:
+                secondary_resolution = "720x480"
+            sec_w, sec_h = [int(part) for part in secondary_resolution.lower().split("x", 1)]
+            # 640x480 and 960x720 are true square-pixel 4:3 targets. 720x480 is
+            # retained for CRT/SD workflows and is laid out as a 4:3 Guide canvas.
+            secondary_aspect = "4:3" if (sec_w / max(1, sec_h)) <= 1.5 else "16:9"
+            secondary_config = {**config, "resolution": secondary_resolution, "aspect_ratio": secondary_aspect, "_secondary_guide_output": True}
+            build_state(secondary_config, channels, programmes, output_path=SECONDARY_STATE_PATH)
+        else:
+            SECONDARY_STATE_PATH.unlink(missing_ok=True)
         self.last_refresh_status = "ok"
         self.logger.info("refresh", f"State rebuilt with {len(channels)} channel(s)")
 
@@ -945,9 +1138,10 @@ class GuideManager:
         ``standby.ts`` and ``static.ts`` are intentionally preserved across
         restarts so that the standby playlist is immediately available.
 
-        ``weather.m3u8`` and ``weather_*.ts`` segments are owned by the
-        :class:`WeatherChannelManager` and are intentionally skipped here so
-        that a guide pipeline restart does not interrupt the weather stream.
+        ``weather.m3u8`` / ``weather_*.ts``, ``traffic.m3u8`` / ``traffic_*.ts``,
+        ``news.m3u8`` / ``news_*.ts``, and the disk-backed Channel Mix files are
+        owned independently and intentionally skipped here so guide restarts do
+        not interrupt them.
 
         Epoch-based ``-start_number`` (set in ``start_pipeline``) ensures that
         ``EXT-X-MEDIA-SEQUENCE`` always advances across restarts, so there is no
@@ -956,8 +1150,14 @@ class GuideManager:
         for path in OUTPUT_DIR.iterdir():
             if path in {STANDBY_SEGMENT, STATIC_SEGMENT}:
                 continue
-            # Preserve weather channel files managed by WeatherChannelManager.
-            if path.name == "weather.m3u8" or path.name.startswith("weather_"):
+            # Preserve virtual-channel HLS files managed independently.
+            if (
+                path.name in {"weather.m3u8", "traffic.m3u8", "news.m3u8", "channel-mix.m3u8", "channel-mix-source.m3u8"}
+                or path.name.startswith("weather_")
+                or path.name.startswith("traffic_")
+                or path.name.startswith("news_")
+                or path.name.startswith("channel_mix_")
+            ):
                 continue
             if path.suffix in (".ts", ".m3u8"):
                 try:
@@ -1109,13 +1309,205 @@ class GuideManager:
             if tmp_path:
                 Path(tmp_path).unlink(missing_ok=True)
 
+    def _cleanup_preview_normalizer_files(self) -> None:
+        """Remove stale files from either preview-normalization path."""
+        for pattern in ("normalized-preview-*", "mpegts-preview-*"):
+            for path in GUIDE_PREVIEW_DIR.glob(pattern):
+                if path.is_file():
+                    path.unlink(missing_ok=True)
+        (GUIDE_PREVIEW_DIR / "latest-preview.jpg").unlink(missing_ok=True)
+        (GUIDE_PREVIEW_DIR / "mpegts-preview.m3u8").unlink(missing_ok=True)
+
+    def _start_mpegts_preview_relay_locked(self, config: dict) -> str | None:
+        """Restore the MPEG-TS preview path that passed sustained testing."""
+        source = resolve_preview_source(config, BASE_DIR)
+        if not source or not source.startswith(("http://", "https://")):
+            return None
+        self._cleanup_preview_normalizer_files()
+        playlist = GUIDE_PREVIEW_DIR / "mpegts-preview.m3u8"
+        segment_pattern = GUIDE_PREVIEW_DIR / "mpegts-preview-%06d.ts"
+        aspect = str(effective_preview_aspect_ratio(config) or "16:9").strip().lower()
+        canvas_w, canvas_h = (640, 480) if (aspect.startswith("4") or aspect in {"1.333", "1.33", "4/3"}) else (640, 360)
+        fps = str(config.get("fps") or 15)
+        try:
+            gop = max(1, int(round(float(fps))))
+        except (TypeError, ValueError):
+            fps, gop = "15", 15
+        vf = (
+            f"fps={fps},"
+            f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bilinear,"
+            "format=yuv420p,setsar=1,"
+            f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:black,"
+            "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+        )
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+            "-i", source,
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", vf,
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-pix_fmt", "yuv420p", "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+            "-f", "hls", "-hls_time", "1", "-hls_list_size", "8",
+            "-hls_flags", "delete_segments+omit_endlist+independent_segments+program_date_time",
+            "-hls_segment_filename", str(segment_pattern), str(playlist),
+        ]
+        try:
+            popen = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        except OSError as exc:
+            self.logger.error("guide-preview-normalizer", f"Failed to start MPEG-TS preview relay: {exc}")
+            return None
+        self._preview_normalizer_popen = popen
+        self._preview_normalizer_pid = popen.pid
+        self._preview_normalized_playlist = playlist
+        _start_stderr_reader(popen, "guide-preview-mpegts-relay", self.logger)
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            if popen.poll() is not None:
+                self.logger.error("guide-preview-normalizer", f"MPEG-TS preview relay exited during startup with status {popen.returncode}.")
+                self._preview_normalizer_pid = None
+                self._preview_normalizer_popen = None
+                self._preview_normalized_playlist = None
+                return None
+            if playlist.is_file() and any(GUIDE_PREVIEW_DIR.glob("mpegts-preview-*.ts")):
+                self.logger.info("guide-preview-normalizer", f"MPEG-TS preview relay ready at {canvas_w}x{canvas_h}@{fps} fps (PID {popen.pid}).")
+                return str(playlist)
+            time.sleep(0.05)
+        self.logger.error("guide-preview-normalizer", "Timed out waiting for MPEG-TS preview relay startup.")
+        _terminate_pid(popen.pid, popen, self.logger, "guide-preview-mpegts-relay")
+        self._preview_normalizer_pid = None
+        self._preview_normalizer_popen = None
+        self._preview_normalized_playlist = None
+        self._cleanup_preview_normalizer_files()
+        return None
+
+    def _start_preview_normalizer_locked(self, config: dict) -> tuple[str | None, bool]:
+        """Start one shared preview A/V worker.
+
+        Video is normalized to a continuously replaced JPEG which the Python
+        Guide renderers sample without blocking.  When Preview audio is wanted,
+        the *same FFmpeg input session* normalizes audio and tees identical AAC
+        MPEG-TS audio to one UDP port per Guide output.  This removes the prior
+        independent video/audio source clocks.
+        """
+        source = resolve_preview_source(config, BASE_DIR)
+        if not source:
+            return None, False
+
+        self._cleanup_preview_normalizer_files()
+        frame_path = GUIDE_PREVIEW_DIR / "latest-preview.jpg"
+
+        aspect = str(effective_preview_aspect_ratio(config) or "16:9").strip().lower()
+        if aspect.startswith("4") or aspect in {"1.333", "1.33", "4/3"}:
+            canvas_w, canvas_h = 640, 480
+        else:
+            canvas_w, canvas_h = 640, 360
+        fps = str(config.get("fps") or 15)
+        try:
+            float(fps)
+        except (TypeError, ValueError):
+            fps = "15"
+
+        vf = (
+            f"fps={fps},"
+            f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease:"
+            "force_divisible_by=2:flags=bilinear,"
+            "format=yuv420p,setsar=1,"
+            f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:black,"
+            "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+        )
+
+        preview_audio_mode = normalize_preview_audio_mode(config.get("guide_preview_audio_mode"))
+        relay_audio = preview_audio_mode == "preview" and _probe_preview_has_audio(source)
+
+        transport = cached_preview_transport(config)
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+        cmd.extend(_preview_source_input_args(source, transport))
+        cmd.extend([
+            "-i", source,
+            # Output 0: latest normalized video frame.
+            "-map", "0:v:0", "-an",
+            "-vf", vf,
+            "-c:v", "mjpeg", "-q:v", "5",
+            "-f", "image2", "-update", "1", "-atomic_writing", "1",
+            str(frame_path),
+        ])
+
+        if relay_audio:
+            tee_spec = (
+                f"[f=mpegts:onfail=ignore]udp://127.0.0.1:{GUIDE_PREVIEW_AUDIO_PORT_PRIMARY}"
+                "?pkt_size=1316&buffer_size=262144|"
+                f"[f=mpegts:onfail=ignore]udp://127.0.0.1:{GUIDE_PREVIEW_AUDIO_PORT_SECONDARY}"
+                "?pkt_size=1316&buffer_size=262144"
+            )
+            cmd.extend([
+                # Output 1: audio from the exact same source clock as video.
+                "-map", "0:a:0", "-vn",
+                "-af", "aresample=48000:async=1:first_pts=0",
+                "-ac", "2", "-ar", "48000",
+                "-c:a", "aac", "-b:a", "128k",
+                "-flush_packets", "1", "-muxdelay", "0", "-muxpreload", "0",
+                "-f", "tee", tee_spec,
+            ])
+
+        try:
+            popen = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            self.logger.error("guide-preview-normalizer", f"Failed to start shared preview worker: {exc}")
+            return None, False
+
+        self._preview_normalizer_popen = popen
+        self._preview_normalizer_pid = popen.pid
+        self._preview_normalized_playlist = frame_path
+        _start_stderr_reader(popen, "guide-preview-normalizer", self.logger)
+
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            if popen.poll() is not None:
+                self.logger.error(
+                    "guide-preview-normalizer",
+                    f"Shared preview worker exited during startup with status {popen.returncode}.",
+                )
+                self._preview_normalizer_pid = None
+                self._preview_normalizer_popen = None
+                self._preview_normalized_playlist = None
+                return None, False
+            if frame_path.is_file() and frame_path.stat().st_size > 0:
+                pacing = "hls-realtime" if transport == "hls" else (
+                    "file-realtime" if not source.startswith(("http://", "https://")) else "live-network"
+                )
+                self.logger.info(
+                    "guide-preview-normalizer",
+                    f"Shared preview A/V worker ready at {canvas_w}x{canvas_h}@{fps} fps "
+                    f"(PID {popen.pid}, pacing={pacing}, audio_relay={relay_audio}).",
+                )
+                return str(frame_path), relay_audio
+            time.sleep(0.05)
+
+        self.logger.error("guide-preview-normalizer", "Timed out waiting for first normalized preview frame.")
+        _terminate_pid(popen.pid, popen, self.logger, "guide-preview-normalizer")
+        self._preview_normalizer_pid = None
+        self._preview_normalizer_popen = None
+        self._preview_normalized_playlist = None
+        self._cleanup_preview_normalizer_files()
+        return None, False
+
+
     def start_pipeline(self, message: str = "Guide is Loading...") -> None:
         # Mark the pipeline as intentionally active so the background worker
         # will restart it automatically if it ever crashes.
         self._pipeline_active = True
-        # Record the start time *before* generating standby so the buffer gate
-        # measures from the very beginning of the startup sequence.
-        self._pipeline_started_at = time.time()
+        # _pipeline_started_at is recorded when the live ffmpeg process is
+        # actually spawned.  Starting this timer before standby generation can
+        # hide an immediate hardware-encoder crash from the fallback logic.
 
         # Generate (or refresh) the standby segment before tearing down the
         # running pipeline so that standby.ts is ready the moment guide.m3u8
@@ -1123,6 +1515,7 @@ class GuideManager:
         self._generate_standby_segment(message)
         self._generate_static_segment()
 
+        secondary_start = None
         with self._lock:
             self._stop_pipeline_locked()
             self._clean_output_dir()
@@ -1169,9 +1562,66 @@ class GuideManager:
             if self._telemetry_debug:
                 renderer_cmd.append("--telemetry")
 
-            audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
-                config, profile.audio_codec
-            )
+            raw_preview_source = resolve_preview_source(config, BASE_DIR)
+            preview_enabled = bool(config.get("guide_preview_enabled", False))
+            preview_transport = cached_preview_transport(config)
+            preview_audio_mode = normalize_preview_audio_mode(config.get("guide_preview_audio_mode"))
+
+            # Transport routing is resolved before Guide startup. HLS retains the
+            # decoupled cached-frame path that passed current testing. MPEG-TS
+            # restores the earlier shared local-HLS relay + FFmpeg overlay path
+            # that passed sustained Commercial TV testing. Local files stay on
+            # the decoupled path for the separate A/V-sync investigation.
+            mpegts_overlay_source = None
+            preview_frame_source, preview_audio_relay = None, False
+            if preview_enabled and raw_preview_source:
+                if preview_transport == "mpegts":
+                    mpegts_overlay_source = self._start_mpegts_preview_relay_locked(config)
+                else:
+                    preview_frame_source, preview_audio_relay = self._start_preview_normalizer_locked(config)
+
+            if mpegts_overlay_source:
+                preview_input_args, video_filter_args, video_map_args, preview_active = _build_guide_preview_overlay_args(
+                    config, mpegts_overlay_source
+                )
+                if preview_audio_mode == "preview":
+                    audio_input_args = []
+                    audio_codec_args = ["-c:a", profile.audio_codec, "-b:a", "128k"]
+                    audio_map_args = ["-map", "1:a:0?"]
+                else:
+                    audio_config = {**config, "music_mode": "none"} if preview_audio_mode == "silent" else config
+                    audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
+                        audio_config, profile.audio_codec, input_index_start=2, include_video_map=False
+                    )
+            else:
+                preview_active = bool(preview_frame_source)
+                preview_input_args, video_filter_args, video_map_args = [], [], ["-map", "0:v"]
+                if preview_active and preview_audio_mode == "preview" and preview_audio_relay:
+                    preview_input_args, video_filter_args, video_map_args, _ = _build_guide_preview_audio_relay_args(
+                        GUIDE_PREVIEW_AUDIO_PORT_PRIMARY
+                    )
+                    audio_input_args = []
+                    audio_codec_args = ["-c:a", profile.audio_codec, "-b:a", "128k"]
+                    audio_map_args = ["-map", "1:a:0?"]
+                elif preview_active:
+                    audio_config = (
+                        {**config, "music_mode": "none"}
+                        if preview_audio_mode in {"preview", "silent"}
+                        else config
+                    )
+                    audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
+                        audio_config, profile.audio_codec, input_index_start=1, include_video_map=False
+                    )
+                else:
+                    audio_config = (
+                        {**config, "music_mode": "none"}
+                        if preview_enabled and preview_audio_mode in {"preview", "silent"}
+                        else config
+                    )
+                    audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
+                        audio_config, profile.audio_codec
+                    )
+
             ffmpeg_cmd = _build_ffmpeg_command(
                 profile,
                 fps,
@@ -1180,7 +1630,21 @@ class GuideManager:
                 audio_map_args,
                 start_number,
                 playlist_path,
+                preview_input_args=preview_input_args,
+                video_filter_args=video_filter_args,
+                video_map_args=video_map_args,
             )
+            if preview_enabled:
+                if preview_active:
+                    self.logger.info(
+                        "pipeline",
+                        f"Guide preview enabled: transport={preview_transport or 'unknown'}, audio={preview_audio_mode}, source={raw_preview_source!r}",
+                    )
+                else:
+                    self.logger.warning(
+                        "pipeline",
+                        "Guide preview layout enabled but no valid preview source is configured; showing themed information area without video.",
+                    )
 
             try:
                 renderer_popen = subprocess.Popen(
@@ -1217,6 +1681,111 @@ class GuideManager:
             self._ffmpeg_popen = ffmpeg_popen
             self._renderer_pid = renderer_popen.pid
             self._ffmpeg_pid = ffmpeg_popen.pid
+            self._pipeline_started_at = time.time()
+
+            # Optional secondary Guide output: render natively at the selected
+            # resolution instead of scaling the completed primary 16:9 HLS. This
+            # preserves a true 4:3 Guide layout for 960x720 and 640x480 CRT use.
+            if bool(config.get("guide_secondary_enabled", False)):
+                secondary_resolution = str(config.get("guide_secondary_resolution", "720x480") or "720x480")
+                if secondary_resolution not in {"960x720", "720x480", "640x480"}:
+                    secondary_resolution = "720x480"
+                sec_w, sec_h = [int(part) for part in secondary_resolution.lower().split("x", 1)]
+                secondary_aspect = "4:3" if (sec_w / max(1, sec_h)) <= 1.5 else "16:9"
+                secondary_config = {**config, "resolution": secondary_resolution, "aspect_ratio": secondary_aspect, "_secondary_guide_output": True}
+                secondary_profile = replace(profile, resolution=secondary_resolution, bitrate=_secondary_guide_bitrate(secondary_resolution))
+                sec_codec, _, _, _, sec_path, _ = _resolve_video_encoder_path(secondary_profile)
+
+                secondary_renderer_cmd = [
+                    sys.executable, str(BASE_DIR / "app" / "renderer.py"),
+                    "--state", str(SECONDARY_STATE_PATH),
+                    "--fps", fps,
+                    "--resolution", secondary_resolution,
+                ]
+                if self._telemetry_debug:
+                    secondary_renderer_cmd.append("--telemetry")
+
+                if mpegts_overlay_source:
+                    sec_preview_input_args, sec_video_filter_args, sec_video_map_args, sec_preview_active = _build_guide_preview_overlay_args(
+                        secondary_config, mpegts_overlay_source
+                    )
+                    if preview_audio_mode == "preview":
+                        sec_audio_input_args = []
+                        sec_audio_codec_args = ["-c:a", secondary_profile.audio_codec, "-b:a", "128k"]
+                        sec_audio_map_args = ["-map", "1:a:0?"]
+                    else:
+                        sec_audio_config = {**secondary_config, "music_mode": "none"} if preview_audio_mode == "silent" else secondary_config
+                        sec_audio_input_args, sec_audio_codec_args, sec_audio_map_args = _build_audio_ffmpeg_args(
+                            sec_audio_config, secondary_profile.audio_codec, input_index_start=2, include_video_map=False
+                        )
+                else:
+                    sec_preview_active = bool(preview_frame_source)
+                    sec_preview_input_args, sec_video_filter_args, sec_video_map_args = [], [], ["-map", "0:v"]
+                    if sec_preview_active and preview_audio_mode == "preview" and preview_audio_relay:
+                        sec_preview_input_args, sec_video_filter_args, sec_video_map_args, _ = _build_guide_preview_audio_relay_args(
+                            GUIDE_PREVIEW_AUDIO_PORT_SECONDARY
+                        )
+                        sec_audio_input_args = []
+                        sec_audio_codec_args = ["-c:a", secondary_profile.audio_codec, "-b:a", "128k"]
+                        sec_audio_map_args = ["-map", "1:a:0?"]
+                    elif sec_preview_active:
+                        sec_audio_config = (
+                            {**secondary_config, "music_mode": "none"}
+                            if preview_audio_mode in {"preview", "silent"}
+                            else secondary_config
+                        )
+                        sec_audio_input_args, sec_audio_codec_args, sec_audio_map_args = _build_audio_ffmpeg_args(
+                            sec_audio_config, secondary_profile.audio_codec, input_index_start=1, include_video_map=False
+                        )
+                    else:
+                        sec_audio_config = (
+                            {**secondary_config, "music_mode": "none"}
+                            if preview_enabled and preview_audio_mode in {"preview", "silent"}
+                            else secondary_config
+                        )
+                        sec_audio_input_args, sec_audio_codec_args, sec_audio_map_args = _build_audio_ffmpeg_args(
+                            sec_audio_config, secondary_profile.audio_codec
+                        )
+
+
+                sec_playlist = OUTPUT_DIR / "guide-secondary.m3u8"
+                sec_cmd = _build_ffmpeg_command(
+                    secondary_profile, fps, sec_audio_input_args, sec_audio_codec_args, sec_audio_map_args,
+                    start_number, sec_playlist,
+                    preview_input_args=sec_preview_input_args,
+                    video_filter_args=sec_video_filter_args,
+                    video_map_args=sec_video_map_args,
+                    segment_prefix="guide_secondary",
+                )
+                try:
+                    secondary_renderer_popen = subprocess.Popen(
+                        secondary_renderer_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True
+                    )
+                    secondary_ffmpeg_popen = subprocess.Popen(
+                        sec_cmd, stdin=secondary_renderer_popen.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, start_new_session=True
+                    )
+                    secondary_renderer_popen.stdout.close()
+                    secondary_renderer_popen.stdout = None
+                    self._secondary_renderer_popen = secondary_renderer_popen
+                    self._secondary_renderer_pid = secondary_renderer_popen.pid
+                    self._secondary_ffmpeg_popen = secondary_ffmpeg_popen
+                    self._secondary_ffmpeg_pid = secondary_ffmpeg_popen.pid
+                    self._secondary_last_error = None
+                    _start_stderr_reader(secondary_renderer_popen, "secondary-guide-renderer", self.logger)
+                    _start_stderr_reader(secondary_ffmpeg_popen, "secondary-guide-ffmpeg", self.logger)
+                    self.logger.info(
+                        "pipeline",
+                        f"Secondary Guide native renderer started at {secondary_resolution} ({secondary_aspect}) using {sec_path} "
+                        f"(renderer PID {secondary_renderer_popen.pid}, ffmpeg PID {secondary_ffmpeg_popen.pid})",
+                    )
+                except OSError as exc:
+                    self._secondary_last_error = str(exc)
+                    if 'secondary_ffmpeg_popen' in locals():
+                        _terminate_pid(secondary_ffmpeg_popen.pid, secondary_ffmpeg_popen, self.logger, "secondary-guide-ffmpeg")
+                    if 'secondary_renderer_popen' in locals():
+                        _terminate_pid(secondary_renderer_popen.pid, secondary_renderer_popen, self.logger, "secondary-guide-renderer")
+                    self.logger.error("pipeline", f"Failed to start native secondary Guide output: {exc}")
+
             _save_pid(RENDERER_PID_FILE, renderer_popen.pid)
             _save_pid(FFMPEG_PID_FILE, ffmpeg_popen.pid)
             self.logger.info(
@@ -1236,8 +1805,11 @@ class GuideManager:
         self._stop_hls_telemetry_monitor()
         # Kill the consumer (ffmpeg) first, then the producer (renderer).
         for pid, popen, label in [
+            (self._secondary_ffmpeg_pid, self._secondary_ffmpeg_popen, "secondary-guide-ffmpeg"),
+            (self._secondary_renderer_pid, self._secondary_renderer_popen, "secondary-guide-renderer"),
             (self._ffmpeg_pid, self._ffmpeg_popen, "ffmpeg"),
             (self._renderer_pid, self._renderer_popen, "renderer"),
+            (self._preview_normalizer_pid, self._preview_normalizer_popen, "guide-preview-normalizer"),
         ]:
             if pid is None:
                 continue
@@ -1258,6 +1830,14 @@ class GuideManager:
         self._ffmpeg_pid = None
         self._renderer_popen = None
         self._ffmpeg_popen = None
+        self._secondary_renderer_pid = None
+        self._secondary_renderer_popen = None
+        self._secondary_ffmpeg_pid = None
+        self._secondary_ffmpeg_popen = None
+        self._preview_normalizer_pid = None
+        self._preview_normalizer_popen = None
+        self._preview_normalized_playlist = None
+        self._cleanup_preview_normalizer_files()
 
     def stop_pipeline(self) -> None:
         with self._lock:
@@ -1321,14 +1901,20 @@ class GuideManager:
                 if self._pipeline_started_at is not None
                 else float("inf")
             )
-            if self._last_encoder_type == "hardware" and elapsed < HW_ENCODER_QUICK_FAILURE_WINDOW_SECS:
+            guide_had_output = False
+            try:
+                guide_had_output = playlist_path_has_segments(OUTPUT_DIR / "guide.m3u8", "guide_")
+            except Exception:
+                guide_had_output = False
+            if self._last_encoder_type == "hardware" and (
+                elapsed < HW_ENCODER_QUICK_FAILURE_WINDOW_SECS or not guide_had_output
+            ):
                 self._hw_failure_count += 1
                 if self._hw_failure_count >= HW_ENCODER_MAX_CONSECUTIVE_FAILURES and not self._hw_fallback_forced:
                     self._hw_fallback_forced = True
                     self.logger.warning(
                         "pipeline",
-                        f"Hardware encoder has crashed {self._hw_failure_count} time(s) within "
-                        f"{HW_ENCODER_QUICK_FAILURE_WINDOW_SECS:.0f}s of startup; "
+                        f"Hardware encoder has failed {self._hw_failure_count} time(s) before establishing stable HLS output; "
                         "switching to software (libx264) fallback.",
                     )
             else:
@@ -1390,6 +1976,10 @@ class GuideManager:
         pipeline_keys = {
             "resolution", "fps", "segment_seconds",
             "music_mode", "music_loop", "music_single_file", "music_playlist_files",
+            "guide_preview_enabled", "guide_preview_source_type", "guide_preview_file",
+            "guide_preview_url", "guide_preview_url_channel", "guide_preview_url_channel_name", "guide_preview_audio_mode",
+            "guide_preview_aspect_mode", "guide_preview_detected_aspect_ratio", "guide_preview_detected_source_key",
+            "guide_preview_detected_transport", "guide_preview_transport_source_key",
         }
         return any(old_config.get(k) != new_config.get(k) for k in pipeline_keys)
 
@@ -1560,6 +2150,15 @@ class GuideManager:
         return {
             "renderer_running": self._renderer_pid is not None and _pid_alive(self._renderer_pid),
             "ffmpeg_running": self._ffmpeg_pid is not None and _pid_alive(self._ffmpeg_pid),
+            "secondary_renderer_running": self._secondary_renderer_pid is not None and _pid_alive(self._secondary_renderer_pid),
+            "secondary_renderer_pid": self._secondary_renderer_pid,
+            "secondary_ffmpeg_running": self._secondary_ffmpeg_pid is not None and _pid_alive(self._secondary_ffmpeg_pid),
+            "secondary_ffmpeg_pid": self._secondary_ffmpeg_pid,
+            "secondary_guide_enabled": bool(config.get("guide_secondary_enabled", False)),
+            "secondary_guide_resolution": config.get("guide_secondary_resolution", "720x480"),
+            "secondary_guide_playlist": "/hls/guide-secondary.m3u8" if bool(config.get("guide_secondary_enabled", False)) else None,
+            "secondary_guide_ready": (OUTPUT_DIR / "guide-secondary.m3u8").exists(),
+            "secondary_guide_error": self._secondary_last_error,
             "pipeline_active": self._pipeline_active,
             # guide_buffered: True once the pipeline has enough HLS buffer to
             # serve real guide content.  Used by master.m3u8 to choose the
@@ -1680,7 +2279,7 @@ def _resolve_video_encoder_path(profile: FFmpegProfile) -> tuple[str, list[str],
         "h264_nvenc": (["-rc", "vbr", "-cq", "23", "-forced-idr", "1"], None, None, "hardware:nvidia", "yuv420p"),
         "h264_qsv":   (["-look_ahead", "0", "-global_quality", "23"],   None, None, "hardware:intel",  "nv12"),
         "h264_amf":   (["-quality", "balanced"],                         None, None, "hardware:amd",    "nv12"),
-        "h264_vaapi": (["-qp", "23"],                                    None, None, "hardware:vaapi",  "nv12"),
+        "h264_vaapi": (["-qp", "23"],                                    None, None, "hardware:vaapi",  ""),
         "libx264":    ([],                                 profile.preset, profile.tune, "software:libx264", "yuv420p"),
     }
     selected = encoder_map.get(codec)
@@ -1707,7 +2306,52 @@ def _resolve_hw_device_init_args(codec: str) -> list[str]:
     qsv_codecs = {"h264_qsv", "hevc_qsv", "av1_qsv"}
     if codec in qsv_codecs:
         return ["-init_hw_device", "qsv=hw"]
+    vaapi_codecs = {"h264_vaapi", "hevc_vaapi", "av1_vaapi"}
+    if codec in vaapi_codecs:
+        # VA-API encoders require an explicit render node.  Detection can
+        # validate the encoder without the live pipeline automatically creating
+        # a usable hardware frames context, so initialise it here as well.
+        return ["-vaapi_device", os.environ.get("RSMC_VAAPI_DEVICE", "/dev/dri/renderD128")]
     return []
+
+
+def _resolve_hw_video_filter_args(codec: str) -> list[str]:
+    """Return filters needed to upload software-rendered frames to hardware.
+
+    RSMC renderers write RGB24 frames through stdout. VA-API cannot consume
+    those system-memory frames directly: they must first be converted to NV12
+    and uploaded to a VA-API hardware surface.
+    """
+    if codec in {"h264_vaapi", "hevc_vaapi", "av1_vaapi"}:
+        return ["-vf", "format=nv12,hwupload"]
+    return []
+
+
+def _apply_hw_filter_to_guide(
+    codec: str,
+    video_filter_args: list[str],
+    video_map_args: list[str],
+) -> tuple[list[str], list[str]]:
+    """Add the VA-API upload stage without breaking Guide preview filters."""
+    if codec not in {"h264_vaapi", "hevc_vaapi", "av1_vaapi"}:
+        return video_filter_args, video_map_args
+
+    args = list(video_filter_args)
+    maps = list(video_map_args)
+    if "-filter_complex" in args:
+        idx = args.index("-filter_complex")
+        if idx + 1 < len(args):
+            graph = args[idx + 1]
+            # The Guide preview graph terminates in [vout]. Add the hardware
+            # upload as a final stage and map the uploaded surface instead.
+            if "[vout]" in graph:
+                graph += ";[vout]format=nv12,hwupload[vout_hw]"
+                args[idx + 1] = graph
+                maps = ["[vout_hw]" if item == "[vout]" else item for item in maps]
+                return args, maps
+    # No preview/filter_complex path: apply a normal single-video filter.
+    args.extend(_resolve_hw_video_filter_args(codec))
+    return args, maps
 
 
 def _build_weather_ffmpeg_command(
@@ -1728,7 +2372,7 @@ def _build_weather_ffmpeg_command(
         config or {},
         profile.audio_codec,
         key_prefix="weather_music_",
-        music_dir=WEATHER_MUSIC_DIR,
+        music_dir=MUSIC_DIR,
         playlist_filename="weather_music_playlist.txt",
     )
     ffmpeg_cmd = [
@@ -1741,6 +2385,7 @@ def _build_weather_ffmpeg_command(
         "-r", fps,
         "-i", "-",
         *audio_input_args,
+        *_resolve_hw_video_filter_args(video_codec),
         "-c:v", video_codec,
     ]
     ffmpeg_cmd.extend(video_codec_args)
@@ -1755,9 +2400,20 @@ def _build_weather_ffmpeg_command(
         "-sc_threshold", "0",
     ])
     if profile.bitrate:
-        ffmpeg_cmd.extend(["-b:v", profile.bitrate])
+        ffmpeg_cmd.extend(["-b:v", profile.bitrate, "-maxrate", profile.bitrate])
+        try:
+            if str(profile.bitrate).lower().endswith("k"):
+                bufsize = f"{int(str(profile.bitrate)[:-1]) * 2}k"
+            elif str(profile.bitrate).lower().endswith("m"):
+                bufsize = f"{float(str(profile.bitrate)[:-1]) * 2:g}m"
+            else:
+                bufsize = str(int(profile.bitrate) * 2)
+            ffmpeg_cmd.extend(["-bufsize", bufsize])
+        except (TypeError, ValueError):
+            pass
+    if pix_fmt:
+        ffmpeg_cmd.extend(["-pix_fmt", pix_fmt])
     ffmpeg_cmd.extend([
-        "-pix_fmt", pix_fmt,
         *audio_codec_args,
         *audio_map_args,
         "-f", "hls",
@@ -1935,15 +2591,19 @@ class WeatherChannelManager:
                 gpu_capabilities = {}
             profile    = resolve_ffmpeg_profile(cfg, gpu_capabilities)
             self._last_encoder_type  = profile.encoder_type
-            self._pipeline_started_at = time.time()
             selected_codec, _, _, _, encoder_path, _ = _resolve_video_encoder_path(profile)
             self.logger.info(
                 "weather",
                 f"Selected encoder path: {encoder_path} (codec={selected_codec}, provider={profile.hardware_acceleration_provider or 'software'})",
             )
-            resolution = profile.resolution
+            resolution = cfg.get("weather_resolution") or profile.resolution
             fps        = str(cfg.get("fps", 10))
             start_num  = str(int(time.time()) // 6)
+
+            # Apply the weather-specific resolution to the profile so that
+            # _build_weather_ffmpeg_command uses the right frame dimensions.
+            if resolution != profile.resolution:
+                profile = replace(profile, resolution=resolution)
 
             renderer_cmd = [
                 sys.executable,
@@ -1987,6 +2647,7 @@ class WeatherChannelManager:
             self._ffmpeg_popen   = ffmpeg_popen
             self._renderer_pid   = renderer_popen.pid
             self._ffmpeg_pid     = ffmpeg_popen.pid
+            self._pipeline_started_at = time.time()
             self._pipeline_active = True
 
             _save_pid(WEATHER_RENDERER_PID_FILE, renderer_popen.pid)
@@ -2064,14 +2725,16 @@ class WeatherChannelManager:
             )
 
             elapsed = time.time() - self._pipeline_started_at
-            if self._last_encoder_type == "hardware" and elapsed < HW_ENCODER_QUICK_FAILURE_WINDOW_SECS:
+            weather_had_output = playlist_path_has_segments(WEATHER_PLAYLIST, WEATHER_SEGMENT_PREFIX)
+            if self._last_encoder_type == "hardware" and (
+                elapsed < HW_ENCODER_QUICK_FAILURE_WINDOW_SECS or not weather_had_output
+            ):
                 self._hw_failure_count += 1
                 if self._hw_failure_count >= HW_ENCODER_MAX_CONSECUTIVE_FAILURES and not self._hw_fallback_forced:
                     self._hw_fallback_forced = True
                     self.logger.warning(
                         "weather",
-                        f"Hardware encoder has crashed {self._hw_failure_count} time(s) within "
-                        f"{HW_ENCODER_QUICK_FAILURE_WINDOW_SECS:.0f}s of startup; "
+                        f"Hardware encoder has failed {self._hw_failure_count} time(s) before establishing stable HLS output; "
                         "switching to software (libx264) fallback.",
                     )
             else:
@@ -2100,3 +2763,382 @@ class WeatherChannelManager:
             "ffmpeg_running":   self._ffmpeg_pid   is not None and _pid_alive(self._ffmpeg_pid),
             "buffered":         self.is_weather_buffered(),
         }
+
+
+# ── TrafficChannelManager ────────────────────────────────────────────────────
+
+TRAFFIC_STATE_PATH        = DATA_DIR / "traffic_state.json"
+TRAFFIC_RENDERER_PID_FILE = DATA_DIR / "traffic_renderer.pid"
+TRAFFIC_FFMPEG_PID_FILE   = DATA_DIR / "traffic_ffmpeg.pid"
+TRAFFIC_PLAYLIST          = OUTPUT_DIR / "traffic.m3u8"
+TRAFFIC_SEGMENT_PREFIX    = "traffic_"
+TRAFFIC_FETCH_INTERVAL_SECS = 10
+
+
+def _build_traffic_ffmpeg_command(
+    profile: FFmpegProfile,
+    fps: str,
+    start_number: str,
+    config: dict | None = None,
+) -> list[str]:
+    """Encode TrafficRenderer RGB24 frames into a standalone HLS channel."""
+    try:
+        width, height = [int(v) for v in profile.resolution.lower().split("x", 1)]
+    except ValueError:
+        width, height = 1280, 720
+    gop = int(fps) * HLS_KEYFRAME_INTERVAL_SECS
+    video_codec, video_codec_args, preset, tune, _, pix_fmt = _resolve_video_encoder_path(profile)
+    hw_device_init_args = _resolve_hw_device_init_args(video_codec)
+    audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
+        config or {}, profile.audio_codec, key_prefix="traffic_music_", music_dir=MUSIC_DIR,
+        playlist_filename="traffic_music_playlist.txt",
+    )
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        *hw_device_init_args,
+        "-f", "rawvideo", "-pix_fmt", "rgb24",
+        "-s", f"{width}x{height}", "-r", fps, "-i", "-",
+        *audio_input_args,
+        *_resolve_hw_video_filter_args(video_codec),
+        "-c:v", video_codec,
+    ]
+    cmd.extend(video_codec_args)
+    if preset:
+        cmd.extend(["-preset", preset])
+    if tune:
+        cmd.extend(["-tune", tune])
+    cmd.extend([
+        "-g", str(gop), "-keyint_min", str(gop),
+        "-force_key_frames", f"expr:gte(t,n_forced*{HLS_KEYFRAME_INTERVAL_SECS})",
+        "-sc_threshold", "0",
+    ])
+    if profile.bitrate:
+        cmd.extend(["-b:v", profile.bitrate])
+    if pix_fmt:
+        cmd.extend(["-pix_fmt", pix_fmt])
+    cmd.extend([
+        *audio_codec_args, *audio_map_args,
+        "-f", "hls", "-hls_time", "6", "-hls_segment_type", "mpegts",
+        "-hls_list_size", "10", "-segment_list_flags", "+live",
+        "-hls_flags", "delete_segments+program_date_time+omit_endlist+discont_start+independent_segments",
+        "-start_number", start_number,
+        "-hls_segment_filename", str(OUTPUT_DIR / "traffic_%d.ts"),
+        str(TRAFFIC_PLAYLIST),
+    ])
+    return cmd
+
+
+class TrafficChannelManager:
+    """Manages the rendered HLS pipeline for the simulated Traffic channel."""
+
+    def __init__(self, store: ConfigStore, data_fetcher) -> None:
+        self.store = store
+        self.logger = AppLogger(store)
+        self._data_fetcher = data_fetcher
+        self._lock = threading.Lock()
+        self._renderer_pid: Optional[int] = None
+        self._ffmpeg_pid: Optional[int] = None
+        self._renderer_popen: Optional[subprocess.Popen] = None
+        self._ffmpeg_popen: Optional[subprocess.Popen] = None
+        self._pipeline_active = False
+        self._stop_event = threading.Event()
+        self._worker_thread: Optional[threading.Thread] = None
+        self._last_fetch_at = 0.0
+        self._hw_failure_count = 0
+        self._hw_fallback_forced = False
+        self._last_encoder_type = "software"
+        self._pipeline_started_at = 0.0
+
+    def start(self) -> None:
+        self._stop_event.clear()
+        if self._worker_thread and self._worker_thread.is_alive():
+            return
+        renderer_pid = _load_pid(TRAFFIC_RENDERER_PID_FILE)
+        ffmpeg_pid = _load_pid(TRAFFIC_FFMPEG_PID_FILE)
+        if (
+            renderer_pid and _pid_alive(renderer_pid) and _pid_matches(renderer_pid, "traffic_renderer")
+            and ffmpeg_pid and _pid_alive(ffmpeg_pid) and _pid_matches(ffmpeg_pid, "ffmpeg")
+            and self.store.get_config().get("traffic_channel_enabled")
+        ):
+            self._renderer_pid = renderer_pid
+            self._ffmpeg_pid = ffmpeg_pid
+            self._pipeline_active = True
+            self.logger.info("traffic", f"Reattached to existing traffic pipeline (renderer PID {renderer_pid}, ffmpeg PID {ffmpeg_pid})")
+        self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="traffic-worker")
+        self._worker_thread.start()
+        self.logger.info("traffic", "Traffic channel manager started")
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._stop_pipeline()
+        self.logger.info("traffic", "Traffic channel manager stopped")
+
+    def _worker_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                enabled = bool(self.store.get_config().get("traffic_channel_enabled", False))
+                if enabled:
+                    self._maybe_fetch_state()
+                    self._ensure_pipeline_running()
+                elif self._pipeline_active:
+                    self._stop_pipeline()
+                    self.logger.info("traffic", "Traffic channel disabled; pipeline stopped")
+            except Exception as exc:
+                self.logger.error("traffic", f"Worker error ({exc.__class__.__name__}): {exc}")
+            self._stop_event.wait(10)
+
+    def _maybe_fetch_state(self) -> None:
+        now = time.time()
+        if now - self._last_fetch_at < TRAFFIC_FETCH_INTERVAL_SECS:
+            return
+        try:
+            data = self._data_fetcher()
+            if data is not None:
+                cfg = self.store.get_config()
+                data["timezone"] = (cfg.get("timezone") or "local").strip()
+                data["browser_timezone"] = (cfg.get("browser_timezone") or "").strip()
+                TRAFFIC_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                self._last_fetch_at = now
+        except Exception as exc:
+            self.logger.error("traffic", f"Failed to fetch/save traffic state: {exc}")
+
+    def start_pipeline(self) -> None:
+        self._last_fetch_at = 0.0
+        self._maybe_fetch_state()
+        with self._lock:
+            self._stop_pipeline_locked()
+            self._clean_traffic_output()
+            cfg = self.store.get_config()
+            if self._hw_fallback_forced:
+                cfg = {**cfg, "hardware_acceleration_mode": "software_fallback"}
+            try:
+                gpu_capabilities = detect_gpu_capabilities()
+            except Exception as exc:
+                self.logger.warning("traffic", f"GPU detection unavailable; using software fallback profile: {exc}")
+                gpu_capabilities = {}
+            profile = resolve_ffmpeg_profile(cfg, gpu_capabilities)
+            self._last_encoder_type = profile.encoder_type
+            resolution = str(cfg.get("traffic_resolution") or profile.resolution or "1280x720")
+            fps = str(cfg.get("fps", 10))
+            start_num = str(int(time.time()) // 6)
+            if resolution != profile.resolution:
+                profile = replace(profile, resolution=resolution)
+            renderer_cmd = [
+                sys.executable, str(BASE_DIR / "app" / "traffic_renderer.py"),
+                "--state", str(TRAFFIC_STATE_PATH), "--fps", fps, "--resolution", resolution,
+            ]
+            ffmpeg_cmd = _build_traffic_ffmpeg_command(profile, fps, start_num, cfg)
+            try:
+                renderer = subprocess.Popen(renderer_cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            except OSError as exc:
+                self.logger.error("traffic", f"Failed to start traffic renderer: {exc}")
+                return
+            try:
+                ffmpeg = subprocess.Popen(ffmpeg_cmd, stdin=renderer.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, start_new_session=True)
+            except OSError as exc:
+                _terminate_pid(renderer.pid, renderer, self.logger, "traffic-renderer")
+                self.logger.error("traffic", f"Failed to start traffic ffmpeg: {exc}")
+                return
+            renderer.stdout.close()
+            renderer.stdout = None
+            self._renderer_popen, self._ffmpeg_popen = renderer, ffmpeg
+            self._renderer_pid, self._ffmpeg_pid = renderer.pid, ffmpeg.pid
+            self._pipeline_started_at = time.time()
+            self._pipeline_active = True
+            _save_pid(TRAFFIC_RENDERER_PID_FILE, renderer.pid)
+            _save_pid(TRAFFIC_FFMPEG_PID_FILE, ffmpeg.pid)
+            self.logger.info("traffic", f"Traffic pipeline started (renderer PID {renderer.pid}, ffmpeg PID {ffmpeg.pid})")
+        _start_stderr_reader(renderer, "traffic.renderer", self.logger)
+        _start_stderr_reader(ffmpeg, "traffic.ffmpeg", self.logger)
+
+    def _stop_pipeline_locked(self) -> None:
+        for pid, popen, label in [
+            (self._ffmpeg_pid, self._ffmpeg_popen, "traffic-ffmpeg"),
+            (self._renderer_pid, self._renderer_popen, "traffic-renderer"),
+        ]:
+            if pid is None:
+                continue
+            if popen is not None and popen.poll() is not None:
+                try:
+                    popen.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+            elif _pid_alive(pid):
+                _terminate_pid(pid, popen, self.logger, label)
+        TRAFFIC_RENDERER_PID_FILE.unlink(missing_ok=True)
+        TRAFFIC_FFMPEG_PID_FILE.unlink(missing_ok=True)
+        self._renderer_pid = self._ffmpeg_pid = None
+        self._renderer_popen = self._ffmpeg_popen = None
+        self._pipeline_active = False
+
+    def _stop_pipeline(self) -> None:
+        with self._lock:
+            self._stop_pipeline_locked()
+
+    def _clean_traffic_output(self) -> None:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        for path in OUTPUT_DIR.iterdir():
+            if path.name == "traffic.m3u8" or path.name.startswith(TRAFFIC_SEGMENT_PREFIX):
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    self.logger.warning("traffic", f"Could not remove {path}: {exc}")
+
+    def _ensure_pipeline_running(self) -> None:
+        if not self._pipeline_active:
+            self.start_pipeline()
+            return
+        renderer_dead = self._renderer_popen.poll() is not None if self._renderer_popen is not None else self._renderer_pid is None or not _pid_alive(self._renderer_pid)
+        ffmpeg_dead = self._ffmpeg_popen.poll() is not None if self._ffmpeg_popen is not None else self._ffmpeg_pid is None or not _pid_alive(self._ffmpeg_pid)
+        if renderer_dead or ffmpeg_dead:
+            elapsed = time.time() - self._pipeline_started_at
+            traffic_had_output = playlist_path_has_segments(TRAFFIC_PLAYLIST, TRAFFIC_SEGMENT_PREFIX)
+            if self._last_encoder_type == "hardware" and (
+                elapsed < HW_ENCODER_QUICK_FAILURE_WINDOW_SECS or not traffic_had_output
+            ):
+                self._hw_failure_count += 1
+                if self._hw_failure_count >= HW_ENCODER_MAX_CONSECUTIVE_FAILURES:
+                    self._hw_fallback_forced = True
+                    self.logger.warning(
+                        "traffic",
+                        f"Hardware encoder has failed {self._hw_failure_count} time(s) before producing HLS output; "
+                        "switching to software (libx264) fallback.",
+                    )
+            else:
+                self._hw_failure_count = 0
+            self.logger.warning("traffic", "Traffic pipeline process exited; restarting")
+            self.start_pipeline()
+
+    def is_traffic_buffered(self, min_segments: int = 3) -> bool:
+        try:
+            text = TRAFFIC_PLAYLIST.read_text(encoding="utf-8")
+            return sum(1 for line in text.splitlines() if line.strip().startswith(TRAFFIC_SEGMENT_PREFIX) and line.strip().endswith(".ts")) >= min_segments
+        except OSError:
+            return False
+
+    def status(self) -> dict:
+        return {
+            "pipeline_active": self._pipeline_active,
+            "renderer_running": self._renderer_pid is not None and _pid_alive(self._renderer_pid),
+            "ffmpeg_running": self._ffmpeg_pid is not None and _pid_alive(self._ffmpeg_pid),
+            "buffered": self.is_traffic_buffered(),
+        }
+
+
+# ── NewsChannelManager ───────────────────────────────────────────────────────
+NEWS_STATE_PATH = DATA_DIR / "news_state.json"
+NEWS_RENDERER_PID_FILE = DATA_DIR / "news_renderer.pid"
+NEWS_FFMPEG_PID_FILE = DATA_DIR / "news_ffmpeg.pid"
+NEWS_PLAYLIST = OUTPUT_DIR / "news.m3u8"
+NEWS_SEGMENT_PREFIX = "news_"
+NEWS_FETCH_INTERVAL_SECS = 15
+
+
+def _build_news_ffmpeg_command(profile: FFmpegProfile, fps: str, start_number: str, config: dict | None = None) -> list[str]:
+    try:
+        width, height = [int(v) for v in profile.resolution.lower().split("x", 1)]
+    except ValueError:
+        width, height = 1280, 720
+    gop = int(float(fps)) * HLS_KEYFRAME_INTERVAL_SECS
+    video_codec, video_codec_args, preset, tune, _, pix_fmt = _resolve_video_encoder_path(profile)
+    audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
+        config or {}, profile.audio_codec, key_prefix="news_music_", music_dir=MUSIC_DIR,
+        playlist_filename="news_music_playlist.txt",
+    )
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *_resolve_hw_device_init_args(video_codec),
+           "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", fps, "-i", "-",
+           *audio_input_args, *_resolve_hw_video_filter_args(video_codec), "-c:v", video_codec]
+    cmd.extend(video_codec_args)
+    if preset: cmd.extend(["-preset", preset])
+    if tune: cmd.extend(["-tune", tune])
+    cmd.extend(["-g", str(gop), "-keyint_min", str(gop), "-force_key_frames", f"expr:gte(t,n_forced*{HLS_KEYFRAME_INTERVAL_SECS})", "-sc_threshold", "0"])
+    if profile.bitrate: cmd.extend(["-b:v", profile.bitrate])
+    if pix_fmt: cmd.extend(["-pix_fmt", pix_fmt])
+    cmd.extend([*audio_codec_args, *audio_map_args, "-f", "hls", "-hls_time", "6", "-hls_segment_type", "mpegts", "-hls_list_size", "10",
+                "-segment_list_flags", "+live", "-hls_flags", "delete_segments+program_date_time+omit_endlist+discont_start+independent_segments",
+                "-start_number", start_number, "-hls_segment_filename", str(OUTPUT_DIR / "news_%d.ts"), str(NEWS_PLAYLIST)])
+    return cmd
+
+
+class NewsChannelManager:
+    """Manages the generated RSMC News Now HLS pipeline."""
+    def __init__(self, store: ConfigStore, data_fetcher) -> None:
+        self.store=store; self.logger=AppLogger(store); self._data_fetcher=data_fetcher; self._lock=threading.Lock()
+        self._renderer_pid=None; self._ffmpeg_pid=None; self._renderer_popen=None; self._ffmpeg_popen=None; self._pipeline_active=False
+        self._stop_event=threading.Event(); self._worker_thread=None; self._last_fetch_at=0.0; self._hw_failure_count=0; self._hw_fallback_forced=False; self._last_encoder_type='software'; self._pipeline_started_at=0.0
+    def start(self):
+        self._stop_event.clear()
+        if self._worker_thread and self._worker_thread.is_alive(): return
+        self._worker_thread=threading.Thread(target=self._worker_loop,daemon=True,name='news-worker'); self._worker_thread.start(); self.logger.info('news','News channel manager started')
+    def stop(self): self._stop_event.set(); self._stop_pipeline(); self.logger.info('news','News channel manager stopped')
+    def _worker_loop(self):
+        while not self._stop_event.is_set():
+            try:
+                if self.store.get_config().get('news_channel_enabled'):
+                    self._maybe_fetch_state(); self._ensure_pipeline_running()
+                elif self._pipeline_active: self._stop_pipeline()
+            except Exception as exc: self.logger.error('news',f'Worker error ({exc.__class__.__name__}): {exc}')
+            self._stop_event.wait(10)
+    def _maybe_fetch_state(self):
+        now=time.time()
+        if now-self._last_fetch_at < NEWS_FETCH_INTERVAL_SECS: return
+        try:
+            data=self._data_fetcher(); cfg=self.store.get_config(); data['timezone']=(cfg.get('timezone') or 'local').strip(); data['browser_timezone']=(cfg.get('browser_timezone') or '').strip(); NEWS_STATE_PATH.write_text(json.dumps(data,ensure_ascii=False),encoding='utf-8'); self._last_fetch_at=now
+        except Exception as exc: self.logger.error('news',f'Failed to fetch/save news state: {exc}')
+    def start_pipeline(self):
+        self._last_fetch_at=0; self._maybe_fetch_state()
+        with self._lock:
+            self._stop_pipeline_locked(); self._clean_output(); cfg=self.store.get_config()
+            if self._hw_fallback_forced:
+                cfg={**cfg,'hardware_acceleration_mode':'software_fallback'}
+                self.logger.warning('news','Hardware encoder fallback active; using software (libx264) for this session.')
+            try: caps=detect_gpu_capabilities()
+            except Exception: caps={}
+            profile=resolve_ffmpeg_profile(cfg,caps); self._last_encoder_type=profile.encoder_type; resolution=str(cfg.get('news_resolution') or profile.resolution or '1280x720'); fps=str(cfg.get('fps',15)); start_num=str(int(time.time())//6)
+            if resolution != profile.resolution: profile=replace(profile,resolution=resolution)
+            renderer_cmd=[sys.executable,str(BASE_DIR/'app'/'news_renderer.py'),'--state',str(NEWS_STATE_PATH),'--fps',fps,'--resolution',resolution]
+            try: renderer=subprocess.Popen(renderer_cmd,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+            except OSError as exc: self.logger.error('news',f'Failed to start news renderer: {exc}'); return
+            try: ffmpeg=subprocess.Popen(_build_news_ffmpeg_command(profile,fps,start_num,cfg),stdin=renderer.stdout,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True,start_new_session=True)
+            except OSError as exc: _terminate_pid(renderer.pid,renderer,self.logger,'news-renderer'); self.logger.error('news',f'Failed to start news ffmpeg: {exc}'); return
+            renderer.stdout.close(); renderer.stdout=None; self._renderer_popen=renderer; self._ffmpeg_popen=ffmpeg; self._renderer_pid=renderer.pid; self._ffmpeg_pid=ffmpeg.pid; self._pipeline_started_at=time.time(); self._pipeline_active=True
+            _save_pid(NEWS_RENDERER_PID_FILE,renderer.pid); _save_pid(NEWS_FFMPEG_PID_FILE,ffmpeg.pid); self.logger.info('news',f'News pipeline started (renderer PID {renderer.pid}, ffmpeg PID {ffmpeg.pid})')
+        _start_stderr_reader(renderer,'news.renderer',self.logger); _start_stderr_reader(ffmpeg,'news.ffmpeg',self.logger)
+    def _stop_pipeline_locked(self):
+        for pid,popen,label in [(self._ffmpeg_pid,self._ffmpeg_popen,'news-ffmpeg'),(self._renderer_pid,self._renderer_popen,'news-renderer')]:
+            if not pid: continue
+            if popen is not None and popen.poll() is not None:
+                try: popen.wait(timeout=1)
+                except subprocess.TimeoutExpired: pass
+            elif _pid_alive(pid): _terminate_pid(pid,popen,self.logger,label)
+        NEWS_RENDERER_PID_FILE.unlink(missing_ok=True); NEWS_FFMPEG_PID_FILE.unlink(missing_ok=True); self._renderer_pid=self._ffmpeg_pid=None; self._renderer_popen=self._ffmpeg_popen=None; self._pipeline_active=False
+    def _stop_pipeline(self):
+        with self._lock: self._stop_pipeline_locked()
+    def _clean_output(self):
+        OUTPUT_DIR.mkdir(parents=True,exist_ok=True)
+        for path in OUTPUT_DIR.iterdir():
+            if path.name=='news.m3u8' or path.name.startswith(NEWS_SEGMENT_PREFIX):
+                try: path.unlink()
+                except OSError: pass
+    def _ensure_pipeline_running(self):
+        if not self._pipeline_active:
+            self.start_pipeline(); return
+        renderer_dead=self._renderer_popen.poll() is not None if self._renderer_popen is not None else not (self._renderer_pid and _pid_alive(self._renderer_pid))
+        ffmpeg_dead=self._ffmpeg_popen.poll() is not None if self._ffmpeg_popen is not None else not (self._ffmpeg_pid and _pid_alive(self._ffmpeg_pid))
+        if renderer_dead or ffmpeg_dead:
+            elapsed=time.time()-self._pipeline_started_at
+            news_had_output=playlist_path_has_segments(NEWS_PLAYLIST,NEWS_SEGMENT_PREFIX)
+            if self._last_encoder_type=='hardware' and (elapsed < HW_ENCODER_QUICK_FAILURE_WINDOW_SECS or not news_had_output):
+                self._hw_failure_count += 1
+                if self._hw_failure_count >= HW_ENCODER_MAX_CONSECUTIVE_FAILURES:
+                    self._hw_fallback_forced=True
+                    self.logger.warning('news',f'Hardware encoder has failed {self._hw_failure_count} time(s) before producing HLS output; switching to software (libx264) fallback.')
+            else:
+                self._hw_failure_count=0
+            self.start_pipeline()
+    def is_news_buffered(self):
+        if not NEWS_PLAYLIST.exists(): return False
+        try: return NEWS_PLAYLIST.read_text(encoding='utf-8').count('#EXTINF:') >= 2
+        except OSError: return False
+    def status(self):
+        return {'pipeline_active':self._pipeline_active,'renderer_running':bool(self._renderer_pid and _pid_alive(self._renderer_pid)),'ffmpeg_running':bool(self._ffmpeg_pid and _pid_alive(self._ffmpeg_pid)),'buffered':self.is_news_buffered()}

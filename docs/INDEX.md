@@ -1,6 +1,6 @@
 # RetroStation MC Documentation Index
 
-This documentation pack covers RetroStation MC v1.3.0.
+This documentation pack covers RetroStation MC v1.4.0.
 
 ## Operator documentation
 
@@ -26,6 +26,6 @@ This documentation pack covers RetroStation MC v1.3.0.
 ## Project documentation
 
 - [Security](SECURITY.md) — Local-only threat model and safe deployment guidance.
-- [Roadmap](ROADMAP.md) — Suggested post-v1.3.0 work.
-- [Changelog](../CHANGELOG.md) — v1.3.0 release notes and prior history.
+- [Roadmap](ROADMAP.md) — Forward-looking work that is not yet implemented.
+- [Changelog](../CHANGELOG.md) — v1.4.0 release notes and prior release history.
 - [FAQ](FAQ.md) — Common operator and integration questions.

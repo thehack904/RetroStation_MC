@@ -8,6 +8,7 @@
 ├── app/
 │   ├── config_store.py
 │   ├── guide_state.py
+│   ├── guide_preview.py
 │   ├── hls_playlist.py
 │   ├── logging_utils.py
 │   ├── m3u_parser.py
@@ -65,6 +66,14 @@ The stable import playlist is:
 
 Avoid breaking these paths without a compatibility shim.
 
+### Guide Preview transport contract
+
+Preview transport detection must remain source-keyed. Never trust a cached `guide_preview_detected_transport` unless `guide_preview_transport_source_key` matches `preview_source_cache_key(config)`. Keep detection bounded so Guide startup cannot be held indefinitely by an unreachable source.
+
+The two processing paths are intentional: detected MPEG-TS uses the dedicated relay/overlay path; HLS/local-file/unknown inputs use the shared normalized-frame worker. Changes that collapse these paths should be tested against transport-specific A/V sync and long-running playback behavior.
+
+`POST /guide-preview/detect-transport` is an admin helper for **input** classification. It must not be repurposed as an output-format selector.
+
 ### Config contract
 
 Settings are persisted as JSON values in SQLite. Add new settings to `DEFAULT_CONFIG` so fresh installs and existing installs receive merged defaults.
@@ -117,3 +126,14 @@ A replacement renderer should preserve:
 - process lifecycle: start/stop under `GuideManager`
 
 If the replacement does not output raw RGB frames, update the FFmpeg input arguments and test HLS playback thoroughly.
+
+
+## Guide Preview regression tests
+
+Key coverage includes:
+
+- `tests/test_guide_preview_transport.py` — HLS/MPEG-TS/file detection, source-keyed caching, endpoint behavior, and transport-specific command construction.
+- `tests/test_guide_preview_integration.py` — Preview pipeline integration and source/audio behavior.
+- `tests/test_guide_message.py` and `tests/test_guide_message_live_update.py` — explicit multiline message blocks, timed messages/blanks, live-save behavior, and removal of the Channel Group input.
+
+Run the full suite after Preview pipeline changes because FFmpeg command-generation and hardware-acceleration tests share the same manager path.

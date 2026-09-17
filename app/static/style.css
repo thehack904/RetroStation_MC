@@ -90,7 +90,7 @@ a { color: var(--theme-btn-bg, #2f65d9); }
 .btn--sm { padding: 5px 10px; font-size: 12px; }
 .btn--primary { background: #1a7f4e; font-weight: bold; }
 .btn--danger  { background: #8b1a1a; }
-.btn--copy    { background: var(--theme-panel-bg, #111b31); border: 1px solid var(--theme-panel-border, #223454); }
+.btn--copy    { background: var(--theme-btn-bg, #2f65d9); color: var(--theme-btn-text, #fff); border: none; }
 
 /* ── Flash Bar ── */
 .flash-bar {

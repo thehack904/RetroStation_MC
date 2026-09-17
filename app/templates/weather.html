@@ -624,7 +624,7 @@
       border: 2px solid #ff5050;
       border-radius: 4px;
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 0.6em;
       padding: 0.5em 0.8em;
     }
@@ -632,11 +632,15 @@
     .wx-alert-icon {
       font-size: clamp(18px, 2.5vw, 30px);
       flex-shrink: 0;
+      line-height: 1;
     }
 
     .wx-alert-text {
+      flex: 1;
+      min-width: 0;
       font-size: clamp(11px, 1.5vw, 18px);
       font-weight: 700;
+      line-height: 1.25;
     }
 
     .wx-no-alerts {

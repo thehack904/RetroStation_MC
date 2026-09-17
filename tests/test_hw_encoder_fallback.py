@@ -91,6 +91,21 @@ class GuideManagerHwFallbackTests(unittest.TestCase):
         self.assertEqual(mgr._hw_failure_count, 1)
         self.assertFalse(mgr._hw_fallback_forced)
 
+    def test_hw_crash_without_hls_output_counts_even_after_quick_window(self) -> None:
+        mgr = self._make_manager()
+        mgr._last_encoder_type = "hardware"
+        mgr._pipeline_started_at = time.time() - (HW_ENCODER_QUICK_FAILURE_WINDOW_SECS + 5)
+        mgr._pipeline_active = True
+        with patch.object(mgr, "start_pipeline"), \
+             patch.object(mgr, "_renderer_popen", None), \
+             patch.object(mgr, "_ffmpeg_popen", None), \
+             patch.object(mgr, "_renderer_pid", 1), \
+             patch.object(mgr, "_ffmpeg_pid", 2), \
+             patch("app.manager._pid_alive", side_effect=[True, False]), \
+             patch("app.manager.playlist_path_has_segments", return_value=False):
+            mgr.ensure_pipeline_running()
+        self.assertEqual(mgr._hw_failure_count, 1)
+
     def test_long_lived_hw_run_resets_failure_count(self) -> None:
         mgr = self._make_manager()
         mgr._last_encoder_type = "hardware"

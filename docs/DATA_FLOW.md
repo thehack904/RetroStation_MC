@@ -12,7 +12,8 @@ The admin UI saves settings to `data/config.db`. Key inputs are:
 - render resolution and FPS
 - HLS segment length
 - guide horizon and row count
-- optional channel group filter
+- optional Guide Preview source/audio/aspect settings
+- optional Guide Message text/timing
 - optional background music configuration
 
 ## 2. M3U parsing
@@ -32,7 +33,7 @@ Each parsed channel includes:
 }
 ```
 
-The source stream URL is parsed but not restreamed by RetroStation MC v1.3.0. The app uses playlist and EPG metadata to render the guide channel.
+Source stream URLs are parsed for channel metadata and can also be selected explicitly as Guide Preview sources or HDHomeRun rebroadcast sources. The normal Guide grid itself still uses M3U/XMLTV metadata rather than restreaming every source channel.
 
 ## 3. XMLTV parsing
 
@@ -59,17 +60,25 @@ The builder:
 
 1. Aligns the visible guide start to the current 30-minute boundary.
 2. Applies the configured guide horizon.
-3. Filters channels by exact group name when `channel_group` is set.
-4. Selects programmes overlapping the visible time window.
-5. Adds a `No guide data` block for channels without visible programmes.
-6. Splits channels into pages based on `visible_rows`.
-7. Embeds theme data from `app/themes/<theme>/theme.json`.
+3. Selects programmes overlapping the visible time window.
+4. Adds a `No guide data` block for channels without visible programmes.
+5. Splits channels into pages based on `visible_rows`.
+6. Embeds theme data from `app/themes/<theme>/theme.json`.
 
 ## 5. Rendering
 
 `app/renderer.py` loads `guide_state.json`, renders frames using Pillow, and writes raw `rgb24` frames to stdout.
 
 Renderer output is continuous. Dynamic elements such as the clock and current-time line update per frame.
+
+## 5a. Guide Preview source processing
+
+When Guide Preview is enabled, `app/guide_preview.py` resolves the selected local file, direct URL, M3U-selected channel, or enabled virtual channel. Input transport detection is cached against that exact source key.
+
+- `hls`, `file`, and unknown network inputs use the shared preview normalizer. It writes a continuously replaced normalized JPEG for renderer sampling and, when Preview audio is selected and present, creates AAC-over-MPEG-TS UDP audio relays from the same input session.
+- detected `mpegts` network inputs use the dedicated MPEG-TS relay, which normalizes the source into a short local HLS relay before the Guide FFmpeg process overlays it. Preview audio is mapped from that same relayed input.
+
+This branch affects Preview **input** handling only. The Guide output remains HLS.
 
 ## 6. Encoding and HLS packaging
 

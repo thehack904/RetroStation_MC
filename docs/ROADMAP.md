@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap lists recommended post-v1.3.0 improvements.
+This roadmap lists forward-looking work beyond the released v1.4.0 baseline.
 
 ## Priority 1 — Reliability and operations
 
@@ -42,10 +42,18 @@ This roadmap lists recommended post-v1.3.0 improvements.
 - Add stale segment and playlist watchdogs.
 - Add safer fallback behavior when live output crashes after clients are already live.
 
-## Priority 6 — Packaging
+## Priority 7 — Virtual channels
+
+- ✅ **v1.4.0** Simulated Traffic virtual channel (CH 3) — OSM road geometry, deterministic synthetic congestion and incidents, configurable city rotation and time-of-day profiles, basemap caching. Adapted from RetroIPTVGuide v4.9.9-dev.
+- Add simulated News virtual channel.
+- Add simulated Sports scores virtual channel.
 
 - Publish versioned container images.
 - Add GHCR/Docker Hub release workflow.
 - Add TrueNAS custom app guidance.
 - Add systemd service example for non-container installs.
 - Add backup/restore docs for `data/`.
+
+- [x] v1.4.0 — Migrate News Now RSS/Atom virtual channel from RetroIPTVGuide (#119).
+
+- [x] v1.4.0 — Migrate Channel Mix virtual channel from RetroIPTVGuide.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -212,8 +213,8 @@ class VirtualChannelsWeatherConfigTests(unittest.TestCase):
             }
         )
         body = self.client.get("/channel.m3u").data.decode()
-        self.assertIn('tvg-id="retro-guide-channel"', body)
-        self.assertIn('tvg-id="retro-weather-channel"', body)
+        self.assertIn('tvg-id="rsmc-guide"', body)
+        self.assertIn('tvg-id="rsmc-weather"', body)
         self.assertIn("Weather Channel - Portland OR", body)
         self.assertIn("/hls/weather.m3u8", body)
 
@@ -228,8 +229,8 @@ class VirtualChannelsWeatherConfigTests(unittest.TestCase):
         resp = self.client.get("/channel.m3u8")
         body = resp.data.decode()
         self.assertEqual(resp.status_code, 200)
-        self.assertIn('tvg-id="retro-guide-channel"', body)
-        self.assertIn('tvg-id="retro-weather-channel"', body)
+        self.assertIn('tvg-id="rsmc-guide"', body)
+        self.assertIn('tvg-id="rsmc-weather"', body)
         self.assertIn("Weather Channel - Portland OR", body)
         self.assertIn("/hls/weather.m3u8", body)
 
@@ -262,8 +263,35 @@ class VirtualChannelsWeatherConfigTests(unittest.TestCase):
             }
         )
         body = self.client.get("/channel.m3u").data.decode()
-        self.assertIn('tvg-id="retro-guide-channel"', body)
-        self.assertNotIn('tvg-id="retro-weather-channel"', body)
+        self.assertIn('tvg-id="rsmc-guide"', body)
+        self.assertNotIn('tvg-id="rsmc-weather"', body)
+
+    def test_weather_playlist_prefers_png_logo_for_broad_client_compatibility(self) -> None:
+        self.web.store.save_config({
+            "weather_channel_enabled": True,
+            "weather_logo_enabled": True,
+            "weather_location_name": "Portland OR",
+        })
+        body = self.client.get("/channel.m3u").data.decode()
+        self.assertIn('tvg-id="rsmc-weather"', body)
+        self.assertIn('/weather-logo/default.png', body)
+        self.assertNotIn('/weather-logo/default.svg', body)
+
+    def test_channel_xmltv_includes_guide_and_weather_icons(self) -> None:
+        self.web.store.save_config({
+            "weather_channel_enabled": True,
+            "weather_logo_enabled": True,
+            "weather_location_name": "Portland OR",
+        })
+        root = ET.fromstring(self.client.get("/channel.xmltv").data.decode())
+        channels = {item.attrib["id"]: item for item in root.findall("channel")}
+        guide_icon = channels["rsmc-guide"].find("icon")
+        weather_icon = channels["rsmc-weather"].find("icon")
+        self.assertIsNotNone(guide_icon)
+        self.assertIsNotNone(weather_icon)
+        self.assertTrue(guide_icon.attrib["src"].startswith("http://localhost/guide-logo/"))
+        self.assertEqual(weather_icon.attrib["src"], "http://localhost/weather-logo/default.png")
+
 
     def test_channel_xmltv_includes_weather_channel_when_enabled(self) -> None:
         self.web.store.save_config(
@@ -277,12 +305,12 @@ class VirtualChannelsWeatherConfigTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         root = ET.fromstring(resp.data.decode())
         channel_ids = [channel.attrib.get("id") for channel in root.findall("channel")]
-        self.assertIn("retro-guide-channel", channel_ids)
-        self.assertIn("retro-weather-channel", channel_ids)
+        self.assertIn("rsmc-guide", channel_ids)
+        self.assertIn("rsmc-weather", channel_ids)
         weather_titles = [
             prog.findtext("title")
             for prog in root.findall("programme")
-            if prog.attrib.get("channel") == "retro-weather-channel"
+            if prog.attrib.get("channel") == "rsmc-weather"
         ]
         self.assertTrue(weather_titles)
         self.assertTrue(all(title == "Weather Channel - Portland, OR" for title in weather_titles))
@@ -366,7 +394,7 @@ class VirtualChannelsWeatherConfigTests(unittest.TestCase):
             }
         )
         body = self.client.get("/channel.m3u").data.decode()
-        self.assertIn('tvg-id="retro-weather-channel"', body)
+        self.assertIn('tvg-id="rsmc-weather"', body)
         self.assertIn("tvg-logo=", body)
         self.assertIn("/weather-logo/", body)
 
@@ -379,10 +407,10 @@ class VirtualChannelsWeatherConfigTests(unittest.TestCase):
             }
         )
         body = self.client.get("/channel.m3u").data.decode()
-        self.assertIn('tvg-id="retro-weather-channel"', body)
+        self.assertIn('tvg-id="rsmc-weather"', body)
         # The guide channel may still have a logo; only check weather entry has none
         lines = body.splitlines()
-        weather_extinf = next((l for l in lines if "retro-weather-channel" in l), "")
+        weather_extinf = next((l for l in lines if "rsmc-weather" in l), "")
         self.assertNotIn("tvg-logo=", weather_extinf)
 
     def test_save_weather_config_persists_logo_enabled(self) -> None:
@@ -492,6 +520,17 @@ class VirtualChannelsWeatherConfigTests(unittest.TestCase):
     def test_weather_template_exists(self) -> None:
         tmpl = Path(__file__).resolve().parents[1] / "app" / "templates" / "weather.html"
         self.assertTrue(tmpl.exists())
+
+    def test_weather_template_alerts_use_top_aligned_wrapping_layout(self) -> None:
+        tmpl = Path(__file__).resolve().parents[1] / "app" / "templates" / "weather.html"
+        html = tmpl.read_text(encoding="utf-8")
+        item_rule = re.search(r"\.wx-alert-item\s*\{([^}]*)\}", html, re.DOTALL)
+        text_rule = re.search(r"\.wx-alert-text\s*\{([^}]*)\}", html, re.DOTALL)
+        self.assertIsNotNone(item_rule)
+        self.assertIsNotNone(text_rule)
+        self.assertIn("align-items: flex-start;", item_rule.group(1))
+        self.assertIn("min-width: 0;", text_rule.group(1))
+        self.assertIn("line-height: 1.25;", text_rule.group(1))
 
     def test_virtual_channels_template_contains_zip_lookup(self) -> None:
         tmpl = Path(__file__).resolve().parents[1] / "app" / "templates" / "virtual_channels.html"

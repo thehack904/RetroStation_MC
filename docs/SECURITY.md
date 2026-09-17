@@ -4,11 +4,11 @@
 
 | Version | Status |
 |---|---|
-| v1.3.0 | Current documented release |
+| v1.4.0 | Current release |
 
 ## Security model
 
-RetroStation MC v1.3.0 is a local-control application. It has no built-in authentication or authorization. Treat it as a trusted-LAN service.
+RetroStation MC v1.4.0 is a local-control application. It has no built-in authentication or authorization. Treat it as a trusted-LAN service.
 
 Do not expose the app directly to the public internet.
 
@@ -26,6 +26,7 @@ Use one of these patterns:
 The admin UI can:
 
 - change playlist and XMLTV sources
+- configure remote Guide Preview URLs and trigger server-side transport probing
 - restart and stop FFmpeg/renderer processes
 - upload audio files
 - upload or remove guide logos and standby patterns
@@ -43,7 +44,7 @@ The upload handler is still not a substitute for authentication. A trusted-only 
 
 ## External source handling
 
-M3U and XMLTV sources may be local file paths or HTTP/HTTPS URLs. Only configure sources you trust.
+M3U/XMLTV and Guide Preview sources may include local paths or HTTP/HTTPS URLs. The application fetches/probes configured remote sources from the server host. Only configure sources you trust and keep the admin interface inaccessible to untrusted users.
 
 ## Reporting vulnerabilities
 

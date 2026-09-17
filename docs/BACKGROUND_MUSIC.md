@@ -21,7 +21,7 @@ The upload form accepts:
 - `.ogg`
 - `.wav`
 
-Maximum upload size is 100 MB per request based on the Flask `MAX_CONTENT_LENGTH` setting.
+Maximum upload size is 100 MB per file. Multi-file uploads are accepted up to 1 GB per HTTP request; each file is validated independently.
 
 ## Content validation
 

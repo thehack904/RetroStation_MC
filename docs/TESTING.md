@@ -1,6 +1,6 @@
 # Testing Guide
 
-The repository includes tests for admin UI behavior, HLS live-edge behavior, renderer caching, and default stream tuning.
+The repository includes tests for admin UI behavior, Guide Preview transport/pipeline behavior, Guide Message parsing/live updates, HLS live-edge behavior, renderer caching, hardware acceleration, virtual channels, and default stream tuning.
 
 ## Run tests
 
@@ -17,6 +17,10 @@ pytest
 | `tests/test_admin_copy_url_helper.py` | Copy URL helper behavior in admin HTML |
 | `tests/test_default_stream_tuning.py` | Default HLS/render tuning expectations |
 | `tests/test_hls_delayed_edge.py` | HLS live-edge playlist trimming |
+| `tests/test_guide_preview_transport.py` | HLS/MPEG-TS/file detection, source-keyed cache behavior, endpoint responses, and transport-specific FFmpeg routing |
+| `tests/test_guide_preview_integration.py` | Guide Preview source/audio integration |
+| `tests/test_guide_message.py` | Guide Message block/timing parser behavior |
+| `tests/test_guide_message_live_update.py` | Correct multiline examples, live-save behavior, and removal of the Channel Group control |
 | `tests/test_renderer_layer_cache.py` | Renderer layer cache behavior |
 
 ## Manual regression checklist
@@ -38,6 +42,9 @@ Before release, validate:
 13. Logs export works in JSONL and CSV.
 14. Uploaded supported music can be selected and applied after restart.
 15. Unsupported or invalid audio uploads are rejected.
+16. Guide Preview selection detects HLS versus MPEG-TS and does not reuse a cached transport after changing the selected source.
+17. HLS/local-file Preview and MPEG-TS Preview each start through their intended processing path, including Preview-audio mode.
+18. Guide Message examples render as separate explicit `[message]` blocks; blank lines inside a block remain spacing.
 
 ## HLS-specific regression checks
 

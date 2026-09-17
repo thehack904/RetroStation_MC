@@ -106,6 +106,42 @@ class WeatherRendererAlertsAndRadarTests(unittest.TestCase):
         non_bg = sum(1 for y in range(img.height) for x in range(img.width) if px[x, y] != _BG)
         self.assertGreater(non_bg, 0, "Expected no-alert fallback rendering")
 
+    def test_wrap_text_to_width_keeps_lines_within_pixel_limit(self) -> None:
+        renderer = WeatherRenderer(Path(self.temp_dir.name) / "weather_state.json", 960, 720)
+        img = Image.new("RGB", (renderer.width, renderer.height), _BG)
+        draw = ImageDraw.Draw(img)
+        left_x = 20
+        headline_offset = 8
+        right_padding = 20
+        min_text_width = 40
+        text = (
+            "Heat Advisory issued July 26 at 5:54PM CDT until July 27 at 8:00PM CDT "
+            "for Fort Worth TX"
+        )
+        max_width = max(min_text_width, renderer.width - (left_x + headline_offset) - right_padding)
+        lines = renderer._wrap_text_to_width(draw, text, renderer._f_small, max_width)
+
+        self.assertGreater(len(lines), 1)
+        for line in lines:
+            self.assertLessEqual(renderer._tw(draw, line, renderer._f_small), max_width)
+
+    def test_wrap_text_to_width_splits_overlong_tokens(self) -> None:
+        img = Image.new("RGB", (self.renderer.width, self.renderer.height), _BG)
+        draw = ImageDraw.Draw(img)
+        lines = self.renderer._wrap_text_to_width(draw, "X" * 200, self.renderer._f_small, 80)
+
+        self.assertGreater(len(lines), 1)
+        for line in lines:
+            self.assertLessEqual(self.renderer._tw(draw, line, self.renderer._f_small), 80)
+
+    def test_wrap_text_to_width_rejects_non_positive_width(self) -> None:
+        img = Image.new("RGB", (self.renderer.width, self.renderer.height), _BG)
+        draw = ImageDraw.Draw(img)
+        for bad_width in (0, -1):
+            with self.subTest(bad_width=bad_width):
+                with self.assertRaises(ValueError):
+                    self.renderer._wrap_text_to_width(draw, "Heat Advisory", self.renderer._f_small, bad_width)
+
 
 if __name__ == "__main__":
     unittest.main()

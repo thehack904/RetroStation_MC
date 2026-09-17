@@ -1,6 +1,6 @@
 # Architecture
 
-RetroStation MC v1.3.0 is a Flask application with managed guide and Weather channel pipelines.
+RetroStation MC v1.4.0 is a Flask application with managed Guide and virtual-channel pipelines.
 
 ## Component overview
 
@@ -48,6 +48,7 @@ Flask app.py
 | `app/config_store.py` | SQLite-backed configuration and app event storage |
 | `app/manager.py` | Worker loop, renderer/FFmpeg lifecycle, standby generation, audio selection |
 | `app/guide_state.py` | Converts config + M3U + XMLTV into normalized renderer state |
+| `app/guide_preview.py` | Resolves Preview sources, detects/caches input transport and aspect metadata, parses preview M3U playlists, and calculates preview layout |
 | `app/renderer.py` | Pillow-based frame renderer that writes raw RGB frames to stdout |
 | `app/weather_renderer.py` | Browser-driven Weather channel renderer support |
 | `app/hls_playlist.py` | Live-edge trimming helper for HLS playlists |
@@ -70,6 +71,26 @@ When the admin starts the guide, the main manager launches two subprocesses:
 The pipeline is intentionally separate from Flask. PID files allow a new Flask process to reattach to still-running renderer/FFmpeg processes after a Flask restart.
 
 When the Weather Channel is enabled, a second managed pipeline produces `output/weather.m3u8` and falls back to the standby segment until that HLS output is buffered.
+
+## Guide Preview transport routing
+
+Guide Preview source classification is resolved before the Guide pipeline starts. Local sources are `file`; HTTP/HTTPS sources are classified as `hls`, `mpegts`, or unknown using URL hints plus a bounded `ffprobe`. The cached transport is accepted only when its source key matches the currently selected preview source.
+
+The manager then selects one of two processing paths:
+
+```text
+HLS / local file / unknown network source
+    └── shared FFmpeg preview worker
+        ├── normalized latest-preview.jpg for renderer sampling
+        └── optional AAC-over-MPEG-TS UDP relays for Preview audio
+
+Detected MPEG-TS network source
+    └── dedicated FFmpeg MPEG-TS preview relay
+        └── short local HLS (mpegts-preview.m3u8 + .ts segments)
+            └── Guide FFmpeg overlay + matching relayed preview audio
+```
+
+The HLS/local-file path deliberately uses one source session for normalized video and Preview audio so those outputs share a source clock. The MPEG-TS path preserves the tested relay/overlay behavior for long-lived transport-stream inputs. This is internal **input** routing; Guide and Virtual Channel output remains the existing HLS packaging path.
 
 ## First-run standby behavior
 
@@ -166,3 +187,8 @@ This boundary allows future issues to be split cleanly into separate tracks:
 3. Continuity/failover handling
 4. Preview Channel renderer and overlay model
 5. Admin UI/control-plane workflows
+
+
+## Channel Mix playout selector
+
+Channel Mix does not launch a duplicate renderer or provider. It is an HLS-layer playout selector over the common RSMC virtual-channel registry. On each playlist refresh RSMC calculates the deterministic wall-clock slot, verifies member availability, and serves the selected source channel's existing media playlist as CH 5. This reuses Weather, Traffic, and News caches and encoders and keeps switching outside the browser UI.

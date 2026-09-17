@@ -81,6 +81,44 @@ In Docker, FFmpeg is installed by the Dockerfile. For local Python, install it t
 
 If you expected hardware encoding, also check the **Hardware Acceleration** tab. A detected GPU is not enough by itself; the provider must also be encoder-ready before the app will leave software fallback.
 
+## Guide Preview source is detected incorrectly or fails to start
+
+The Guide Preview page shows the cached detected input for the selected source. Detection is source-specific; changing a direct URL or M3U-selected channel should clear/recompute the cached transport.
+
+For a direct check, the admin helper accepts an HTTP/HTTPS URL:
+
+```bash
+curl -sS -X POST -H 'Content-Type: application/json' \
+  -d '{"url":"http://YOUR_SOURCE/channel"}' \
+  http://localhost:8787/guide-preview/detect-transport
+```
+
+Expected `transport` values are `hls`, `mpegts`, or `unknown`. Local uploads are internally classified as `file` and are not valid input to this HTTP-only endpoint. An `unknown` result follows the shared normalizer path rather than being guessed as MPEG-TS.
+
+If a detected MPEG-TS source fails, inspect logs for `guide-preview-mpegts-relay` / `guide-preview-normalizer` startup messages and confirm FFmpeg can open the source directly. If Preview audio drifts or is absent, also confirm the selected source actually contains an audio stream; Preview mode only relays source audio when present.
+
+Do not confuse this with output selection: RSMC is detecting the Preview **input** transport. It is not switching the Guide output between HLS and MPEG-TS.
+
+## Guide Messages do not rotate as expected
+
+Use explicit multiline message blocks. Blank lines are preserved inside a message and no longer separate slides:
+
+```text
+[message]
+Text to display here
+[/message]
+
+[message:45]
+Text to display here
+[/message]
+
+[blank]
+
+[blank:90]
+```
+
+Save with **Save Guide Message**. That route updates a running Guide live and does not require restarting the Preview pipeline.
+
 ## XMLTV data appears empty
 
 Check that XMLTV channel IDs match M3U `tvg-id` values. RetroStation MC groups programmes by XMLTV `programme@channel` and matches them to parsed channel IDs.
@@ -89,7 +127,7 @@ If no programmes overlap the visible time window, the guide will show `No guide 
 
 ## Hostname-based tuner or EPG URLs fail in Docker
 
-When running in Docker, LAN hostnames may fail even if they resolve on your host machine. For example, `http://iptv.lan:8409/iptv/channels.m3u` might fail while `http://10.7.0.25:8409/iptv/channels.m3u` works.
+When running in Docker, LAN hostnames may fail even if they resolve on your host machine. For example, `http://media.lan:8409/iptv/channels.m3u` might fail while `http://192.0.2.25:8409/iptv/channels.m3u` works.
 
 Try one of these:
 
@@ -101,18 +139,14 @@ Try one of these:
 Example:
 
 ```bash
-RETROGUIDE_HOST_ALIASES=iptv.lan=10.7.0.25
+RETROGUIDE_HOST_ALIASES=media.lan=192.0.2.25
 ```
 
 After aliasing, this source remains valid in app configuration:
 
 ```text
-http://iptv.lan:8409/iptv/channels.m3u
+http://media.lan:8409/iptv/channels.m3u
 ```
-
-## Channel group filter hides everything
-
-`channel_group` is an exact match against M3U `group-title`. Clear the field to show all channels, or verify spelling and capitalization.
 
 ## Playback catches up and spins
 
@@ -198,3 +232,44 @@ rm -f output/guide.m3u8 output/guide_*.ts
 ```
 
 Leave `output/standby.ts` in place if you want standby to remain immediately available.
+
+
+## Plex cannot find HDHomeRun Export
+
+1. Confirm **HDHomeRun Export** is enabled in the RSMC admin page.
+2. Confirm the HTTP metadata works:
+
+```bash
+curl http://SERVER_IP:8787/discover.json
+curl http://SERVER_IP:8787/lineup.json
+```
+
+3. Confirm native discovery from the Plex host or another machine on the same subnet:
+
+```bash
+hdhomerun_config discover
+```
+
+4. Confirm RSMC is listening on UDP 65001:
+
+```bash
+ss -lunp | grep 65001
+```
+
+5. If a firewall is active, allow UDP 65001 from the LAN. Automatic HDHomeRun discovery is local-subnet broadcast traffic and normally will not cross routed VLAN/subnet boundaries without a broadcast relay.
+
+
+## HDHomeRun playback fails in Plex
+
+If Plex discovers the RSMC tuner and accepts `/hdhr/guide.xml` but reports that it cannot tune a channel, verify the tuner endpoint directly:
+
+```bash
+curl -I http://YOUR_SERVER:8787/hdhr/channel/0
+```
+
+It should return `200 OK` with `Content-Type: video/mp2t`. A normal GET is a continuous MPEG-TS stream and will not finish until the client disconnects. RSMC remuxes the existing Guide, Weather, or selected source stream with FFmpeg `-c copy`; it does not add a second video transcode.
+
+
+## Plex tuner playback shows "Source is unavailable"
+
+If Plex can discover the RSMC HDHomeRun tuner, guide mapping succeeds, and `/hdhr/channel/<n>` plays with `curl`/`ffprobe`, but Plex playback still fails, check **Settings → Server → Transcoder** in Plex. Ensure **Disable video stream transcoding** is **unchecked**. Plex may still require a transcode/remux decision for Live TV playback even when the incoming RSMC tuner stream is already H.264/AAC in MPEG-TS.

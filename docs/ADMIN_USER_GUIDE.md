@@ -6,7 +6,7 @@ The admin UI is available at the root path:
 http://YOUR_SERVER:8787/
 ```
 
-v1.3.0 still has no login screen. Keep the app local-only or place it behind external authentication.
+v1.4.0 has no login screen. Keep the app local-only or place it behind external authentication.
 
 ## Header controls
 
@@ -32,7 +32,6 @@ Header actions:
 |---|---|
 | Playlist Source | Path or HTTP/HTTPS URL to the M3U playlist |
 | XMLTV Source | Path or HTTP/HTTPS URL to the XMLTV file |
-| Channel Group | Optional exact match against the M3U `group-title` attribute |
 | Timezone | `local` displays times in the browser's detected local timezone (IANA name auto-detected on page load, e.g. `America/New_York`); `utc` displays times in UTC |
 | Guide Icon (M3U) | Controls whether `/channel.m3u` exports the default icon from `/data/guide_logo`, a custom uploaded icon, or no icon (`tvg-logo`) |
 
@@ -42,7 +41,7 @@ For a first test, leave the default sample sources in place.
 
 | Field | Description |
 |---|---|
-| Resolution | `1280x720` or `1920x1080` |
+| Resolution | Widescreen: `1280x720`, `1920x1080`; Standard 4:3: `960x720`, `1440x1080` |
 | Frame Rate | Render and encode FPS; default is `15` |
 | Segment Length | HLS segment duration in seconds; default is `6` |
 | Guide Duration | Time horizon shown across the grid; default is `90` minutes |
@@ -51,9 +50,47 @@ For a first test, leave the default sample sources in place.
 | Transition | `cut` or vertical `scroll` transition between pages |
 | Hardware Acceleration | `software_fallback` always uses `libx264`; `hardware_if_available` uses encoder-ready hardware and falls back automatically when needed |
 | Output Format | UI export preference only; `/channel.m3u`, `/channel.m3u8`, and `/channel.xmltv` remain available |
-| Weather Channel | Adds the Weather virtual channel as its own entry in `/channel.m3u` and `/channel.xmltv` when enabled |
+| Virtual Channels | Enables the optional RSMC-owned Weather, Simulated Traffic, and News Now channels in `/channel.m3u` and `/channel.xmltv` |
 
 Use lower FPS and 720p when testing on limited hardware.
+
+
+## Guide Channel video preview
+
+The **Guide Preview** tab controls the optional 1990s/2000s-style video window. The feature is disabled by default.
+
+- **Video Preview** enables/disables the preview layout.
+- **Video Source** chooses an uploaded local video, a direct HTTP/HTTPS stream, a channel from an M3U playlist URL, or an enabled RSMC Virtual Channel.
+- When a network source/channel is selected, RSMC detects whether the resolved input is **HLS** or **MPEG-TS** and caches that result for the exact selected source. Local uploads are classified as **file**. Changing the source invalidates stale transport detection.
+- Detection can run immediately from the admin UI through `POST /guide-preview/detect-transport`; saving settings performs the same bounded server-side check when a valid cached result is not available. If detection is still unknown, RSMC uses the conservative non-MPEG-TS path rather than guessing.
+- **Aspect Ratio** has **Auto**, **16:9**, and **4:3**. Auto uses 16:9 immediately when no cached result exists, then detects/caches the selected source display aspect ratio in the background. Manual modes skip detection. Guide startup never waits for aspect probing.
+- **Audio** has three modes: **Guide** uses normal Guide Channel music, **Preview** uses the preview video's audio, and **Silent** mutes both. Preview audio follows the transport-specific pipeline so audio and video are derived from the same source clock/path.
+- Local preview uploads are stored under `data/guide_preview/`.
+- The preview layout follows the selected Guide Channel output profile: `1280x720`, `1920x1080`, `960x720`, or `1440x1080`.
+- When enabled, the themed header/information region remains above the listings, the preview is placed in the upper-right, and guide pagination adapts to the smaller listings viewport.
+- Preview source/audio/aspect changes require FFmpeg geometry to be rebuilt. **Save & Restart Guide** applies the immediate value. In Auto mode, if background detection later finds a different ratio, RSMC performs one follow-up restart only when the user chose Save & Restart; plain Save only caches the result for the next restart.
+
+### Guide Message syntax
+
+Guide Message rotation is controlled by explicit multiline blocks. Blank lines inside a message are preserved as spacing; they do **not** create a new rotating message.
+
+```text
+[message]
+Text to display here
+[/message]
+
+[message:45]
+Text to display here
+[/message]
+
+[blank]
+
+[blank:90]
+```
+
+`[message:seconds]` overrides the normal Display Time for that message. `[blank]` uses the normal Display Time, and `[blank:seconds]` creates a timed empty interval. Explicit durations are capped at one hour. Saving Guide Message settings updates a running Guide without restarting the preview pipeline.
+
+Input transport detection is separate from the future request to choose HLS or MPEG-TS **output** for Guide/Virtual Channels; this page does not provide an output-transport selector.
 
 ## Theme Selection
 
@@ -75,7 +112,7 @@ The admin UI displays copyable URLs for:
 | M3U Playlist | `/channel.m3u` |
 | XMLTV Guide | `/channel.xmltv` |
 
-Use `/channel.m3u` for RetroIPTVGuide import. When **Weather Channel** is enabled on the main admin page, both exports include a second Weather entry that points to `/hls/weather.m3u8`.
+Use `/channel.m3u` for IPTV clients. The main-page **Virtual Channels** switch enables all optional generated channels: CH 2 Weather (`/hls/weather.m3u8`), CH 3 Simulated Traffic (`/hls/traffic.m3u8`), and CH 4 News Now (`/hls/news.m3u8`).
 
 ## Virtual Channels page
 
@@ -167,3 +204,19 @@ View recent app events and download the full event log as JSONL or CSV.
 ### About
 
 Shows the application name, version, and description.
+
+## HDHomeRun export behavior
+
+When **HDHomeRun Export** is enabled, RetroStation MC automatically publishes the Guide Channel and every enabled RSMC-owned virtual/integration channel. Imported channels from the configured source M3U are **not** mirrored by default. Use **Source Rebroadcast** on the main admin page to explicitly select any upstream channels that should also appear in the RSMC HDHomeRun lineup.
+
+This keeps upstream playout systems such as ErsatzTV responsible for their own channel lineup while allowing RSMC to complement them with guide, weather, and future virtual/integration channels.
+
+
+## Plex note for HDHomeRun Mode
+
+If you are using RetroStation MC as an HDHomeRun-compatible tuner in Plex, leave **Disable video stream transcoding** unchecked in Plex's transcoder settings. Plex may otherwise fail Live TV playback after successful tuner discovery and guide mapping.
+
+
+### News Now
+
+News Now is CH 4. Configure up to six RSS/Atom URLs, enable/disable the channel, and choose an independent 16:9 or 4:3 HD/SD output profile on `/virtual-channels`. Feed rotation is synchronized to a 30-minute wall-clock block, matching the migrated RetroIPTVGuide behavior. Invalid, empty, slow, or unreachable feeds do not terminate playout; the channel displays a graceful unavailable/unconfigured state and retries automatically.

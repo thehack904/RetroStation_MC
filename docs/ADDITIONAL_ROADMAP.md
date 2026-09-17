@@ -2,6 +2,9 @@
 
 This roadmap tracks the development path toward a mid-90s Preview Channel-style experience for RetroStation MC while using lessons from ErsatzTV Legacy for transcoding, playout, scheduling, GPU abstraction, and stream continuity.
 
+
+> **v1.4.0 release note:** The Guide Channel includes an optional Preview window with local-file, HLS, MPEG-TS, M3U-selected, and enabled virtual-channel inputs. Input transport is detected/cached per selected source and routed through transport-specific processing. This does not implement selectable HLS/MPEG-TS **output**; any output-transport work remains future scope.
+
 The goal is not to compete with ErsatzTV. The goal is to let RSMC become the retro presentation/master-control layer while learning from proven playout and FFmpeg engineering patterns.
 
 ---
@@ -271,16 +274,16 @@ RetroStation MC
 
 **Tasks:**
 
-- [ ] Define fallback video behavior.
-- [ ] Define fallback virtual channel behavior.
-- [ ] Detect missing/unavailable scheduled item.
-- [ ] Route to standby content instead of failing.
+- [x] Define fallback video behavior.
+- [x] Define fallback virtual channel behavior.
+- [x] Detect missing/unavailable scheduled item.
+- [x] Route to standby content instead of failing.
 
 **Acceptance Criteria:**
 
-- [ ] Missing media does not stop the channel.
-- [ ] Fallback behavior is logged.
-- [ ] Admin can identify why fallback was used.
+- [x] Missing media does not stop the channel.
+- [x] Fallback behavior is logged.
+- [x] Admin can identify why fallback was used.
 
 ---
 

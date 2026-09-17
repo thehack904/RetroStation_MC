@@ -100,3 +100,10 @@ Increase buffer settings when clients show:
 - repeated standby/live transition instability
 
 Decrease buffer settings only when startup latency is more important than playback stability.
+
+
+## Guide Preview diagnostics
+
+Guide Preview startup writes transport/pipeline information to the event log. Useful categories/messages include `config` entries showing the cached detected transport, `guide-preview-normalizer` for the shared HLS/local-file worker, and `guide-preview-mpegts-relay` / MPEG-TS relay startup messages.
+
+For Preview A/V or startup problems, confirm that the selected source's cached transport matches the current source, then look for normalizer/relay startup failures or the eight-second first-output startup timeout. An unknown network transport is not automatically treated as MPEG-TS; it follows the conservative shared-normalizer path.

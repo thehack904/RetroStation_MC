@@ -1,6 +1,6 @@
 # Installation
 
-RetroStation MC v1.3.0 can run either as a Docker container or as a local Python application.
+RetroStation MC v1.4.0 can run either as a Docker container or as a local Python application.
 
 ## Requirements
 
@@ -41,6 +41,7 @@ services:
     container_name: retro-guide-poc
     ports:
       - "8787:8787"
+      - "65001:65001/udp"
     volumes:
       - ./data:/app/data
       - ./output:/app/output
@@ -59,7 +60,7 @@ http://localhost:8787/
 ## Local Python installation
 
 ```bash
-./install-linux.sh
+sudo ./retrostation_linux.sh install
 ```
 
 The installer creates and owns the app under the dedicated `iptv` system user at `/home/iptv/retrostation-mc`.
@@ -73,7 +74,7 @@ sudo systemctl status retrostation-mc
 To remove that install and (when `/home/iptv` has no other files) the `iptv` user/group:
 
 ```bash
-./uninstall-linux.sh
+sudo ./retrostation_linux.sh uninstall
 ```
 
 Or run the setup steps manually:
@@ -93,7 +94,7 @@ The app binds to `0.0.0.0:8787` by default.
 |---|---|---|
 | `RETROGUIDE_HOST` | `0.0.0.0` | Flask bind address |
 | `RETROGUIDE_PORT` | `8787` | Flask port |
-| `RETROGUIDE_HOST_ALIASES` | unset | Optional hostname-to-address overrides for playlist/XMLTV URLs (for example `iptv.lan=10.7.0.25`) |
+| `RETROGUIDE_HOST_ALIASES` | unset | Optional hostname-to-address overrides for playlist/XMLTV URLs (for example `media.lan=192.0.2.25`) |
 | `RETRO_TELEMETRY_DEBUG` | disabled | Enables low-frequency structured renderer/HLS telemetry logs when set to `1`, `true`, `yes`, or `on` |
 
 Example:
@@ -104,7 +105,7 @@ RETROGUIDE_HOST=127.0.0.1 RETROGUIDE_PORT=8787 python app.py
 
 ## Hostname-based tuner or EPG URLs fail in Docker
 
-If `http://10.7.0.25:8409/iptv/channels.m3u` works but `http://iptv.lan:8409/iptv/channels.m3u` fails, the container likely cannot resolve your LAN/router DNS names (`.lan`, `.local`, and similar).
+If `http://192.0.2.25:8409/iptv/channels.m3u` works but `http://media.lan:8409/iptv/channels.m3u` fails, the container likely cannot resolve your LAN/router DNS names (`.lan`, `.local`, and similar).
 
 Use one of these fixes:
 
@@ -116,13 +117,13 @@ Use one of these fixes:
 Example:
 
 ```bash
-RETROGUIDE_HOST_ALIASES=iptv.lan=10.7.0.25
+RETROGUIDE_HOST_ALIASES=media.lan=192.0.2.25
 ```
 
 Then this source can still be used in the app:
 
 ```text
-http://iptv.lan:8409/iptv/channels.m3u
+http://media.lan:8409/iptv/channels.m3u
 ```
 
 ## Persistent storage
@@ -178,3 +179,13 @@ Check status JSON:
 ```bash
 curl http://localhost:8787/status
 ```
+
+
+## HDHomeRun Export network requirement
+
+HDHomeRun Export uses two network services:
+
+- TCP `8787` for RSMC HTTP discovery metadata, lineup data, and tune URLs.
+- UDP `65001` for native HDHomeRun/libhdhomerun device discovery used by Plex and compatible DVR clients.
+
+If a host firewall is enabled, allow inbound UDP 65001 from the local LAN. Do not expose the discovery port to the public Internet.
