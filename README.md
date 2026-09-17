@@ -1,7 +1,7 @@
 # RetroStation MC
 
 <p align="center">
-  <a href="#">
+  <a href="https://github.com/thehack904/RetroStation_MC">
     <img src="https://img.shields.io/badge/version-v1.4.0-blue?style=for-the-badge" alt="Version">
   </a>
   <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">
@@ -51,7 +51,9 @@ The output is designed to behave like a live virtual TV channel. The app renders
 - Optional Weather virtual channel with dedicated HLS output
 - Guide and Weather logo metadata for exported playlists
 - Theme selection using JSON theme files
-- Optional classic cable-guide video preview window with Guide / Preview / Silent audio modes
+- Optional classic cable-guide video preview window with automatic HLS/MPEG-TS/local-file input detection, source-keyed transport caching, and Guide / Preview / Silent audio modes
+- Transport-aware Guide Preview processing: dedicated MPEG-TS relay/overlay path plus normalized HLS/local-file frame and audio handling
+- Rotating Guide Message blocks with explicit multiline `[message]` syntax and timed blank intervals
 - Widescreen and standard 4:3 render profiles: 1280x720, 1920x1080, 960x720, and 1440x1080
 - Optional secondary Guide output with a native SD renderer at 720x480 (default), 640x480, or 960x720; exported automatically through the normal M3U/XMLTV channel list
 - Cut or vertical scroll page transitions
@@ -64,7 +66,7 @@ The output is designed to behave like a live virtual TV channel. The app renders
 
 ## Local-only security model
 
-RetroStation MC v1.3.0 still has **no authentication**. Do not expose it directly to the public internet. Run it on a trusted LAN, behind a VPN, or behind an authenticated reverse proxy.
+RetroStation MC v1.4.0 has **no authentication**. Do not expose it directly to the public internet. Run it on a trusted LAN, behind a VPN, or behind an authenticated reverse proxy.
 
 ## Quick start with Docker Compose
 
@@ -177,7 +179,7 @@ The renderer is intentionally Python/Pillow-based so the rest of the application
 
 When using the RSMC HDHomeRun tuner with Plex, use `/hdhr/guide.xml` as the XMLTV guide URL. This output is generated from the same effective channel set as `/lineup.json`: RSMC-owned channels are included automatically and imported source channels appear only when selected for rebroadcast. For selected imported channels, RSMC carries through matching programme data from the configured upstream XMLTV source when available.
 
-If Plex cannot fetch the guide when a `.lan` or `.local` hostname is used, enter the RSMC server's LAN IP instead (for example `http://192.168.50.10:8787/hdhr/guide.xml`) so guide retrieval does not depend on the Plex host resolving local DNS names.
+If Plex cannot fetch the guide when a `.lan` or `.local` hostname is used, enter the RSMC server's LAN IP instead (for example `http://192.0.2.191:8787/hdhr/guide.xml`) so guide retrieval does not depend on the Plex host resolving local DNS names.
 
 
 ### Plex Live TV playback note

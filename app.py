@@ -31,8 +31,8 @@ from app.ffmpeg_profiles import normalize_hardware_acceleration_mode
 from app.hls_playlist import trim_playlist_for_delayed_live_edge
 from app.guide_state import patch_display_state
 from app.guide_preview import (
-    detect_preview_aspect_ratio, effective_preview_aspect_ratio, is_http_url, known_preview_aspect_ratio,
-    normalize_preview_aspect_mode, normalize_preview_audio_mode, normalize_preview_source_type, parse_preview_m3u,
+    detect_preview_aspect_ratio, detect_preview_transport, effective_preview_aspect_ratio, is_http_url, known_preview_aspect_ratio,
+    normalize_preview_aspect_mode, normalize_preview_audio_mode, normalize_preview_source_type, normalize_preview_transport, parse_preview_m3u,
     preview_source_cache_key, resolve_preview_source,
 )
 from app.hdhomerun_discovery import HDHomeRunDiscoveryService, normalize_or_generate_device_id
@@ -276,7 +276,6 @@ def coerce_form(form) -> dict:
         "page_seconds": int(form.get("page_seconds", DEFAULT_CONFIG["page_seconds"])),
         "visible_rows": int(form.get("visible_rows", DEFAULT_CONFIG["visible_rows"])),
         "guide_minutes": int(form.get("guide_minutes", DEFAULT_CONFIG["guide_minutes"])),
-        "channel_group": form.get("channel_group", DEFAULT_CONFIG["channel_group"]).strip(),
         "timezone": form.get("timezone", DEFAULT_CONFIG["timezone"]).strip(),
         "browser_timezone": form.get("browser_timezone", DEFAULT_CONFIG["browser_timezone"]).strip(),
         "output_format": form.get("output_format", DEFAULT_CONFIG["output_format"]).strip(),
@@ -2287,6 +2286,19 @@ def _schedule_guide_preview_aspect_detection(*, restart_when_detected: bool = Fa
     threading.Thread(target=_worker, daemon=True, name="guide-preview-aspect-detect").start()
 
 
+@app.post("/guide-preview/detect-transport")
+def guide_preview_detect_transport():
+    """Probe a selected preview URL before the Guide pipeline is started."""
+    payload = request.get_json(silent=True) or {}
+    source = str(payload.get("url", "") or "").strip()
+    if not is_http_url(source):
+        return jsonify({"error": "Preview source must use http:// or https://."}), 400
+    transport = detect_preview_transport(source, timeout_seconds=4.0)
+    if not transport:
+        return jsonify({"transport": "unknown", "message": "Transport could not be identified; it will be checked again when settings are saved."})
+    return jsonify({"transport": transport})
+
+
 @app.post("/guide-preview/settings")
 def guide_preview_settings():
     """Save Guide Channel preview-video settings."""
@@ -2324,6 +2336,27 @@ def guide_preview_settings():
         "guide_preview_url_channel_name": preview_channel_name if source_type == "url" else cfg.get("guide_preview_url_channel_name", ""),
     }
     source_changed = preview_source_cache_key(proposed_source) != preview_source_cache_key(cfg)
+
+    # Transport is detected and cached before any optional Guide restart.  A
+    # selection-time browser probe can supply the result immediately; the
+    # server validates that it belongs to this exact source key and performs a
+    # bounded probe here as a fallback for direct URLs/non-JS clients.
+    proposed_key = preview_source_cache_key(proposed_source)
+    submitted_transport = normalize_preview_transport(request.form.get("guide_preview_detected_transport"))
+    submitted_transport_key = str(request.form.get("guide_preview_transport_source_key", "") or "").strip()
+    cached_transport = normalize_preview_transport(cfg.get("guide_preview_detected_transport"))
+    cached_transport_key = str(cfg.get("guide_preview_transport_source_key", "") or "").strip()
+    if source_type == "file":
+        cached_transport = "file"
+        cached_transport_key = proposed_key
+    elif submitted_transport in {"hls", "mpegts"} and submitted_transport_key == proposed_key:
+        cached_transport = submitted_transport
+        cached_transport_key = proposed_key
+    elif source_changed or cached_transport_key != proposed_key or cached_transport not in {"hls", "mpegts"}:
+        resolved_source = resolve_preview_source(proposed_source, BASE_DIR)
+        cached_transport = detect_preview_transport(resolved_source, timeout_seconds=4.0) if resolved_source else ""
+        cached_transport_key = proposed_key if cached_transport else ""
+
     cached_ratio = cfg.get("guide_preview_detected_aspect_ratio", "")
     cached_source_key = cfg.get("guide_preview_detected_source_key", "")
     if source_changed:
@@ -2347,6 +2380,8 @@ def guide_preview_settings():
         "guide_preview_aspect_mode": aspect_mode,
         "guide_preview_detected_aspect_ratio": cached_ratio,
         "guide_preview_detected_source_key": cached_source_key,
+        "guide_preview_detected_transport": cached_transport,
+        "guide_preview_transport_source_key": cached_transport_key,
         "guide_message_enabled": message_enabled,
         "guide_message_text": message_text,
         "guide_message_interval_seconds": message_interval,
@@ -2354,7 +2389,7 @@ def guide_preview_settings():
     store.save_config(update)
     manager.logger.info(
         "config",
-        f"Guide preview settings updated: enabled={enabled}, source_type={source_type}, audio={audio_mode}, aspect={aspect_mode}, message_enabled={message_enabled}, message_interval={message_interval}s",
+        f"Guide preview settings updated: enabled={enabled}, source_type={source_type}, transport={cached_transport or 'unknown'}, audio={audio_mode}, aspect={aspect_mode}, message_enabled={message_enabled}, message_interval={message_interval}s",
     )
 
     action = request.form.get("action", "save")

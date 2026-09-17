@@ -16,4 +16,4 @@ services:
       - RETROGUIDE_PORT=8787
       # Optional: map LAN hostnames that the container cannot resolve.
       # Example:
-      # RETROGUIDE_HOST_ALIASES=media.lan=192.168.50.25,guide.lan=192.168.50.26
+      # RETROGUIDE_HOST_ALIASES=media.lan=192.0.2.25,epg.lan=192.0.2.26

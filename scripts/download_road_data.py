@@ -23,7 +23,7 @@ The script skips cities whose file already contains valid features.
 Re-run to fill any gaps or update stale files.
 
 Adapted from RetroIPTVGuide v4.9.9-dev scripts/download_road_data.py.
-Source: RetroIPTVGuide project
+Source repository: https://github.com/thehack904/RetroIPTVGuide
 """
 
 import json
@@ -50,7 +50,7 @@ BACKOFF_S    = 10
 
 UA = (
     "RetroStation-MC/1.0 road-data pre-download "
-    "(RetroStation MC; map data helper)"
+    "(github.com/thehack904/RetroStation_MC; one-time personal-use download)"
 )
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

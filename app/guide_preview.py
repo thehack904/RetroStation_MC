@@ -49,6 +49,64 @@ def normalize_preview_aspect_mode(value: Any) -> str:
     return mode if mode in SUPPORTED_PREVIEW_ASPECT_MODES else "auto"
 
 
+
+
+def normalize_preview_transport(value: Any) -> str:
+    transport = str(value or "").strip().lower()
+    return transport if transport in {"hls", "mpegts", "file"} else ""
+
+
+def detect_preview_transport(source: str, timeout_seconds: float = 4.0) -> str:
+    """Classify a resolved preview source before Guide startup.
+
+    Local files are returned as ``file``.  Network sources first use an
+    unambiguous URL suffix, then a short ffprobe of the demuxer.  Unknown
+    network inputs return an empty string so callers can use a conservative
+    fallback instead of guessing.
+    """
+    source = str(source or "").strip()
+    if not source:
+        return ""
+    if not is_http_url(source):
+        return "file"
+
+    clean = urlparse(source).path.lower()
+    if clean.endswith(".m3u8"):
+        return "hls"
+
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=format_name",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        source,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=max(1.0, float(timeout_seconds)))
+    except (OSError, subprocess.TimeoutExpired, TypeError, ValueError):
+        result = None
+    if result is not None and result.returncode == 0:
+        names = {part.strip().lower() for part in result.stdout.replace("\n", ",").split(",") if part.strip()}
+        if "hls" in names:
+            return "hls"
+        if "mpegts" in names or "mpegtsraw" in names:
+            return "mpegts"
+
+    # A .ts suffix is useful only as a final fallback because some HLS media
+    # segments also end in .ts; selected channel URLs themselves are normally
+    # long-lived endpoints rather than individual media segments.
+    if clean.endswith((".ts", ".mpegts")):
+        return "mpegts"
+    return ""
+
+
+def cached_preview_transport(config: dict[str, Any]) -> str:
+    """Return a cached transport only when it belongs to the selected source."""
+    transport = normalize_preview_transport(config.get("guide_preview_detected_transport"))
+    detected_for = str(config.get("guide_preview_transport_source_key", "") or "").strip()
+    if transport and detected_for == preview_source_cache_key(config):
+        return transport
+    return "file" if normalize_preview_source_type(config.get("guide_preview_source_type")) == "file" else ""
+
 def preview_source_cache_key(config: dict[str, Any]) -> str:
     """Return a stable key identifying the currently selected preview source."""
     source_type = normalize_preview_source_type(config.get("guide_preview_source_type"))

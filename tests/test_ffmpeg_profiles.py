@@ -12,7 +12,7 @@ from app.ffmpeg_profiles import (
     FFmpegProfile,
     resolve_ffmpeg_profile,
 )
-from app.manager import _build_audio_ffmpeg_args, _build_ffmpeg_command, _build_guide_preview_ffmpeg_args, _build_weather_ffmpeg_command, _resolve_hw_device_init_args
+from app.manager import _build_audio_ffmpeg_args, _build_ffmpeg_command, _build_guide_preview_audio_relay_args, _build_weather_ffmpeg_command, _resolve_hw_device_init_args
 
 
 class FFmpegProfileTests(unittest.TestCase):
@@ -658,41 +658,24 @@ class FFmpegProfileTests(unittest.TestCase):
         self.assertEqual(len(pix_fmt_indices), 1)
         self.assertEqual(command[pix_fmt_indices[0] + 1], "rgb24")
 
-    def test_external_guide_preview_can_use_shared_normalized_source(self) -> None:
-        cfg = {
-            "guide_preview_enabled": True,
-            "guide_preview_source_type": "url",
-            "guide_preview_url": "http://media.lan:8409/iptv/channel/2.m3u8",
-            "resolution": "1280x720",
-            "aspect_ratio": "16:9",
-            "fps": 15,
-        }
-        normalized = "/tmp/normalized-preview.m3u8"
-        with patch("app.manager.resolve_preview_source", return_value=cfg["guide_preview_url"]):
-            input_args, filter_args, _, active = _build_guide_preview_ffmpeg_args(cfg, source_override=normalized)
+    def test_preview_audio_uses_local_shared_relay(self) -> None:
+        input_args, filter_args, video_map_args, active = _build_guide_preview_audio_relay_args(18790)
         self.assertTrue(active)
-        self.assertIn(normalized, input_args)
-        graph = filter_args[filter_args.index("-filter_complex") + 1]
-        self.assertNotIn("fps=15", graph)
-        self.assertIn("[1:v]scale=", graph)
-        self.assertIn("setsar=1", graph)
-        self.assertIn("[guidepreview]", graph)
-        self.assertIn("overlay=", graph)
+        self.assertIn("-f", input_args)
+        self.assertIn("mpegts", input_args)
+        self.assertTrue(any("udp://127.0.0.1:18790" in arg for arg in input_args))
+        self.assertEqual(filter_args, [])
+        self.assertEqual(video_map_args, ["-map", "0:v"])
 
-    def test_local_guide_preview_does_not_add_live_source_normalization(self) -> None:
-        cfg = {
-            "guide_preview_enabled": True,
-            "guide_preview_source_type": "file",
-            "resolution": "1280x720",
-            "aspect_ratio": "16:9",
-            "fps": 15,
-        }
-        with patch("app.manager.resolve_preview_source", return_value="/tmp/bbb.mp4"):
-            _, filter_args, _, active = _build_guide_preview_ffmpeg_args(cfg)
-        self.assertTrue(active)
-        graph = filter_args[filter_args.index("-filter_complex") + 1]
-        self.assertNotIn("fps=15,format=yuv420p", graph)
-        self.assertIn("[1:v]scale=", graph)
+    def test_preview_source_pacing_distinguishes_hls_from_live_mpegts(self) -> None:
+        from app.manager import _preview_source_input_args
+        hls_args = _preview_source_input_args("http://media.lan/channel/2.m3u8")
+        ts_args = _preview_source_input_args("http://media.lan/channel/2")
+        file_args = _preview_source_input_args("/tmp/bbb.mp4")
+        self.assertIn("-re", hls_args)
+        self.assertNotIn("-re", ts_args)
+        self.assertIn("-re", file_args)
+        self.assertIn("-stream_loop", file_args)
 
     def test_vaapi_preview_filter_uploads_filter_complex_output(self) -> None:
         profile = FFmpegProfile(

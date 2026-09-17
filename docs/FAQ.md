@@ -34,11 +34,11 @@ A TV guide grid does not require cinematic frame rate. Lower FPS reduces rendere
 
 ## Can I expose this on the internet?
 
-No, not directly. v1.3.0 still has no authentication. Use LAN-only access, VPN, or an authenticated reverse proxy.
+No, not directly. v1.4.0 has no authentication. Use LAN-only access, VPN, or an authenticated reverse proxy.
 
 ## Can I export more than one virtual channel?
 
-Yes. `/channel.m3u`, `/channel.m3u8`, and `/channel.xmltv` always include the guide channel and can also include the Weather Channel when it is enabled.
+Yes. `/channel.m3u`, `/channel.m3u8`, and `/channel.xmltv` include the Guide plus enabled/exported RSMC virtual channels such as Weather, Simulated Traffic, News Now, and Channel Mix.
 
 ## Can I add my own themes?
 
@@ -59,3 +59,26 @@ Yes, the admin UI exposes `1920x1080`. Use it only if the host can keep up with 
 ## Where are uploaded music files stored?
 
 `data/music/`
+
+
+## Does Guide Preview transport detection change the Guide output format?
+
+No. The detected `hls`, `mpegts`, or `file` value classifies the **input preview source** so RSMC can choose the appropriate internal Preview pipeline. It does not switch the Guide or Virtual Channel output between HLS and MPEG-TS. Selectable output transport is a separate future request.
+
+## How do I enter multiple Guide Messages?
+
+Use explicit multiline blocks. Blank lines inside a block are spacing, not separators:
+
+```text
+[message]
+Text to display here
+[/message]
+
+[message:45]
+Text to display here
+[/message]
+
+[blank]
+
+[blank:90]
+```

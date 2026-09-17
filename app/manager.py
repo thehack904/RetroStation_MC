@@ -19,7 +19,7 @@ from .config_store import ConfigStore
 from .ffmpeg_profiles import FFmpegProfile, normalize_hardware_acceleration_mode, resolve_ffmpeg_profile
 from .gpu_capabilities import detect_gpu_capabilities
 from .guide_state import STATE_PATH, SECONDARY_STATE_PATH, build_state, _scaled_secondary_theme
-from .guide_preview import calculate_preview_layout, effective_preview_aspect_ratio, normalize_preview_audio_mode, resolve_preview_source
+from .guide_preview import cached_preview_transport, calculate_preview_layout, effective_preview_aspect_ratio, normalize_preview_audio_mode, resolve_preview_source
 from .logging_utils import AppLogger
 from .m3u_parser import parse_m3u
 from .xmltv_parser import parse_xmltv
@@ -35,6 +35,13 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 WEATHER_MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 GUIDE_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+
+# The shared preview worker fans its normalized audio out to two independent
+# loopback UDP ports so the primary and secondary Guide encoders never reopen
+# the original preview source.  Each Guide joins the current audio timeline
+# when it starts, matching the latest video frame published by that same worker.
+GUIDE_PREVIEW_AUDIO_PORT_PRIMARY = 18790
+GUIDE_PREVIEW_AUDIO_PORT_SECONDARY = 18791
 
 STANDBY_SEGMENT = OUTPUT_DIR / "standby.ts"
 STATIC_SEGMENT = OUTPUT_DIR / "static.ts"
@@ -588,75 +595,100 @@ def _start_stderr_reader(
 
 
 
-def _build_guide_preview_ffmpeg_args(
-    config: dict,
-    source_override: str | None = None,
-) -> tuple[list[str], list[str], list[str], bool]:
-    """Return preview video input/filter/map args and whether preview is active.
+def _preview_source_is_hls(source: str) -> bool:
+    """Return True for playlist-style HLS preview inputs.
 
-    The renderer always owns the blue preview/information background. FFmpeg only
-    decodes/scales/overlays the configured source when a valid source is available.
-    A missing local file or invalid URL therefore leaves a clean themed information
-    panel instead of changing renderer geometry or crashing command construction.
+    HLS playlists can be consumed ahead from already-downloaded segments, so
+    the preview worker explicitly applies real-time pacing.  Continuous HTTP
+    MPEG-TS is already naturally paced by the sender and must not receive
+    another ``-re`` throttle.
     """
-    if not bool(config.get("guide_preview_enabled", False)):
-        return [], [], [], False
+    clean = str(source or "").lower().split("?", 1)[0].split("#", 1)[0]
+    return clean.endswith(".m3u8")
 
-    source = source_override if source_override is not None else resolve_preview_source(config, BASE_DIR)
+
+def _preview_source_input_args(source: str, transport: str = "") -> list[str]:
+    """Build source-specific input pacing for the shared preview worker."""
+    if source.startswith(("http://", "https://")):
+        args = ["-thread_queue_size", "1024"]
+        if transport == "hls" or (not transport and _preview_source_is_hls(source)):
+            args.append("-re")
+        args.extend([
+            "-reconnect", "1",
+            "-reconnect_streamed", "1",
+            "-reconnect_delay_max", "5",
+        ])
+        return args
+    return ["-thread_queue_size", "1024", "-re", "-stream_loop", "-1"]
+
+
+def _probe_preview_has_audio(source: str) -> bool:
+    """Best-effort check used only when Preview audio mode is selected."""
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=index", "-of", "csv=p=0", source,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=6)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _build_guide_preview_audio_relay_args(port: int) -> tuple[list[str], list[str], list[str], bool]:
+    """Build a low-latency audio input from the shared preview worker.
+
+    The Guide FFmpeg processes consume only this local relay.  They never open
+    the original MP4/HLS/MPEG-TS source, keeping preview video and audio on one
+    source clock while preserving the renderer's independent video cadence.
+    """
+    url = (
+        f"udp://127.0.0.1:{int(port)}?"
+        "fifo_size=1000000&overrun_nonfatal=1&buffer_size=262144"
+    )
+    return ([
+        "-thread_queue_size", "1024",
+        "-probesize", "65536",
+        "-analyzeduration", "1000000",
+        "-f", "mpegts", "-i", url,
+    ], [], ["-map", "0:v"], True)
+
+def _build_guide_preview_overlay_args(
+    config: dict,
+    source: str,
+) -> tuple[list[str], list[str], list[str], bool]:
+    """Build the proven FFmpeg overlay path used for normalized MPEG-TS previews."""
     if not source:
-        return [], [], [], False
-
+        return [], [], ["-map", "0:v"], False
     try:
         theme_name = str(config.get("theme", "retrostation_mc"))
         theme_path = BASE_DIR / "app" / "themes" / theme_name / "theme.json"
         theme = json.loads(theme_path.read_text(encoding="utf-8")) if theme_path.is_file() else {}
     except (OSError, json.JSONDecodeError):
         theme = {}
-    # Secondary Guide output uses a scaled theme/layout. The FFmpeg overlay
-    # must use the same geometry as the native secondary renderer or the
-    # actual preview video will be smaller/misaligned inside the raised frame.
     if bool(config.get("_secondary_guide_output", False)):
-        theme, _ = _scaled_secondary_theme(
-            theme, str(config.get("resolution", "720x480"))
-        )
+        theme, _ = _scaled_secondary_theme(theme, str(config.get("resolution", "720x480")))
     layout = calculate_preview_layout(
         str(config.get("resolution", "1280x720")),
         str(config.get("aspect_ratio", "16:9")),
         theme.get("layout", {}),
         effective_preview_aspect_ratio(config),
     )
-
-    input_args: list[str] = []
-    if source.startswith(("http://", "https://")):
-        input_args.extend([
-            "-reconnect", "1",
-            "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "5",
-        ])
-    else:
-        input_args.extend(["-stream_loop", "-1"])
-    input_args.extend(["-i", source])
-
     max_w = int(layout["preview_max_width"])
     max_h = int(layout["preview_max_height"])
     x = int(layout["preview_x"])
     y = int(layout["preview_y"])
-
-    # The Guide manager may replace an external URL with a local normalized HLS
-    # relay before this command is built.  Keep the overlay-side graph simple:
-    # fixed dimensions/SAR only.  This prevents the VA-API Guide graph from ever
-    # seeing the heterogeneous source's decoder-level format transitions.
-    preview_filters: list[str] = []
-    preview_filters.extend([
+    filters = [
         f"scale={max_w}:{max_h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bilinear",
         "setsar=1",
         f"pad={max_w}:{max_h}:(ow-iw)/2:(oh-ih)/2:black",
-    ])
-    filter_graph = (
-        f"[1:v]{','.join(preview_filters)}[guidepreview];"
+    ]
+    graph = (
+        f"[1:v]{','.join(filters)}[guidepreview];"
         f"[0:v][guidepreview]overlay={x}:{y}:eof_action=pass:repeatlast=1[vout]"
     )
-    return input_args, ["-filter_complex", filter_graph], ["-map", "[vout]"], True
+    return ["-i", source], ["-filter_complex", graph], ["-map", "[vout]"], True
+
 
 def _secondary_guide_bitrate(resolution: str) -> str:
     """Conservative SD bitrate caps for low-power IPTV clients.
@@ -797,9 +829,9 @@ class GuideManager:
         self._secondary_ffmpeg_pid: Optional[int] = None
         self._secondary_ffmpeg_popen: Optional[subprocess.Popen] = None
         self._secondary_last_error: Optional[str] = None
-        # External Guide preview normalization relay.  A single software FFmpeg
-        # process absorbs HLS/programme format changes and produces one stable
-        # local feed consumed by both primary and secondary Guide encoders.
+        # Shared Guide preview A/V worker. One FFmpeg input session owns preview
+        # decoding, publishes the latest normalized video frame, and fans its
+        # audio out to the primary/secondary Guide encoders over loopback UDP.
         self._preview_normalizer_pid: Optional[int] = None
         self._preview_normalizer_popen: Optional[subprocess.Popen] = None
         self._preview_normalized_playlist: Optional[Path] = None
@@ -1278,44 +1310,32 @@ class GuideManager:
                 Path(tmp_path).unlink(missing_ok=True)
 
     def _cleanup_preview_normalizer_files(self) -> None:
-        """Remove stale files from the shared external-preview normalization relay."""
-        for path in GUIDE_PREVIEW_DIR.glob("normalized-preview-*.ts"):
-            path.unlink(missing_ok=True)
-        (GUIDE_PREVIEW_DIR / "normalized-preview.m3u8").unlink(missing_ok=True)
+        """Remove stale files from either preview-normalization path."""
+        for pattern in ("normalized-preview-*", "mpegts-preview-*"):
+            for path in GUIDE_PREVIEW_DIR.glob(pattern):
+                if path.is_file():
+                    path.unlink(missing_ok=True)
+        (GUIDE_PREVIEW_DIR / "latest-preview.jpg").unlink(missing_ok=True)
+        (GUIDE_PREVIEW_DIR / "mpegts-preview.m3u8").unlink(missing_ok=True)
 
-    def _start_preview_normalizer_locked(self, config: dict) -> str | None:
-        """Start one stable local HLS relay for an external Guide preview URL.
-
-        The Guide VA-API encoders must not decode heterogeneous external HLS
-        directly.  Source transitions can change fps, colour metadata, dimensions,
-        or other decoder-visible properties and trigger libavfilter reinitialisation
-        across hwupload.  This software-only relay owns that instability and emits
-        a fixed 15-fps/yuv420p/BT.709-tagged canvas for both Guide outputs.
-        """
+    def _start_mpegts_preview_relay_locked(self, config: dict) -> str | None:
+        """Restore the MPEG-TS preview path that passed sustained testing."""
         source = resolve_preview_source(config, BASE_DIR)
         if not source or not source.startswith(("http://", "https://")):
             return None
-
         self._cleanup_preview_normalizer_files()
-        playlist = GUIDE_PREVIEW_DIR / "normalized-preview.m3u8"
-        segment_pattern = GUIDE_PREVIEW_DIR / "normalized-preview-%06d.ts"
-
+        playlist = GUIDE_PREVIEW_DIR / "mpegts-preview.m3u8"
+        segment_pattern = GUIDE_PREVIEW_DIR / "mpegts-preview-%06d.ts"
         aspect = str(effective_preview_aspect_ratio(config) or "16:9").strip().lower()
-        if aspect.startswith("4") or aspect in {"1.333", "1.33", "4/3"}:
-            canvas_w, canvas_h = 640, 480
-        else:
-            canvas_w, canvas_h = 640, 360
+        canvas_w, canvas_h = (640, 480) if (aspect.startswith("4") or aspect in {"1.333", "1.33", "4/3"}) else (640, 360)
         fps = str(config.get("fps") or 15)
         try:
             gop = max(1, int(round(float(fps))))
         except (TypeError, ValueError):
-            fps = "15"
-            gop = 15
-
+            fps, gop = "15", 15
         vf = (
             f"fps={fps},"
-            f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease:"
-            "force_divisible_by=2:flags=bilinear,"
+            f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bilinear,"
             "format=yuv420p,setsar=1,"
             f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:black,"
             "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
@@ -1327,14 +1347,110 @@ class GuideManager:
             "-map", "0:v:0", "-map", "0:a:0?",
             "-vf", vf,
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            "-pix_fmt", "yuv420p", "-g", str(gop), "-keyint_min", str(gop),
-            "-sc_threshold", "0",
+            "-pix_fmt", "yuv420p", "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
             "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
             "-f", "hls", "-hls_time", "1", "-hls_list_size", "8",
             "-hls_flags", "delete_segments+omit_endlist+independent_segments+program_date_time",
-            "-hls_segment_filename", str(segment_pattern),
-            str(playlist),
+            "-hls_segment_filename", str(segment_pattern), str(playlist),
         ]
+        try:
+            popen = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        except OSError as exc:
+            self.logger.error("guide-preview-normalizer", f"Failed to start MPEG-TS preview relay: {exc}")
+            return None
+        self._preview_normalizer_popen = popen
+        self._preview_normalizer_pid = popen.pid
+        self._preview_normalized_playlist = playlist
+        _start_stderr_reader(popen, "guide-preview-mpegts-relay", self.logger)
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            if popen.poll() is not None:
+                self.logger.error("guide-preview-normalizer", f"MPEG-TS preview relay exited during startup with status {popen.returncode}.")
+                self._preview_normalizer_pid = None
+                self._preview_normalizer_popen = None
+                self._preview_normalized_playlist = None
+                return None
+            if playlist.is_file() and any(GUIDE_PREVIEW_DIR.glob("mpegts-preview-*.ts")):
+                self.logger.info("guide-preview-normalizer", f"MPEG-TS preview relay ready at {canvas_w}x{canvas_h}@{fps} fps (PID {popen.pid}).")
+                return str(playlist)
+            time.sleep(0.05)
+        self.logger.error("guide-preview-normalizer", "Timed out waiting for MPEG-TS preview relay startup.")
+        _terminate_pid(popen.pid, popen, self.logger, "guide-preview-mpegts-relay")
+        self._preview_normalizer_pid = None
+        self._preview_normalizer_popen = None
+        self._preview_normalized_playlist = None
+        self._cleanup_preview_normalizer_files()
+        return None
+
+    def _start_preview_normalizer_locked(self, config: dict) -> tuple[str | None, bool]:
+        """Start one shared preview A/V worker.
+
+        Video is normalized to a continuously replaced JPEG which the Python
+        Guide renderers sample without blocking.  When Preview audio is wanted,
+        the *same FFmpeg input session* normalizes audio and tees identical AAC
+        MPEG-TS audio to one UDP port per Guide output.  This removes the prior
+        independent video/audio source clocks.
+        """
+        source = resolve_preview_source(config, BASE_DIR)
+        if not source:
+            return None, False
+
+        self._cleanup_preview_normalizer_files()
+        frame_path = GUIDE_PREVIEW_DIR / "latest-preview.jpg"
+
+        aspect = str(effective_preview_aspect_ratio(config) or "16:9").strip().lower()
+        if aspect.startswith("4") or aspect in {"1.333", "1.33", "4/3"}:
+            canvas_w, canvas_h = 640, 480
+        else:
+            canvas_w, canvas_h = 640, 360
+        fps = str(config.get("fps") or 15)
+        try:
+            float(fps)
+        except (TypeError, ValueError):
+            fps = "15"
+
+        vf = (
+            f"fps={fps},"
+            f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease:"
+            "force_divisible_by=2:flags=bilinear,"
+            "format=yuv420p,setsar=1,"
+            f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:black,"
+            "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+        )
+
+        preview_audio_mode = normalize_preview_audio_mode(config.get("guide_preview_audio_mode"))
+        relay_audio = preview_audio_mode == "preview" and _probe_preview_has_audio(source)
+
+        transport = cached_preview_transport(config)
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+        cmd.extend(_preview_source_input_args(source, transport))
+        cmd.extend([
+            "-i", source,
+            # Output 0: latest normalized video frame.
+            "-map", "0:v:0", "-an",
+            "-vf", vf,
+            "-c:v", "mjpeg", "-q:v", "5",
+            "-f", "image2", "-update", "1", "-atomic_writing", "1",
+            str(frame_path),
+        ])
+
+        if relay_audio:
+            tee_spec = (
+                f"[f=mpegts:onfail=ignore]udp://127.0.0.1:{GUIDE_PREVIEW_AUDIO_PORT_PRIMARY}"
+                "?pkt_size=1316&buffer_size=262144|"
+                f"[f=mpegts:onfail=ignore]udp://127.0.0.1:{GUIDE_PREVIEW_AUDIO_PORT_SECONDARY}"
+                "?pkt_size=1316&buffer_size=262144"
+            )
+            cmd.extend([
+                # Output 1: audio from the exact same source clock as video.
+                "-map", "0:a:0", "-vn",
+                "-af", "aresample=48000:async=1:first_pts=0",
+                "-ac", "2", "-ar", "48000",
+                "-c:a", "aac", "-b:a", "128k",
+                "-flush_packets", "1", "-muxdelay", "0", "-muxpreload", "0",
+                "-f", "tee", tee_spec,
+            ])
+
         try:
             popen = subprocess.Popen(
                 cmd,
@@ -1345,44 +1461,45 @@ class GuideManager:
                 start_new_session=True,
             )
         except OSError as exc:
-            self.logger.error("guide-preview-normalizer", f"Failed to start preview normalizer: {exc}")
-            return None
+            self.logger.error("guide-preview-normalizer", f"Failed to start shared preview worker: {exc}")
+            return None, False
 
         self._preview_normalizer_popen = popen
         self._preview_normalizer_pid = popen.pid
-        self._preview_normalized_playlist = playlist
+        self._preview_normalized_playlist = frame_path
         _start_stderr_reader(popen, "guide-preview-normalizer", self.logger)
 
-        # Do not start either Guide consumer until the relay has published at least
-        # one segment.  This avoids treating a not-yet-created local playlist as an
-        # input failure during normal startup.
         deadline = time.monotonic() + 8.0
         while time.monotonic() < deadline:
             if popen.poll() is not None:
                 self.logger.error(
                     "guide-preview-normalizer",
-                    f"Preview normalizer exited during startup with status {popen.returncode}.",
+                    f"Shared preview worker exited during startup with status {popen.returncode}.",
                 )
                 self._preview_normalizer_pid = None
                 self._preview_normalizer_popen = None
                 self._preview_normalized_playlist = None
-                return None
-            if playlist.is_file() and any(GUIDE_PREVIEW_DIR.glob("normalized-preview-*.ts")):
+                return None, False
+            if frame_path.is_file() and frame_path.stat().st_size > 0:
+                pacing = "hls-realtime" if transport == "hls" else (
+                    "file-realtime" if not source.startswith(("http://", "https://")) else "live-network"
+                )
                 self.logger.info(
                     "guide-preview-normalizer",
-                    f"External preview normalized to {canvas_w}x{canvas_h}@{fps} fps for shared HD/SD Guide ingest "
-                    f"(PID {popen.pid}).",
+                    f"Shared preview A/V worker ready at {canvas_w}x{canvas_h}@{fps} fps "
+                    f"(PID {popen.pid}, pacing={pacing}, audio_relay={relay_audio}).",
                 )
-                return str(playlist)
+                return str(frame_path), relay_audio
             time.sleep(0.05)
 
-        self.logger.error("guide-preview-normalizer", "Timed out waiting for normalized preview HLS startup.")
+        self.logger.error("guide-preview-normalizer", "Timed out waiting for first normalized preview frame.")
         _terminate_pid(popen.pid, popen, self.logger, "guide-preview-normalizer")
         self._preview_normalizer_pid = None
         self._preview_normalizer_popen = None
         self._preview_normalized_playlist = None
         self._cleanup_preview_normalizer_files()
-        return None
+        return None, False
+
 
     def start_pipeline(self, message: str = "Guide is Loading...") -> None:
         # Mark the pipeline as intentionally active so the background worker
@@ -1446,49 +1563,64 @@ class GuideManager:
                 renderer_cmd.append("--telemetry")
 
             raw_preview_source = resolve_preview_source(config, BASE_DIR)
-            external_preview = bool(raw_preview_source and raw_preview_source.startswith(("http://", "https://")))
-            normalized_preview_source = self._start_preview_normalizer_locked(config) if external_preview else None
-            # For external URLs, never silently fall back to direct ingest if the
-            # normalizer cannot start; that is the exact crash path this relay
-            # exists to isolate.  An empty override leaves the themed preview area
-            # visible without video until the pipeline is restarted successfully.
-            preview_source_override = (normalized_preview_source or "") if external_preview else None
-            preview_input_args, video_filter_args, video_map_args, preview_active = _build_guide_preview_ffmpeg_args(
-                config, source_override=preview_source_override
-            )
+            preview_enabled = bool(config.get("guide_preview_enabled", False))
+            preview_transport = cached_preview_transport(config)
             preview_audio_mode = normalize_preview_audio_mode(config.get("guide_preview_audio_mode"))
 
-            preview_enabled = bool(config.get("guide_preview_enabled", False))
-            if preview_active and preview_audio_mode == "preview":
-                # Preview video is input #1. Optional mapping keeps video-only
-                # sources from preventing the Guide Channel from starting.
-                audio_input_args = []
-                audio_codec_args = ["-c:a", profile.audio_codec, "-b:a", "128k"]
-                audio_map_args = ["-map", "1:a:0?"]
-            elif preview_active:
-                # With an active preview input, all non-preview audio begins at
-                # input #2. Silent explicitly suppresses normal Guide music;
-                # Guide keeps the existing Guide Channel music selection.
-                audio_config = {**config, "music_mode": "none"} if preview_audio_mode == "silent" else config
-                audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
-                    audio_config,
-                    profile.audio_codec,
-                    input_index_start=2,
-                    include_video_map=False,
+            # Transport routing is resolved before Guide startup. HLS retains the
+            # decoupled cached-frame path that passed current testing. MPEG-TS
+            # restores the earlier shared local-HLS relay + FFmpeg overlay path
+            # that passed sustained Commercial TV testing. Local files stay on
+            # the decoupled path for the separate A/V-sync investigation.
+            mpegts_overlay_source = None
+            preview_frame_source, preview_audio_relay = None, False
+            if preview_enabled and raw_preview_source:
+                if preview_transport == "mpegts":
+                    mpegts_overlay_source = self._start_mpegts_preview_relay_locked(config)
+                else:
+                    preview_frame_source, preview_audio_relay = self._start_preview_normalizer_locked(config)
+
+            if mpegts_overlay_source:
+                preview_input_args, video_filter_args, video_map_args, preview_active = _build_guide_preview_overlay_args(
+                    config, mpegts_overlay_source
                 )
+                if preview_audio_mode == "preview":
+                    audio_input_args = []
+                    audio_codec_args = ["-c:a", profile.audio_codec, "-b:a", "128k"]
+                    audio_map_args = ["-map", "1:a:0?"]
+                else:
+                    audio_config = {**config, "music_mode": "none"} if preview_audio_mode == "silent" else config
+                    audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
+                        audio_config, profile.audio_codec, input_index_start=2, include_video_map=False
+                    )
             else:
-                # No valid preview source. When the preview feature is enabled,
-                # Preview audio has nothing to play and Silent must remain
-                # silent; both therefore use the compatibility silence track.
-                # Guide continues to use the normal Guide Channel audio path.
-                audio_config = (
-                    {**config, "music_mode": "none"}
-                    if preview_enabled and preview_audio_mode in {"preview", "silent"}
-                    else config
-                )
-                audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
-                    audio_config, profile.audio_codec
-                )
+                preview_active = bool(preview_frame_source)
+                preview_input_args, video_filter_args, video_map_args = [], [], ["-map", "0:v"]
+                if preview_active and preview_audio_mode == "preview" and preview_audio_relay:
+                    preview_input_args, video_filter_args, video_map_args, _ = _build_guide_preview_audio_relay_args(
+                        GUIDE_PREVIEW_AUDIO_PORT_PRIMARY
+                    )
+                    audio_input_args = []
+                    audio_codec_args = ["-c:a", profile.audio_codec, "-b:a", "128k"]
+                    audio_map_args = ["-map", "1:a:0?"]
+                elif preview_active:
+                    audio_config = (
+                        {**config, "music_mode": "none"}
+                        if preview_audio_mode in {"preview", "silent"}
+                        else config
+                    )
+                    audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
+                        audio_config, profile.audio_codec, input_index_start=1, include_video_map=False
+                    )
+                else:
+                    audio_config = (
+                        {**config, "music_mode": "none"}
+                        if preview_enabled and preview_audio_mode in {"preview", "silent"}
+                        else config
+                    )
+                    audio_input_args, audio_codec_args, audio_map_args = _build_audio_ffmpeg_args(
+                        audio_config, profile.audio_codec
+                    )
 
             ffmpeg_cmd = _build_ffmpeg_command(
                 profile,
@@ -1502,11 +1634,11 @@ class GuideManager:
                 video_filter_args=video_filter_args,
                 video_map_args=video_map_args,
             )
-            if bool(config.get("guide_preview_enabled", False)):
+            if preview_enabled:
                 if preview_active:
                     self.logger.info(
                         "pipeline",
-                        f"Guide preview enabled: audio={preview_audio_mode}, source={resolve_preview_source(config, BASE_DIR)!r}",
+                        f"Guide preview enabled: transport={preview_transport or 'unknown'}, audio={preview_audio_mode}, source={raw_preview_source!r}",
                     )
                 else:
                     self.logger.warning(
@@ -1573,27 +1705,48 @@ class GuideManager:
                 if self._telemetry_debug:
                     secondary_renderer_cmd.append("--telemetry")
 
-                sec_preview_input_args, sec_video_filter_args, sec_video_map_args, sec_preview_active = _build_guide_preview_ffmpeg_args(
-                    secondary_config, source_override=preview_source_override
-                )
-                if sec_preview_active and preview_audio_mode == "preview":
-                    sec_audio_input_args = []
-                    sec_audio_codec_args = ["-c:a", secondary_profile.audio_codec, "-b:a", "128k"]
-                    sec_audio_map_args = ["-map", "1:a:0?"]
-                elif sec_preview_active:
-                    sec_audio_config = {**secondary_config, "music_mode": "none"} if preview_audio_mode == "silent" else secondary_config
-                    sec_audio_input_args, sec_audio_codec_args, sec_audio_map_args = _build_audio_ffmpeg_args(
-                        sec_audio_config, secondary_profile.audio_codec, input_index_start=2, include_video_map=False
+                if mpegts_overlay_source:
+                    sec_preview_input_args, sec_video_filter_args, sec_video_map_args, sec_preview_active = _build_guide_preview_overlay_args(
+                        secondary_config, mpegts_overlay_source
                     )
+                    if preview_audio_mode == "preview":
+                        sec_audio_input_args = []
+                        sec_audio_codec_args = ["-c:a", secondary_profile.audio_codec, "-b:a", "128k"]
+                        sec_audio_map_args = ["-map", "1:a:0?"]
+                    else:
+                        sec_audio_config = {**secondary_config, "music_mode": "none"} if preview_audio_mode == "silent" else secondary_config
+                        sec_audio_input_args, sec_audio_codec_args, sec_audio_map_args = _build_audio_ffmpeg_args(
+                            sec_audio_config, secondary_profile.audio_codec, input_index_start=2, include_video_map=False
+                        )
                 else:
-                    sec_audio_config = (
-                        {**secondary_config, "music_mode": "none"}
-                        if preview_enabled and preview_audio_mode in {"preview", "silent"}
-                        else secondary_config
-                    )
-                    sec_audio_input_args, sec_audio_codec_args, sec_audio_map_args = _build_audio_ffmpeg_args(
-                        sec_audio_config, secondary_profile.audio_codec
-                    )
+                    sec_preview_active = bool(preview_frame_source)
+                    sec_preview_input_args, sec_video_filter_args, sec_video_map_args = [], [], ["-map", "0:v"]
+                    if sec_preview_active and preview_audio_mode == "preview" and preview_audio_relay:
+                        sec_preview_input_args, sec_video_filter_args, sec_video_map_args, _ = _build_guide_preview_audio_relay_args(
+                            GUIDE_PREVIEW_AUDIO_PORT_SECONDARY
+                        )
+                        sec_audio_input_args = []
+                        sec_audio_codec_args = ["-c:a", secondary_profile.audio_codec, "-b:a", "128k"]
+                        sec_audio_map_args = ["-map", "1:a:0?"]
+                    elif sec_preview_active:
+                        sec_audio_config = (
+                            {**secondary_config, "music_mode": "none"}
+                            if preview_audio_mode in {"preview", "silent"}
+                            else secondary_config
+                        )
+                        sec_audio_input_args, sec_audio_codec_args, sec_audio_map_args = _build_audio_ffmpeg_args(
+                            sec_audio_config, secondary_profile.audio_codec, input_index_start=1, include_video_map=False
+                        )
+                    else:
+                        sec_audio_config = (
+                            {**secondary_config, "music_mode": "none"}
+                            if preview_enabled and preview_audio_mode in {"preview", "silent"}
+                            else secondary_config
+                        )
+                        sec_audio_input_args, sec_audio_codec_args, sec_audio_map_args = _build_audio_ffmpeg_args(
+                            sec_audio_config, secondary_profile.audio_codec
+                        )
+
 
                 sec_playlist = OUTPUT_DIR / "guide-secondary.m3u8"
                 sec_cmd = _build_ffmpeg_command(
@@ -1826,6 +1979,7 @@ class GuideManager:
             "guide_preview_enabled", "guide_preview_source_type", "guide_preview_file",
             "guide_preview_url", "guide_preview_url_channel", "guide_preview_url_channel_name", "guide_preview_audio_mode",
             "guide_preview_aspect_mode", "guide_preview_detected_aspect_ratio", "guide_preview_detected_source_key",
+            "guide_preview_detected_transport", "guide_preview_transport_source_key",
         }
         return any(old_config.get(k) != new_config.get(k) for k in pipeline_keys)
 

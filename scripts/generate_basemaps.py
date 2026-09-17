@@ -20,7 +20,7 @@ A placeholder basemap (map-grid with city name) is generated for any city
 whose tiles cannot be fetched.
 
 Adapted from RetroIPTVGuide v4.9.9-dev scripts/generate_basemaps.py.
-Source: RetroIPTVGuide project
+Source repository: https://github.com/thehack904/RetroIPTVGuide
 """
 
 import io
@@ -61,7 +61,7 @@ TILE_SERVERS = [
 
 UA = (
     "RetroStation-MC/1.0 basemap generator "
-    "(RetroStation MC; map data helper)"
+    "(github.com/thehack904/RetroStation_MC; one-time personal-use download)"
 )
 
 # Cities — must match _TRAFFIC_DEMO_CITIES_SEED in app/traffic_channel.py

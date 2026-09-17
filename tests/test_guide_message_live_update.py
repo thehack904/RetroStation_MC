@@ -30,9 +30,16 @@ def test_patch_display_state_updates_only_display(tmp_path, monkeypatch):
 def test_web_ui_has_live_guide_message_save_button():
     template = Path('app/templates/index.html').read_text(encoding='utf-8')
     assert 'Save Guide Message' in template
+    assert '[message]\nText to display here\n[/message]' in template
+    assert '[message:45]\nText to display here\n[/message]' in template
+    assert '<code>[blank]</code>' in template
+    assert '<code>[blank:90]</code>' in template
     assert '[blank:90]' in template
     assert '[message:45]' in template
     assert '[/message]' in template
+    assert 'Blank lines inside a message are preserved as spacing.' in template
+    assert 'timing tags are never displayed' in template
+    assert 'name="channel_group"' not in template
     assert 'Enter Guide Channel message text here...' in template
     assert "formaction=\"{{ url_for('guide_message_settings') }}\"" in template
     assert 'no restart required' in template.lower()

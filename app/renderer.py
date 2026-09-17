@@ -28,6 +28,9 @@ DEFAULT_PROGRAM_MERGE_GAP_SECONDS = 90
 DEFAULT_MIN_PIXELS_PER_MINUTE = 6.0
 DEFAULT_PROGRAM_BG = "#21406b"
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+PREVIEW_FRAME_PATH = BASE_DIR / "data" / "guide_preview" / "latest-preview.jpg"
+
 _SPORTS_GROUP_RE = re.compile(r"\bsports?\b", re.IGNORECASE)
 _MOVIES_GROUP_RE = re.compile(r"\bmovies?\b", re.IGNORECASE)
 
@@ -227,6 +230,10 @@ class GuideRenderer:
         self._static_frame_layer: Image.Image | None = None
         self._static_content_cache: OrderedDict[tuple[Any, ...], Image.Image] = OrderedDict()
         self._max_static_content_cache_entries = 16
+        self._preview_frame_mtime_ns: int = -1
+        self._preview_frame_image: Image.Image | None = None
+        self._preview_scaled_cache_key: tuple[int, int, int] | None = None
+        self._preview_scaled_image: Image.Image | None = None
 
     def _set_ui_scale(self, value: Any) -> None:
         try:
@@ -800,6 +807,61 @@ class GuideRenderer:
         iy2 = y2 - inset + 2
         draw.rectangle([ix, iy, ix2, iy2], fill="#080A10", outline="#111522", width=2)
 
+    def _get_latest_preview_image(self, target_w: int, target_h: int) -> Image.Image | None:
+        """Return the newest cached preview frame without ever blocking the Guide.
+
+        The preview worker atomically replaces PREVIEW_FRAME_PATH.  Failed or
+        partial reads simply reuse the last successfully decoded image.
+        """
+        if target_w <= 0 or target_h <= 0:
+            return None
+        try:
+            mtime_ns = PREVIEW_FRAME_PATH.stat().st_mtime_ns
+        except OSError:
+            mtime_ns = self._preview_frame_mtime_ns
+
+        if mtime_ns != self._preview_frame_mtime_ns:
+            try:
+                with Image.open(PREVIEW_FRAME_PATH) as src:
+                    loaded = src.convert("RGB")
+                    loaded.load()
+                self._preview_frame_image = loaded
+                self._preview_frame_mtime_ns = mtime_ns
+                self._preview_scaled_cache_key = None
+                self._preview_scaled_image = None
+            except (OSError, ValueError):
+                pass
+
+        source = self._preview_frame_image
+        if source is None:
+            return None
+
+        cache_key = (self._preview_frame_mtime_ns, target_w, target_h)
+        if self._preview_scaled_cache_key == cache_key and self._preview_scaled_image is not None:
+            return self._preview_scaled_image
+
+        # The worker already preserves source aspect ratio on a fixed canvas.
+        # Fit that canvas into the exact Guide video surface and letterbox here
+        # without changing the renderer's frame cadence.
+        frame = Image.new("RGB", (target_w, target_h), "#000000")
+        fitted = source.copy()
+        fitted.thumbnail((target_w, target_h), Image.Resampling.BILINEAR)
+        x = (target_w - fitted.width) // 2
+        y = (target_h - fitted.height) // 2
+        frame.paste(fitted, (x, y))
+        self._preview_scaled_cache_key = cache_key
+        self._preview_scaled_image = frame
+        return frame
+
+    def _paste_latest_preview(self, img: Image.Image, preview_layout: dict[str, Any]) -> None:
+        target_w = int(preview_layout.get("preview_max_width", 0))
+        target_h = int(preview_layout.get("preview_max_height", 0))
+        x = int(preview_layout.get("preview_x", 0))
+        y = int(preview_layout.get("preview_y", 0))
+        preview = self._get_latest_preview_image(target_w, target_h)
+        if preview is not None:
+            img.paste(preview, (x, y))
+
     def _get_static_frame_layer(
         self,
         width: int,
@@ -1040,6 +1102,8 @@ class GuideRenderer:
         content_h = content_bottom - content_top
         now = datetime.fromtimestamp(epoch_time, tz=timezone.utc)
         img = self._get_static_frame_layer(width, height, colors, layout, display).copy()
+        if preview_enabled:
+            self._paste_latest_preview(img, preview_layout)
         draw = ImageDraw.Draw(img)
 
         time_window = self.state.get("time_window", {})

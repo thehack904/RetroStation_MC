@@ -125,10 +125,6 @@
             <input type="text" name="xmltv_source" value="{{ config.xmltv_source }}">
           </div>
           <div class="field-row">
-            <label class="field-label">Channel Group</label>
-            <input type="text" name="channel_group" value="{{ config.channel_group }}">
-          </div>
-          <div class="field-row">
             <label class="field-label">Timezone</label>
             <select name="timezone">
               {% for value in ['local', 'utc'] %}
@@ -484,6 +480,15 @@
               {% endif %}
             </select>
             <input type="hidden" name="guide_preview_url_channel_name" id="guide-preview-url-channel-name" value="{{ config.guide_preview_url_channel_name }}">
+            <input type="hidden" name="guide_preview_detected_transport" id="guide-preview-detected-transport" value="{{ config.guide_preview_detected_transport or '' }}">
+            <input type="hidden" name="guide_preview_transport_source_key" id="guide-preview-transport-source-key" value="{{ config.guide_preview_transport_source_key or '' }}">
+            <div id="guide-preview-transport-status" style="opacity:0.72;font-size:0.88em;margin-top:6px">
+              {% if config.guide_preview_detected_transport %}
+                Detected input: <strong>{{ config.guide_preview_detected_transport|upper }}</strong>. Detection is cached before Guide startup.
+              {% else %}
+                Input transport will be detected when a channel/source is selected or saved.
+              {% endif %}
+            </div>
           </div>
         </div>
 
@@ -526,9 +531,19 @@
           </button>
           <div id="guide-message-settings-body" class="guide-message-accordion__body" hidden>
           <div style="opacity:0.78;line-height:1.45;margin-bottom:10px">
-            Show understated rotating text opposite the video preview. Wrap each rotating item in <code>[message]</code> ... <code>[/message]</code>; blank lines inside a message are preserved as spacing.
-            Use <code>[message:45]</code> ... <code>[/message]</code> for a 45-second message, <code>[blank]</code> for one normal-duration blank interval, or <code>[blank:90]</code> for a 90-second blank interval.
-            Only one message is shown at a time, and timing controls are never displayed on the Guide Channel itself.
+            Show understated rotating text opposite the video preview. Each message uses its own lines:
+            <pre style="margin:6px 0;white-space:pre-wrap"><code>[message]
+Text to display here
+[/message]</code></pre>
+            Timed message (displays for 45 seconds):
+            <pre style="margin:6px 0;white-space:pre-wrap"><code>[message:45]
+Text to display here
+[/message]</code></pre>
+            Blank interval (uses the normal rotation duration):
+            <pre style="margin:6px 0;white-space:pre-wrap"><code>[blank]</code></pre>
+            Timed blank interval (90 seconds):
+            <pre style="margin:6px 0;white-space:pre-wrap"><code>[blank:90]</code></pre>
+            Blank lines inside a message are preserved as spacing. Only one message is shown at a time, and timing tags are never displayed on the Guide Channel itself.
           </div>
 
           <div class="field-row">
@@ -547,7 +562,7 @@
             <div style="flex:1;min-width:0">
               <textarea id="guide-message-text" name="guide_message_text" rows="9" maxlength="12000" style="width:100%;resize:vertical" placeholder="Enter Guide Channel message text here...">{{ config.guide_message_text }}</textarea>
               <div style="opacity:0.72;font-size:0.88em;margin-top:6px">
-                Use <code>[message]</code> ... <code>[/message]</code> to define each rotating message. Blank lines inside the block are preserved. <code>[message:seconds]</code> overrides Display Time for that message (for example, <code>[message:45]</code>). <code>[blank]</code> uses normal Display Time and <code>[blank:seconds]</code> sets a custom blank interval. Long lines wrap automatically; the on-screen message area is intentionally limited so it never competes with the preview or channel grid.
+                Use multiline <code>[message]</code> ... <code>[/message]</code> blocks to define rotating messages. <code>[message:seconds]</code> overrides Display Time (for example, <code>[message:45]</code>). Blank lines inside a message are preserved as spacing. <code>[blank]</code> uses normal Display Time and <code>[blank:seconds]</code> sets a custom blank interval. Long lines wrap automatically; the on-screen message area is intentionally limited so it never competes with the preview or channel grid.
               </div>
             </div>
           </div>
@@ -1048,6 +1063,9 @@
       var loadButton = document.getElementById('guide-preview-load-channels');
       var channelSelect = document.getElementById('guide-preview-url-channel');
       var channelName = document.getElementById('guide-preview-url-channel-name');
+      var transportInput = document.getElementById('guide-preview-detected-transport');
+      var transportKeyInput = document.getElementById('guide-preview-transport-source-key');
+      var transportStatus = document.getElementById('guide-preview-transport-status');
       var statusText = document.getElementById('guide-preview-url-status');
       if (!sourceType || !fileRow || !urlRow) return;
 
@@ -1059,6 +1077,44 @@
         if (channelRow) {
           channelRow.style.display = (isUrl && channelSelect && (channelSelect.value || channelSelect.options.length > 1)) ? '' : 'none';
         }
+      }
+
+      function selectedPreviewUrl() {
+        if (channelSelect && channelSelect.value) return channelSelect.value.trim();
+        return urlInput ? urlInput.value.trim() : '';
+      }
+
+      function detectSelectedTransport() {
+        var source = selectedPreviewUrl();
+        if (!source || !transportInput || !transportKeyInput) return;
+        transportInput.value = '';
+        transportKeyInput.value = '';
+        if (transportStatus) transportStatus.textContent = 'Detecting input transport…';
+        fetch('{{ url_for("guide_preview_detect_transport") }}', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({url: source})
+        })
+        .then(function (response) {
+          return response.json().then(function (data) {
+            if (!response.ok) throw new Error(data.error || 'Unable to detect input transport.');
+            return data;
+          });
+        })
+        .then(function (data) {
+          if (selectedPreviewUrl() !== source) return;
+          var transport = data.transport === 'hls' || data.transport === 'mpegts' ? data.transport : '';
+          transportInput.value = transport;
+          transportKeyInput.value = transport ? ('url:' + source) : '';
+          if (transportStatus) {
+            transportStatus.textContent = transport
+              ? ('Detected input: ' + transport.toUpperCase() + '. This will be used when the Guide starts.')
+              : (data.message || 'Transport could not be identified; it will be checked when settings are saved.');
+          }
+        })
+        .catch(function (error) {
+          if (transportStatus) transportStatus.textContent = error.message;
+        });
       }
 
       function clearChannelSelection() {
@@ -1121,6 +1177,7 @@
             }
             channelRow.style.display = '';
             statusText.textContent = 'Loaded ' + data.channels.length + ' channels. Select the channel to show in the Guide Preview.';
+            if (channelSelect.value) detectSelectedTransport();
           })
           .catch(function (error) {
             clearChannelSelection();
@@ -1136,6 +1193,9 @@
           // A channel belongs to the exact playlist it was loaded from. Do not
           // silently retain an old stream selection after the URL is edited.
           clearChannelSelection();
+          if (transportInput) transportInput.value = '';
+          if (transportKeyInput) transportKeyInput.value = '';
+          if (transportStatus) transportStatus.textContent = 'URL changed; transport detection will run after channel selection or when settings are saved.';
           statusText.textContent = 'URL changed. Click Load Channels for an M3U playlist, or save to use it directly.';
         });
 
@@ -1143,6 +1203,7 @@
           var option = channelSelect.options[channelSelect.selectedIndex];
           if (channelName) channelName.value = option && option.value ? (option.dataset.channelName || option.textContent) : '';
           if (channelRow) channelRow.style.display = channelSelect.options.length > 1 ? '' : (channelSelect.value ? '' : 'none');
+          detectSelectedTransport();
         });
       }
 

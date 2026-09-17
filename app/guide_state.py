@@ -49,12 +49,8 @@ def build_state(config: dict, channels: list[dict], programmes: dict[str, list[d
     now = datetime.now(timezone.utc)
     guide_start = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0)
     horizon = guide_start + timedelta(minutes=int(config.get("guide_minutes", 90)))
-    group_filter = (config.get("channel_group") or "").strip()
-
     filtered_channels = []
     for channel in channels:
-        if group_filter and channel.get("group", "") != group_filter:
-            continue
         channel_id = channel["id"]
         current_programs = []
         for item in programmes.get(channel_id, []):

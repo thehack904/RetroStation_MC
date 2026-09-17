@@ -33,7 +33,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "page_seconds": 12,
     "visible_rows": 8,
     "guide_minutes": 90,
-    "channel_group": "",
     "title": "Guide Channel",
     "timezone": "local",
     "browser_timezone": "",
@@ -53,6 +52,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "guide_preview_aspect_mode": "auto",  # "auto" | "16:9" | "4:3"
     "guide_preview_detected_aspect_ratio": "",  # cached Auto detection: "16:9" | "4:3" | empty
     "guide_preview_detected_source_key": "",    # source identity associated with cached detection
+    "guide_preview_detected_transport": "",    # "hls" | "mpegts" | "file" detected before Guide startup
+    "guide_preview_transport_source_key": "", # source identity associated with cached transport detection
     # Optional rotating informational text shown opposite the Guide preview.
     # Blank lines separate slides; each slide may contain multiple display lines.
     "guide_message_enabled": False,

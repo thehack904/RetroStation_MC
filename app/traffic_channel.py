@@ -138,7 +138,7 @@ BASEMAP_H     = 720
 _TILE_SIZE    = 256
 _OSM_TILE_UA  = (
     "RetroStation-MC/1.0 (simulated-traffic basemap; "
-    "RetroStation MC project)"
+    "https://github.com/thehack904/RetroStation_MC)"
 )
 _TILE_SERVERS = [
     "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -510,7 +510,7 @@ def _fetch_overpass_roads(lat: float, lon: float, radius_m: int = 80_467) -> dic
                     headers={
                         "User-Agent": (
                             "RetroStation-MC/1.0 (simulated-traffic; "
-                            "RetroStation MC project)"
+                            "https://github.com/thehack904/RetroStation_MC)"
                         )
                     },
                 )

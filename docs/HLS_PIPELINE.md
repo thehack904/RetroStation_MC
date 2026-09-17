@@ -157,13 +157,20 @@ It follows the same guide readiness principles and uses standby fallback while w
 
 ## Guide preview composition and audio
 
-With Guide Channel preview disabled, the existing renderer/FFmpeg path is unchanged. With preview enabled, FFmpeg adds the configured local or HTTP/HTTPS/HLS preview source as a second video input and overlays it into the renderer-reserved upper-right viewport. The preview window itself can be Auto, 16:9, or 4:3; source video is aspect-fitted inside that window. Auto never probes synchronously during Guide startup: it uses cached detection when available, otherwise starts at 16:9 and performs bounded detection in a background worker.
+Guide Preview input transport is resolved before the Guide pipeline is built. Local uploads are `file`. HTTP/HTTPS sources are classified as `hls`, `mpegts`, or unknown with a bounded detector. The result is cached only for the exact selected source key, so selecting a different URL/channel invalidates stale detection.
 
-Preview audio mode is selected independently:
+The detected **input** transport chooses one of two internal processing paths:
+
+- **HLS / local file / unknown network input:** one shared FFmpeg preview worker normalizes video to the Guide frame rate and a 640x360 or 640x480 `yuv420p` canvas, continuously replacing `data/guide_preview/latest-preview.jpg`. The renderer samples that frame without blocking. In **Preview** audio mode, the same source session resamples audio (`async=1`, 48 kHz stereo AAC) and tees MPEG-TS audio to local UDP relays consumed by the primary/secondary Guide FFmpeg processes. Detected HLS sources are realtime-paced; local files loop in realtime.
+- **Detected MPEG-TS network input:** a dedicated FFmpeg relay normalizes video/audio and writes a short local one-second-segment HLS relay (`data/guide_preview/mpegts-preview.m3u8` plus `mpegts-preview-*.ts`). The Guide FFmpeg process overlays that relay directly; Preview audio is mapped from the same relay input. This preserves the transport-specific path used for sustained MPEG-TS testing.
+
+Preview audio mode remains independent:
 
 - `guide`: use the normal configured Guide Channel music/silence path.
-- `preview`: map audio from the preview source.
-- `silent`: suppress Guide music and preview audio and emit compatibility silence.
+- `preview`: use Preview-source audio from the matching transport-specific path when available.
+- `silent`: suppress Guide music and Preview audio and emit the normal compatibility-silence path.
 
-Changing preview enablement, source, audio mode, or effective preview aspect ratio requires rebuilding the FFmpeg pipeline. Auto detection is decoupled from startup; when Save & Restart was requested and a new detected ratio differs from the fallback, one follow-up restart applies the detected geometry.
+Preview enablement, source, transport cache, audio mode, or effective aspect changes are FFmpeg-level settings and require a pipeline rebuild. Auto aspect probing remains separate: it starts with the cached result or 16:9 fallback and performs bounded background aspect detection without delaying Guide startup.
+
+This transport routing applies only to **Guide Preview inputs**. The Guide's generated stream remains HLS with MPEG-TS segments; selectable HLS versus continuous MPEG-TS Guide/Virtual Channel output is not implemented here.
 

@@ -1,6 +1,6 @@
 # Renderer
 
-RetroStation MC v1.3.0 uses a Python/Pillow renderer implemented in `app/renderer.py`.
+RetroStation MC v1.4.0 uses a Python/Pillow renderer implemented in `app/renderer.py`.
 
 ## Renderer contract
 
@@ -76,7 +76,7 @@ The renderer advances frames against a frame deadline to reduce cumulative drift
 
 When `guide_preview_enabled` is true, the renderer reserves a themed information/preview region above the guide grid. The header title and clock retain the normal theme styling, the entire reserved region uses the theme `header_bg`, and the guide timeline/listings begin at a resolution-aware `guide_top` boundary.
 
-The layout supports the four Guide Channel output profiles: `1280x720`, `1920x1080`, `960x720`, and `1440x1080`. The state builder reduces the effective rows per page when the smaller guide viewport cannot display the configured row count, preventing clipped/skipped channels. FFmpeg overlays the configured preview source into the upper-right of the renderer-owned information region; the Pillow renderer still emits one full raw RGB frame stream.
+The layout supports the four Guide Channel output profiles: `1280x720`, `1920x1080`, `960x720`, and `1440x1080`. The state builder reduces the effective rows per page when the smaller guide viewport cannot display the configured row count, preventing clipped/skipped channels. For HLS/local-file/unknown Preview inputs, the Pillow renderer samples the normalized `latest-preview.jpg` frame while still emitting one full raw RGB frame stream. For detected MPEG-TS inputs, the renderer reserves the same viewport and the Guide FFmpeg process overlays the dedicated local relay into it.
 
 ## Replacement strategy
 
@@ -87,3 +87,8 @@ guide_state.json in → raw RGB frames out
 ```
 
 That allows the Flask admin, config database, and HLS serving model to remain stable while replacing the frame generation engine.
+
+
+### Guide Message rendering
+
+Guide Message rotation uses explicit `[message]` blocks parsed by the renderer. Blank lines inside a block are preserved as vertical spacing and do not split slides. `[message:seconds]` supplies a per-message duration; `[blank]` and `[blank:seconds]` create empty intervals. Untagged text remains a single normal-duration message for compatibility.

@@ -1,6 +1,6 @@
 # Installation
 
-RetroStation MC v1.3.0 can run either as a Docker container or as a local Python application.
+RetroStation MC v1.4.0 can run either as a Docker container or as a local Python application.
 
 ## Requirements
 
@@ -94,7 +94,7 @@ The app binds to `0.0.0.0:8787` by default.
 |---|---|---|
 | `RETROGUIDE_HOST` | `0.0.0.0` | Flask bind address |
 | `RETROGUIDE_PORT` | `8787` | Flask port |
-| `RETROGUIDE_HOST_ALIASES` | unset | Optional hostname-to-address overrides for playlist/XMLTV URLs (for example `media.lan=192.168.50.25`) |
+| `RETROGUIDE_HOST_ALIASES` | unset | Optional hostname-to-address overrides for playlist/XMLTV URLs (for example `media.lan=192.0.2.25`) |
 | `RETRO_TELEMETRY_DEBUG` | disabled | Enables low-frequency structured renderer/HLS telemetry logs when set to `1`, `true`, `yes`, or `on` |
 
 Example:
@@ -105,7 +105,7 @@ RETROGUIDE_HOST=127.0.0.1 RETROGUIDE_PORT=8787 python app.py
 
 ## Hostname-based tuner or EPG URLs fail in Docker
 
-If `http://192.168.50.25:8409/iptv/channels.m3u` works but `http://media.lan:8409/iptv/channels.m3u` fails, the container likely cannot resolve your LAN/router DNS names (`.lan`, `.local`, and similar).
+If `http://192.0.2.25:8409/iptv/channels.m3u` works but `http://media.lan:8409/iptv/channels.m3u` fails, the container likely cannot resolve your LAN/router DNS names (`.lan`, `.local`, and similar).
 
 Use one of these fixes:
 
@@ -117,7 +117,7 @@ Use one of these fixes:
 Example:
 
 ```bash
-RETROGUIDE_HOST_ALIASES=media.lan=192.168.50.25
+RETROGUIDE_HOST_ALIASES=media.lan=192.0.2.25
 ```
 
 Then this source can still be used in the app:

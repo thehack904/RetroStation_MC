@@ -81,6 +81,44 @@ In Docker, FFmpeg is installed by the Dockerfile. For local Python, install it t
 
 If you expected hardware encoding, also check the **Hardware Acceleration** tab. A detected GPU is not enough by itself; the provider must also be encoder-ready before the app will leave software fallback.
 
+## Guide Preview source is detected incorrectly or fails to start
+
+The Guide Preview page shows the cached detected input for the selected source. Detection is source-specific; changing a direct URL or M3U-selected channel should clear/recompute the cached transport.
+
+For a direct check, the admin helper accepts an HTTP/HTTPS URL:
+
+```bash
+curl -sS -X POST -H 'Content-Type: application/json' \
+  -d '{"url":"http://YOUR_SOURCE/channel"}' \
+  http://localhost:8787/guide-preview/detect-transport
+```
+
+Expected `transport` values are `hls`, `mpegts`, or `unknown`. Local uploads are internally classified as `file` and are not valid input to this HTTP-only endpoint. An `unknown` result follows the shared normalizer path rather than being guessed as MPEG-TS.
+
+If a detected MPEG-TS source fails, inspect logs for `guide-preview-mpegts-relay` / `guide-preview-normalizer` startup messages and confirm FFmpeg can open the source directly. If Preview audio drifts or is absent, also confirm the selected source actually contains an audio stream; Preview mode only relays source audio when present.
+
+Do not confuse this with output selection: RSMC is detecting the Preview **input** transport. It is not switching the Guide output between HLS and MPEG-TS.
+
+## Guide Messages do not rotate as expected
+
+Use explicit multiline message blocks. Blank lines are preserved inside a message and no longer separate slides:
+
+```text
+[message]
+Text to display here
+[/message]
+
+[message:45]
+Text to display here
+[/message]
+
+[blank]
+
+[blank:90]
+```
+
+Save with **Save Guide Message**. That route updates a running Guide live and does not require restarting the Preview pipeline.
+
 ## XMLTV data appears empty
 
 Check that XMLTV channel IDs match M3U `tvg-id` values. RetroStation MC groups programmes by XMLTV `programme@channel` and matches them to parsed channel IDs.
@@ -89,7 +127,7 @@ If no programmes overlap the visible time window, the guide will show `No guide 
 
 ## Hostname-based tuner or EPG URLs fail in Docker
 
-When running in Docker, LAN hostnames may fail even if they resolve on your host machine. For example, `http://media.lan:8409/iptv/channels.m3u` might fail while `http://192.168.50.25:8409/iptv/channels.m3u` works.
+When running in Docker, LAN hostnames may fail even if they resolve on your host machine. For example, `http://media.lan:8409/iptv/channels.m3u` might fail while `http://192.0.2.25:8409/iptv/channels.m3u` works.
 
 Try one of these:
 
@@ -101,7 +139,7 @@ Try one of these:
 Example:
 
 ```bash
-RETROGUIDE_HOST_ALIASES=media.lan=192.168.50.25
+RETROGUIDE_HOST_ALIASES=media.lan=192.0.2.25
 ```
 
 After aliasing, this source remains valid in app configuration:
@@ -109,10 +147,6 @@ After aliasing, this source remains valid in app configuration:
 ```text
 http://media.lan:8409/iptv/channels.m3u
 ```
-
-## Channel group filter hides everything
-
-`channel_group` is an exact match against M3U `group-title`. Clear the field to show all channels, or verify spelling and capitalization.
 
 ## Playback catches up and spins
 
