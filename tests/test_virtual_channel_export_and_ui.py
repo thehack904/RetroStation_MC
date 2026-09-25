@@ -16,9 +16,10 @@ def test_main_export_checkbox_is_independent_from_channel_enablement():
 def test_export_filter_keeps_guide_when_optional_export_disabled():
     text = (ROOT / "app.py").read_text(encoding="utf-8")
     assert "def _build_exported_virtual_channel_entries" in text
-    assert 'entry.get("id") == VIRTUAL_GUIDE_CHANNEL_ID' in text
-    assert "_build_channels_m3u_content(_build_exported_virtual_channel_entries" in text
-    assert "_build_channels_xmltv_content(_build_exported_virtual_channel_entries" in text
+    assert 'entry.get("id") in {VIRTUAL_GUIDE_CHANNEL_ID, VIRTUAL_GUIDE_SECONDARY_CHANNEL_ID}' in text
+    assert "_build_exported_virtual_channel_entries(config, base_url)" in text
+    assert "_build_channels_m3u_content(_build_exported_channel_entries" in text
+    assert "channels = _build_exported_channel_entries(config, base_url)" in text
 
 
 def test_virtual_channel_cards_are_consistent_collapsed_accordions():

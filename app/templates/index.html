@@ -58,6 +58,20 @@
     .guide-message-accordion__toggle { margin-left: auto; font-size: 1.05em; opacity: 0.8; transition: transform 0.16s ease; }
     .guide-message-accordion__head[aria-expanded="true"] .guide-message-accordion__toggle { transform: rotate(180deg); }
     .guide-message-accordion__body[hidden] { display: none !important; }
+
+    .hdhr-channel-toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:10px 0; }
+    .hdhr-channel-toolbar input[type="search"] { flex:1 1 260px; min-width:180px; }
+    .hdhr-channel-toolbar select { width:auto; min-width:160px; }
+    .hdhr-channel-counts { margin-left:auto; opacity:.75; font-size:.88em; }
+    .hdhr-bulk-row { display:flex; gap:18px; flex-wrap:wrap; align-items:center; margin:8px 0 10px; }
+    .hdhr-bulk-row > div { display:flex; gap:5px; align-items:center; flex-wrap:wrap; }
+    .hdhr-channel-scroll { max-height:420px; overflow:auto; border:1px solid var(--theme-panel-border); border-radius:6px; }
+    .hdhr-channel-table { width:100%; border-collapse:collapse; min-width:760px; }
+    .hdhr-channel-table th, .hdhr-channel-table td { text-align:left; padding:6px 7px; border-bottom:1px solid var(--theme-panel-border); vertical-align:middle; }
+    .hdhr-channel-table thead th { position:sticky; top:0; z-index:2; background:var(--theme-panel-bg); }
+    .hdhr-channel-logo { width:48px; height:34px; object-fit:contain; background:#111; border-radius:4px; }
+    .hdhr-subtext { opacity:.55; font-size:.76em; margin-top:2px; }
+    .hdhr-channel-row[hidden] { display:none; }
   </style>
 </head>
 <body>
@@ -123,6 +137,19 @@
           <div class="field-row">
             <label class="field-label">XMLTV Source</label>
             <input type="text" name="xmltv_source" value="{{ config.xmltv_source }}">
+          </div>
+          <div class="field-row">
+            <label class="field-label">Source Channel Export</label>
+            <div style="flex:1;min-width:0">
+              <label class="inline-check" style="min-width:auto">
+                <input type="hidden" name="source_channels_export_enabled" value="0">
+                <input type="checkbox" name="source_channels_export_enabled" value="1" {% if config.source_channels_export_enabled %}checked{% endif %}>
+                Include Playlist Source channels and XMLTV listings in channel.m3u / channel.xmltv
+              </label>
+              <div style="margin-top:6px;opacity:0.76;font-size:0.86em;line-height:1.35">
+                Combines the configured source lineup with enabled RSMC Virtual Channels and HDHomeRun channels selected for Rebroadcast. Existing source stream URLs are preserved.
+              </div>
+            </div>
           </div>
           <div class="field-row">
             <label class="field-label">Timezone</label>
@@ -306,6 +333,11 @@
             value="{{ url_for('channel_xmltv', _external=True) }}">
           <button type="button" class="btn btn--sm btn--copy" onclick="copyUrl('url-xmltv', this)">Copy</button>
         </div>
+        {% if config.source_channels_export_enabled %}
+        <div style="margin-top:8px;opacity:0.75;font-size:0.88em">
+          Playlist Source channels and their XMLTV listings are included in the combined export.
+        </div>
+        {% endif %}
         {% if config.virtual_channels_export_enabled %}
         <div style="margin-top:8px;opacity:0.75;font-size:0.88em">
           Enabled optional RSMC Virtual Channels are included in the exported M3U/XMLTV. Per-channel enablement is managed on the Virtual Channels page.
@@ -395,6 +427,7 @@
       <button class="tab-btn" data-tab="guide-icon">Guide Icon</button>
       <button class="tab-btn" data-tab="standby-pattern">Standby Pattern</button>
       <button class="tab-btn" data-tab="off-air">Off Air</button>
+      {% if hdhomerun_testing_available %}<button class="tab-btn" data-tab="hdhomerun-testing">HDHomeRun Input</button>{% endif %}
       <button class="tab-btn" data-tab="about">About</button>
     </div>
 
@@ -439,10 +472,14 @@
           <select name="guide_preview_source_type" id="guide-preview-source-type">
             <option value="file" {% if config.guide_preview_source_type == 'file' %}selected{% endif %}>Uploaded local video</option>
             <option value="url" {% if config.guide_preview_source_type == 'url' %}selected{% endif %}>HTTP / HTTPS / HLS URL</option>
-            {% if config.weather_channel_enabled %}<option value="virtual_weather" {% if config.guide_preview_source_type == 'virtual_weather' %}selected{% endif %}>Virtual Channel — Weather Channel</option>{% endif %}
-            {% if config.traffic_channel_enabled %}<option value="virtual_traffic" {% if config.guide_preview_source_type == 'virtual_traffic' %}selected{% endif %}>Virtual Channel — Simulated Traffic</option>{% endif %}
-            {% if config.news_channel_enabled %}<option value="virtual_news" {% if config.guide_preview_source_type == 'virtual_news' %}selected{% endif %}>Virtual Channel — News Now</option>{% endif %}
-            {% if config.channel_mix_enabled %}<option value="virtual_channel_mix" {% if config.guide_preview_source_type == 'virtual_channel_mix' %}selected{% endif %}>Virtual Channel — {{ config.channel_mix_name or 'Channel Mix' }}</option>{% endif %}
+            {% set legacy_virtual_preview = config.guide_preview_source_type if config.guide_preview_source_type in ['virtual_weather', 'virtual_traffic', 'virtual_news', 'virtual_channel_mix'] else '' %}
+            {% if config.weather_channel_enabled or config.traffic_channel_enabled or config.news_channel_enabled or config.channel_mix_enabled %}
+              <option value="virtual_channels" {% if config.guide_preview_source_type == 'virtual_channels' or legacy_virtual_preview %}selected{% endif %}>Virtual Channels</option>
+            {% endif %}
+            {% set hdhr_preview_channels = hdhomerun_testing_channels | selectattr('enabled') | list %}
+            {% if hdhr_preview_channels %}
+              <option value="hdhomerun" {% if config.guide_preview_source_type == 'hdhomerun' or config.guide_preview_source_type.startswith('hdhomerun_testing:') %}selected{% endif %}>HDHomeRun</option>
+            {% endif %}
           </select>
         </div>
 
@@ -454,6 +491,39 @@
             {% else %}
               <span style="opacity:0.7">No local preview video uploaded.</span>
             {% endif %}
+          </div>
+        </div>
+
+        <div class="field-row" id="guide-preview-virtual-row" style="display:none">
+          <label class="field-label">Channel</label>
+          <div style="flex:1;min-width:0">
+            <select name="guide_preview_virtual_channel" id="guide-preview-virtual-channel" style="width:100%">
+              <option value="">Select a Virtual Channel</option>
+              {% set selected_virtual_preview = config.guide_preview_virtual_channel or legacy_virtual_preview %}
+              {% if config.weather_channel_enabled %}<option value="virtual_weather" data-stream-url="{{ url_for('hls_weather_playlist') }}" {% if selected_virtual_preview == 'virtual_weather' %}selected{% endif %}>{{ config.weather_channel_number or '2' }} — {{ config.weather_channel_name or 'Weather Channel' }}</option>{% endif %}
+              {% if config.traffic_channel_enabled %}<option value="virtual_traffic" data-stream-url="{{ url_for('hls_traffic_playlist') }}" {% if selected_virtual_preview == 'virtual_traffic' %}selected{% endif %}>{{ config.traffic_channel_number or '3' }} — {{ config.traffic_channel_name or 'Simulated Traffic' }}</option>{% endif %}
+              {% if config.news_channel_enabled %}<option value="virtual_news" data-stream-url="{{ url_for('hls_news_playlist') }}" {% if selected_virtual_preview == 'virtual_news' %}selected{% endif %}>{{ config.news_channel_number or '4' }} — {{ config.news_channel_name or 'News Now' }}</option>{% endif %}
+              {% if config.channel_mix_enabled %}<option value="virtual_channel_mix" data-stream-url="{{ url_for('hls_channel_mix_playlist') }}" {% if selected_virtual_preview == 'virtual_channel_mix' %}selected{% endif %}>{{ config.channel_mix_number or '5' }} — {{ config.channel_mix_name or 'Channel Mix' }}</option>{% endif %}
+            </select>
+            <div style="opacity:0.72;font-size:0.88em;margin-top:6px">
+              Lists only RSMC Virtual Channels that are currently enabled.
+            </div>
+          </div>
+        </div>
+
+        <div class="field-row" id="guide-preview-hdhomerun-row" style="display:none">
+          <label class="field-label">Channel</label>
+          <div style="flex:1;min-width:0">
+            <select name="guide_preview_hdhomerun_channel" id="guide-preview-hdhomerun-channel" style="width:100%">
+              <option value="">Select an HDHomeRun channel</option>
+              {% for channel in hdhr_preview_channels %}
+                {% set legacy_key = config.guide_preview_source_type.split(':', 1)[1] if config.guide_preview_source_type.startswith('hdhomerun_testing:') else '' %}
+                <option value="{{ channel.key }}" data-stream-url="{{ channel.URL }}" {% if config.guide_preview_hdhomerun_channel == channel.key or legacy_key == channel.key %}selected{% endif %}>{{ channel.GuideNumber }} — {{ channel.GuideName }}</option>
+              {% endfor %}
+            </select>
+            <div style="opacity:0.72;font-size:0.88em;margin-top:6px">
+              Lists physical HDHomeRun channels currently selected under <strong>Use</strong>.
+            </div>
           </div>
         </div>
 
@@ -557,12 +627,23 @@ Text to display here
             </div>
           </div>
 
+          <div class="field-row">
+            <label class="field-label">Now Playing</label>
+            <div style="flex:1;min-width:0">
+              <input type="hidden" name="guide_message_now_playing_enabled" value="0">
+              <label class="inline-check" style="min-width:auto">
+                <input type="checkbox" name="guide_message_now_playing_enabled" value="1" {% if config.guide_message_now_playing_enabled %}checked{% endif %}>
+                Include Now Playing information from the selected Preview channel
+              </label>
+            </div>
+          </div>
+
           <div class="field-row" style="align-items:flex-start">
             <label class="field-label" for="guide-message-text">Messages</label>
             <div style="flex:1;min-width:0">
               <textarea id="guide-message-text" name="guide_message_text" rows="9" maxlength="12000" style="width:100%;resize:vertical" placeholder="Enter Guide Channel message text here...">{{ config.guide_message_text }}</textarea>
               <div style="opacity:0.72;font-size:0.88em;margin-top:6px">
-                Use multiline <code>[message]</code> ... <code>[/message]</code> blocks to define rotating messages. <code>[message:seconds]</code> overrides Display Time (for example, <code>[message:45]</code>). Blank lines inside a message are preserved as spacing. <code>[blank]</code> uses normal Display Time and <code>[blank:seconds]</code> sets a custom blank interval. Long lines wrap automatically; the on-screen message area is intentionally limited so it never competes with the preview or channel grid.
+                Use multiline <code>[message]</code> ... <code>[/message]</code> blocks to define rotating messages. <code>[message:seconds]</code> overrides Display Time (for example, <code>[message:45]</code>). Blank lines inside a message are preserved as spacing. <code>[blank]</code> uses normal Display Time and <code>[blank:seconds]</code> sets a custom blank interval. When <strong>Include Now Playing information</strong> is enabled and Guide Preview is showing a real channel, RSMC adds a <strong>Now Playing</strong> message using that channel's name, number, and current Guide programme; it rotates with any messages entered here. Long lines wrap automatically; the on-screen message area is intentionally limited so it never competes with the preview or channel grid.
               </div>
             </div>
           </div>
@@ -577,7 +658,7 @@ Text to display here
 
           <div class="form-actions" style="margin-top:10px">
             <button type="submit" formaction="{{ url_for('guide_message_settings') }}" formmethod="post" class="btn btn--primary">Save Guide Message</button>
-            <span style="opacity:0.72;font-size:0.88em">Saves only Guide Message settings and updates the running Guide live; preview settings are not changed.</span>
+            <span style="opacity:0.72;font-size:0.88em">Saves only Guide Message settings and updates the running Guide live; preview settings are not changed. No restart required.</span>
           </div>
           </div>
         </div>
@@ -728,6 +809,38 @@ Text to display here
           <label class="field-label">UI Log Tail Lines</label>
           <input type="number" min="10" max="2000" name="diag_log_tail_lines" value="{{ config.diag_log_tail_lines }}">
         </div>
+
+        <div class="section" style="margin-top:18px">
+          <div class="section__header">Guide Preview Audio Sync Compensation</div>
+          <p style="opacity:0.72;margin:8px 0 14px">Fine-tune Preview audio when a source has a consistent A/V offset. Negative values advance audio; positive values delay audio. These controls do not alter video timing.</p>
+
+          <div class="field-row" style="align-items:center;grid-template-columns:200px minmax(0,1fr)">
+            <label class="field-label" for="diag-hdhr-audio-offset">HDHomeRun Audio Offset</label>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:min(100%,520px)">
+              <input id="diag-hdhr-audio-offset" type="range" min="-5000" max="5000" step="50" name="guide_preview_hdhr_audio_offset_ms" value="{{ config.guide_preview_hdhr_audio_offset_ms }}" style="min-width:280px;flex:1">
+              <code id="diag-hdhr-audio-offset-value" style="min-width:190px;text-align:center"></code>
+              <button type="button" class="btn btn--sm" data-audio-offset-reset="diag-hdhr-audio-offset">Reset to 0</button>
+            </div>
+          </div>
+
+          <div class="field-row" style="align-items:center;grid-template-columns:200px minmax(0,1fr)">
+            <label class="field-label" for="diag-iptv-audio-offset">IPTV / M3U Audio Offset</label>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:min(100%,520px)">
+              <input id="diag-iptv-audio-offset" type="range" min="-5000" max="5000" step="50" name="guide_preview_iptv_audio_offset_ms" value="{{ config.guide_preview_iptv_audio_offset_ms }}" style="min-width:280px;flex:1">
+              <code id="diag-iptv-audio-offset-value" style="min-width:190px;text-align:center"></code>
+              <button type="button" class="btn btn--sm" data-audio-offset-reset="diag-iptv-audio-offset">Reset to 0</button>
+            </div>
+          </div>
+          <div class="field-row" style="align-items:center;grid-template-columns:200px minmax(0,1fr)">
+            <label class="field-label" for="diag-file-audio-offset">Uploaded Video Audio Offset</label>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:min(100%,520px)">
+              <input id="diag-file-audio-offset" type="range" min="-5000" max="5000" step="50" name="guide_preview_file_audio_offset_ms" value="{{ config.guide_preview_file_audio_offset_ms }}" style="min-width:280px;flex:1">
+              <code id="diag-file-audio-offset-value" style="min-width:190px;text-align:center"></code>
+              <button type="button" class="btn btn--sm" data-audio-offset-reset="diag-file-audio-offset">Reset to 0</button>
+            </div>
+          </div>
+          <p style="opacity:0.65;font-size:0.85em;margin:8px 0 0">Example: <code>-1200 ms (-1.20 seconds)</code> advances audio by 1.20 seconds. Use <strong>Save &amp; Restart Pipeline</strong> to apply a changed offset to an active Guide.</p>
+        </div>
         <div class="form-actions" style="margin-top:14px">
           <button type="submit" name="action" value="save" class="btn">Save Diagnostics</button>
           {% if status.pipeline_active %}
@@ -735,6 +848,69 @@ Text to display here
           {% endif %}
         </div>
       </form>
+
+      {% if hdhomerun_testing_available and hdhomerun_testing_channels %}
+      <div class="section" style="margin-top:18px">
+        <div class="section__header">HDHomeRun Diagnostics</div>
+        <div class="field-row">
+          <label class="field-label" for="hdhr-diagnostic-channel">Channel</label>
+          <select id="hdhr-diagnostic-channel" style="max-width:420px">
+            {% for channel in hdhomerun_testing_channels %}
+            <option value="{{ channel.key }}">{{ channel.GuideNumber }} — {{ channel.GuideName }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% for channel in hdhomerun_testing_channels %}
+        <div class="hdhr-diagnostic-panel" data-channel-key="{{ channel.key }}" {% if not loop.first %}hidden{% endif %}>
+          <div class="info-grid" style="margin-top:10px">
+            <div class="info-row"><span class="info-label">Channel</span><code>{{ channel.GuideNumber }} — {{ channel.GuideName }}</code></div>
+            <div class="info-row"><span class="info-label">Channel Key</span><code>{{ channel.key }}</code></div>
+            <div class="info-row"><span class="info-label">XMLTV ID</span><code>{{ channel.XMLTVID or '—' }}</code></div>
+            <div class="info-row"><span class="info-label">Physical URL</span><code>{{ channel.URL or '—' }}</code></div>
+            <div class="info-row"><span class="info-label">Video</span><code>{{ channel.VideoCodec or '—' }}{% if channel.HD %} HD{% endif %}</code></div>
+            <div class="info-row"><span class="info-label">Audio</span><code>{{ channel.AudioCodec or '—' }}</code></div>
+            <div class="info-row"><span class="info-label">Signal</span><code>{{ channel.SignalStrength if channel.SignalStrength != '' else '—' }} / {{ channel.SignalQuality if channel.SignalQuality != '' else '—' }}</code></div>
+            <div class="info-row"><span class="info-label">Use / Rebroadcast</span><code>{{ 'Yes' if channel.enabled else 'No' }} / {{ 'Yes' if channel.rebroadcast else 'No' }}</code></div>
+          </div>
+          <div style="margin-top:12px">
+            <strong>Direct Tests</strong>
+            {% if channel.enabled %}
+            <div class="output-row" style="margin-top:8px">
+              <span class="output-label">HLS</span>
+              <input type="text" class="output-url" id="diag-hdhr-hls-{{ loop.index0 }}" readonly value="{{ url_for('hdhomerun_testing_hls', channel_key=channel.key, _external=True) }}">
+              <button type="button" class="btn btn--sm btn--copy" onclick="copyUrl('diag-hdhr-hls-{{ loop.index0 }}', this)">Copy</button>
+              <a class="btn btn--sm" href="{{ url_for('hdhomerun_testing_hls', channel_key=channel.key) }}" target="_blank" rel="noopener">Open</a>
+            </div>
+            <div class="output-row">
+              <span class="output-label">MPEG-TS</span>
+              <input type="text" class="output-url" id="diag-hdhr-ts-{{ loop.index0 }}" readonly value="{{ url_for('hdhomerun_testing_mpegts', channel_key=channel.key, _external=True) }}">
+              <button type="button" class="btn btn--sm btn--copy" onclick="copyUrl('diag-hdhr-ts-{{ loop.index0 }}', this)">Copy</button>
+              <a class="btn btn--sm" href="{{ url_for('hdhomerun_testing_mpegts', channel_key=channel.key) }}" target="_blank" rel="noopener">Open</a>
+            </div>
+            <div class="output-row">
+              <span class="output-label">Raw TS</span>
+              <input type="text" class="output-url" id="diag-hdhr-raw-{{ loop.index0 }}" readonly value="{{ url_for('hdhomerun_testing_raw', channel_key=channel.key, _external=True) }}">
+              <button type="button" class="btn btn--sm btn--copy" onclick="copyUrl('diag-hdhr-raw-{{ loop.index0 }}', this)">Copy</button>
+              <a class="btn btn--sm" href="{{ url_for('hdhomerun_testing_raw', channel_key=channel.key) }}" target="_blank" rel="noopener">Open</a>
+            </div>
+            {% else %}
+            <p style="opacity:.7">Enable this channel under <strong>HDHomeRun Input → Use</strong> to run direct stream tests.</p>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+        <div style="margin-top:14px">
+          <strong>HDHomeRun Input Playlist</strong>
+          <div class="output-row" style="margin-top:8px">
+            <span class="output-label">M3U</span>
+            <input type="text" class="output-url" id="diag-hdhr-test-m3u" readonly value="{{ url_for('hdhomerun_testing_playlist', _external=True) }}">
+            <button type="button" class="btn btn--sm btn--copy" onclick="copyUrl('diag-hdhr-test-m3u', this)">Copy</button>
+            <a href="{{ url_for('hdhomerun_testing_playlist') }}" class="btn btn--sm" target="_blank" rel="noopener">Open</a>
+          </div>
+          <div style="opacity:.65;font-size:.85em;margin-top:4px">Uses the current HDHomeRun Input Output Mode and channels selected under Use.</div>
+        </div>
+      </div>
+      {% endif %}
     </div>
 
     <!-- Hardware Acceleration Tab -->
@@ -938,11 +1114,133 @@ Text to display here
       </form>
     </div>
 
+    {% if hdhomerun_testing_available %}
+    <!-- HDHomeRun Input Tab -->
+    <div class="tab-panel" id="tab-hdhomerun-testing">
+      <div class="section" style="margin-bottom:14px">
+        <div class="section__header">HDHomeRun Input</div>
+        <div style="opacity:0.78;line-height:1.5;padding:4px 0">
+          Configure a physical SiliconDust HDHomeRun as an RSMC input source. This section controls device discovery, channel selection, Guide integration, and rebroadcast behavior without changing the normal Playlist Source or XMLTV Source.
+        </div>
+      </div>
+
+      <form method="post" action="{{ url_for('hdhomerun_testing_settings') }}">
+        <div class="field-row">
+          <label class="field-label">HDHomeRun Host / IP</label>
+          <input type="text" name="hdhomerun_testing_host" value="{{ config.hdhomerun_testing_host or '' }}" placeholder="hdhr-xxxxxxxx.lan or 192.168.x.x">
+        </div>
+        <div class="field-row">
+          <label class="field-label">Output Mode</label>
+          <div style="flex:1;min-width:0">
+            <select name="hdhomerun_testing_output_mode">
+              <option value="hls" {% if (config.hdhomerun_testing_output_mode or 'hls') == 'hls' %}selected{% endif %}>HLS Segmenter (H.264/AAC)</option>
+              <option value="mpegts" {% if config.hdhomerun_testing_output_mode == 'mpegts' %}selected{% endif %}>MPEG-TS (H.264/AAC)</option>
+              <option value="raw" {% if config.hdhomerun_testing_output_mode == 'raw' %}selected{% endif %}>Raw HDHomeRun MPEG-TS Passthrough</option>
+            </select>
+            <div style="opacity:0.65;font-size:0.85em;margin-top:4px">Controls HDHomeRun output globally. Channels checked for Rebroadcast use HLS when set to HLS, continuous MPEG-TS when set to MPEG-TS, and raw tuner passthrough when set to Raw. Per-channel stream tests are available under Diagnostics.</div>
+          </div>
+        </div>
+        <div class="field-row">
+          <label class="field-label">Rendered Guide</label>
+          <div style="flex:1;min-width:0">
+            <input type="hidden" name="hdhomerun_testing_guide_enabled" value="0">
+            <label><input type="checkbox" name="hdhomerun_testing_guide_enabled" value="1" {% if config.hdhomerun_testing_guide_enabled %}checked{% endif %}> Include selected physical channels in the RetroStation MC Guide</label>
+            <div style="opacity:0.65;font-size:0.85em;margin-top:4px">Only channels checked under <strong>Use</strong> are added to the rendered Guide. <strong>Rebroadcast</strong> is a separate per-channel choice for channel.m3u/channel.xmltv. SiliconDust XMLTV supplies current and future program listings when available.</div>
+          </div>
+        </div>
+        <div class="field-row">
+          <label class="field-label">HLS Idle Timeout</label>
+          <div style="flex:1;min-width:0">
+            <input type="number" min="15" max="3600" name="hdhomerun_testing_idle_timeout_secs" value="{{ config.hdhomerun_testing_idle_timeout_secs or 30 }}">
+            <div style="opacity:0.65;font-size:0.85em;margin-top:4px">Seconds before an unused physical-tuner HLS session is stopped and its tuner is released.</div>
+          </div>
+        </div>
+        <div class="form-actions" style="margin-top:14px">
+          <button type="submit" name="action" value="save" class="btn">Save HDHomeRun Settings</button>
+          <button type="submit" name="action" value="refresh" class="btn">Refresh Lineup</button>
+          <button type="submit" name="action" value="discover" class="btn btn--primary">Discover + Import</button>
+        </div>
+        <div style="opacity:0.65;font-size:0.85em;margin-top:6px">Refresh/Discover also retrieves official SiliconDust XMLTV channel metadata and station logos when DeviceAuth guide access is available.</div>
+
+        {% if hdhomerun_testing_device %}
+        <div class="info-grid" style="margin-top:16px">
+          <div class="info-row"><span class="info-label">Device</span><code>{{ hdhomerun_testing_device.FriendlyName or 'HDHomeRun' }}</code></div>
+          <div class="info-row"><span class="info-label">Model</span><code>{{ hdhomerun_testing_device.ModelNumber or '—' }}</code></div>
+          <div class="info-row"><span class="info-label">Device ID</span><code>{{ hdhomerun_testing_device.DeviceID or '—' }}</code></div>
+          <div class="info-row"><span class="info-label">Firmware</span><code>{{ hdhomerun_testing_device.FirmwareVersion or '—' }}</code></div>
+          <div class="info-row"><span class="info-label">Tuners</span><code>{{ hdhomerun_testing_device.TunerCount or '—' }}</code></div>
+          <div class="info-row"><span class="info-label">Base URL</span><code>{{ hdhomerun_testing_device.BaseURL or config.hdhomerun_testing_host or '—' }}</code></div>
+        </div>
+        {% endif %}
+
+        {% if hdhomerun_testing_channels %}
+        <div class="section hdhr-channel-section" style="margin-top:16px">
+          <div class="section__header">Channel Selection</div>
+          <div class="hdhr-channel-toolbar">
+            <input type="search" id="hdhr-channel-search" placeholder="Search channel number or station" aria-label="Search HDHomeRun channels">
+            <select id="hdhr-channel-filter" aria-label="Filter HDHomeRun channels">
+              <option value="all">All channels</option>
+              <option value="used">Used only</option>
+              <option value="rebroadcast">Rebroadcast only</option>
+              <option value="unused">Unused</option>
+            </select>
+            <div class="hdhr-channel-counts" id="hdhr-channel-counts"></div>
+          </div>
+          <div class="hdhr-bulk-row">
+            <div><strong>Use:</strong>
+              <button type="button" class="btn btn--sm" onclick="setHDHomeRunColumn('hdhomerun_testing_enabled_channels', true)">Select All</button>
+              <button type="button" class="btn btn--sm" onclick="setHDHomeRunColumn('hdhomerun_testing_enabled_channels', false)">Unselect All</button>
+            </div>
+            <div><strong>Rebroadcast:</strong>
+              <button type="button" class="btn btn--sm" onclick="setHDHomeRunColumn('hdhomerun_testing_rebroadcast_channels', true)">Select All</button>
+              <button type="button" class="btn btn--sm" onclick="setHDHomeRunColumn('hdhomerun_testing_rebroadcast_channels', false)">Unselect All</button>
+            </div>
+            <div><strong>Active:</strong>
+              <button type="button" class="btn btn--sm" onclick="setHDHomeRunActive(true)">Select All</button>
+              <button type="button" class="btn btn--sm" onclick="setHDHomeRunActive(false)">Unselect All</button>
+            </div>
+          </div>
+          <div class="hdhr-channel-scroll">
+            <table class="hdhr-channel-table">
+              <thead>
+                <tr>
+                  <th>Use</th><th>Rebroadcast</th><th>Active</th><th>Logo</th><th>Channel</th><th>Station</th><th>Video</th><th>Audio</th><th>Signal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for channel in hdhomerun_testing_channels %}
+                <tr class="hdhr-channel-row" data-search="{{ (channel.GuideNumber ~ ' ' ~ channel.GuideName ~ ' ' ~ (channel.XMLTVID or '')) | lower }}">
+                  <td>
+                    <input type="hidden" name="hdhomerun_testing_channel_keys" value="{{ channel.key }}">
+                    <input class="hdhr-use" type="checkbox" name="hdhomerun_testing_enabled_channels" value="{{ channel.key }}" {% if channel.enabled %}checked{% endif %}>
+                  </td>
+                  <td><input class="hdhr-rebroadcast" type="checkbox" name="hdhomerun_testing_rebroadcast_channels" value="{{ channel.key }}" {% if channel.rebroadcast %}checked{% endif %} title="Include this selected physical channel in channel.m3u and channel.xmltv"></td>
+                  <td><input class="hdhr-active" type="checkbox" value="{{ channel.key }}" title="Convenience control: enabling Active turns on both Use and Rebroadcast. Disabling Active does not clear either setting."></td>
+                  <td><img src="{{ url_for('hdhomerun_testing_logo', channel_key=channel.key) }}" alt="{{ channel.GuideName }} logo" class="hdhr-channel-logo"></td>
+                  <td><code>{{ channel.GuideNumber }}</code></td>
+                  <td>{{ channel.GuideName }}{% if channel.XMLTVID %}<div class="hdhr-subtext"><code>{{ channel.XMLTVID }}</code></div>{% endif %}</td>
+                  <td><code>{{ channel.VideoCodec or '—' }}</code>{% if channel.HD %} HD{% endif %}</td>
+                  <td><code>{{ channel.AudioCodec or '—' }}</code></td>
+                  <td><code>{{ channel.SignalStrength if channel.SignalStrength != '' else '—' }} / {{ channel.SignalQuality if channel.SignalQuality != '' else '—' }}</code></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="form-actions" style="margin-top:14px">
+            <button type="submit" name="action" value="save" class="btn btn--primary">Save Channel Selection</button>
+          </div>
+        </div>
+        {% endif %}
+      </form>
+    </div>
+    {% endif %}
+
     <!-- About Tab -->
     <div class="tab-panel" id="tab-about">
       <div class="info-grid">
         <div class="info-row"><span class="info-label">Application</span><code>RetroStation MC</code></div>
-        <div class="info-row"><span class="info-label">Version</span><code>v1.4.0</code></div>
+        <div class="info-row"><span class="info-label">Version</span><code>v1.5.0 Beta 1</code></div>
         <div class="info-row"><span class="info-label">Description</span><code>Admin-driven retro guide channel generator for RetroIPTVGuide.</code></div>
       </div>
     </div>
@@ -1058,6 +1356,10 @@ Text to display here
       var sourceType = document.getElementById('guide-preview-source-type');
       var fileRow = document.getElementById('guide-preview-file-row');
       var urlRow = document.getElementById('guide-preview-url-row');
+      var virtualRow = document.getElementById('guide-preview-virtual-row');
+      var virtualChannel = document.getElementById('guide-preview-virtual-channel');
+      var hdhrRow = document.getElementById('guide-preview-hdhomerun-row');
+      var hdhrChannel = document.getElementById('guide-preview-hdhomerun-channel');
       var channelRow = document.getElementById('guide-preview-channel-row');
       var urlInput = document.getElementById('guide-preview-url');
       var loadButton = document.getElementById('guide-preview-load-channels');
@@ -1072,14 +1374,28 @@ Text to display here
       function updatePreviewSourceRows() {
         var isFile = sourceType.value === 'file';
         var isUrl = sourceType.value === 'url';
+        var isVirtual = sourceType.value === 'virtual_channels';
+        var isHdhr = sourceType.value === 'hdhomerun';
         fileRow.style.display = isFile ? '' : 'none';
         urlRow.style.display = isUrl ? '' : 'none';
+        if (virtualRow) virtualRow.style.display = isVirtual ? '' : 'none';
+        if (hdhrRow) hdhrRow.style.display = isHdhr ? '' : 'none';
         if (channelRow) {
           channelRow.style.display = (isUrl && channelSelect && (channelSelect.value || channelSelect.options.length > 1)) ? '' : 'none';
         }
       }
 
       function selectedPreviewUrl() {
+        if (sourceType.value === 'virtual_channels') {
+          if (!virtualChannel || !virtualChannel.value) return '';
+          var virtualOption = virtualChannel.options[virtualChannel.selectedIndex];
+          return (virtualOption && virtualOption.dataset.streamUrl) ? new URL(virtualOption.dataset.streamUrl, window.location.origin).href : '';
+        }
+        if (sourceType.value === 'hdhomerun') {
+          if (!hdhrChannel || !hdhrChannel.value) return '';
+          var hdhrOption = hdhrChannel.options[hdhrChannel.selectedIndex];
+          return (hdhrOption && hdhrOption.dataset.streamUrl) ? hdhrOption.dataset.streamUrl.trim() : '';
+        }
         if (channelSelect && channelSelect.value) return channelSelect.value.trim();
         return urlInput ? urlInput.value.trim() : '';
       }
@@ -1130,6 +1446,24 @@ Text to display here
         if (channel.number) label = channel.number + ' — ' + label;
         if (channel.group) label += ' [' + channel.group + ']';
         return label;
+      }
+
+      if (virtualChannel) {
+        virtualChannel.addEventListener('change', function () {
+          if (transportInput) transportInput.value = '';
+          if (transportKeyInput) transportKeyInput.value = '';
+          if (this.value) detectSelectedTransport();
+          else if (transportStatus) transportStatus.textContent = 'Select a Virtual Channel to detect its input transport.';
+        });
+      }
+
+      if (hdhrChannel) {
+        hdhrChannel.addEventListener('change', function () {
+          if (transportInput) transportInput.value = '';
+          if (transportKeyInput) transportKeyInput.value = '';
+          if (this.value) detectSelectedTransport();
+          else if (transportStatus) transportStatus.textContent = 'Select an HDHomeRun channel to detect its input transport.';
+        });
       }
 
       if (loadButton && urlInput && channelSelect) {
@@ -1207,7 +1541,11 @@ Text to display here
         });
       }
 
-      sourceType.addEventListener('change', updatePreviewSourceRows);
+      sourceType.addEventListener('change', function () {
+        updatePreviewSourceRows();
+        if (sourceType.value === 'virtual_channels' && virtualChannel && virtualChannel.value) detectSelectedTransport();
+        if (sourceType.value === 'hdhomerun' && hdhrChannel && hdhrChannel.value) detectSelectedTransport();
+      });
       updatePreviewSourceRows();
     })();
   </script>
@@ -1374,6 +1712,100 @@ Text to display here
     }
   </script>
 
+  <script>
+    function updateHDHomeRunChannelView() {
+      var search = document.getElementById('hdhr-channel-search');
+      var filter = document.getElementById('hdhr-channel-filter');
+      var rows = document.querySelectorAll('.hdhr-channel-row');
+      var query = search ? search.value.trim().toLowerCase() : '';
+      var mode = filter ? filter.value : 'all';
+      var total = 0, visible = 0, used = 0, rebroadcast = 0;
+      Array.prototype.forEach.call(rows, function (row) {
+        total++;
+        var use = row.querySelector('.hdhr-use');
+        var reb = row.querySelector('.hdhr-rebroadcast');
+        if (use && use.checked) used++;
+        if (reb && reb.checked) rebroadcast++;
+        var textMatch = !query || (row.dataset.search || '').indexOf(query) !== -1;
+        var stateMatch = mode === 'all' ||
+          (mode === 'used' && use && use.checked) ||
+          (mode === 'rebroadcast' && reb && reb.checked) ||
+          (mode === 'unused' && use && !use.checked);
+        row.hidden = !(textMatch && stateMatch);
+        if (!row.hidden) visible++;
+      });
+      var counts = document.getElementById('hdhr-channel-counts');
+      if (counts) counts.textContent = total + ' discovered • ' + used + ' used • ' + rebroadcast + ' rebroadcast • ' + visible + ' shown';
+    }
+
+    function setHDHomeRunColumn(name, checked) {
+      var boxes = document.querySelectorAll('input[type="checkbox"][name="' + name + '"]');
+      Array.prototype.forEach.call(boxes, function (box) {
+        if (!box.disabled) box.checked = checked;
+        var row = box.closest('.hdhr-channel-row');
+        var active = row ? row.querySelector('.hdhr-active') : null;
+        if (active) active.checked = false;
+      });
+      updateHDHomeRunChannelView();
+    }
+
+    function setHDHomeRunActive(checked) {
+      document.querySelectorAll('.hdhr-channel-row').forEach(function (row) {
+        var active = row.querySelector('.hdhr-active');
+        var use = row.querySelector('.hdhr-use');
+        var reb = row.querySelector('.hdhr-rebroadcast');
+        if (!active || active.disabled) return;
+        active.checked = checked;
+        if (checked) {
+          if (use && !use.disabled) use.checked = true;
+          if (reb && !reb.disabled) reb.checked = true;
+        }
+      });
+      updateHDHomeRunChannelView();
+    }
+
+    function applyHDHomeRunActive(box) {
+      if (!box || !box.checked) return;
+      var row = box.closest('.hdhr-channel-row');
+      if (!row) return;
+      var use = row.querySelector('.hdhr-use');
+      var reb = row.querySelector('.hdhr-rebroadcast');
+      if (use && !use.disabled) use.checked = true;
+      if (reb && !reb.disabled) reb.checked = true;
+      updateHDHomeRunChannelView();
+    }
+
+    (function () {
+      var search = document.getElementById('hdhr-channel-search');
+      var filter = document.getElementById('hdhr-channel-filter');
+      if (search) search.addEventListener('input', updateHDHomeRunChannelView);
+      if (filter) filter.addEventListener('change', updateHDHomeRunChannelView);
+      document.querySelectorAll('.hdhr-use, .hdhr-rebroadcast').forEach(function (box) {
+        box.addEventListener('change', function () {
+          var row = box.closest('.hdhr-channel-row');
+          var active = row ? row.querySelector('.hdhr-active') : null;
+          if (active) active.checked = false;
+          updateHDHomeRunChannelView();
+        });
+      });
+      document.querySelectorAll('.hdhr-active').forEach(function (box) {
+        box.addEventListener('change', function () { applyHDHomeRunActive(box); });
+      });
+      updateHDHomeRunChannelView();
+
+      var diagSelect = document.getElementById('hdhr-diagnostic-channel');
+      if (diagSelect) {
+        function showDiagnosticChannel() {
+          document.querySelectorAll('.hdhr-diagnostic-panel').forEach(function (panel) {
+            panel.hidden = panel.dataset.channelKey !== diagSelect.value;
+          });
+        }
+        diagSelect.addEventListener('change', showDiagnosticChannel);
+        showDiagnosticChannel();
+      }
+    })();
+  </script>
+
   <!-- Browser timezone detection: keep the hidden field up-to-date so the
        server uses the client's local timezone when "local" is selected. -->
   <script>
@@ -1450,6 +1882,39 @@ Text to display here
         var expanded = head.getAttribute('aria-expanded') === 'true';
         head.setAttribute('aria-expanded', expanded ? 'false' : 'true');
         body.hidden = expanded;
+      });
+    })();
+  </script>
+
+  <!-- Diagnostics Guide Preview audio-sync sliders: always show ms and seconds together. -->
+  <script>
+    (function () {
+      function syncOffset(inputId, outputId) {
+        var input = document.getElementById(inputId);
+        var output = document.getElementById(outputId);
+        if (!input || !output) return;
+        function render() {
+          var ms = parseInt(input.value || '0', 10) || 0;
+          var seconds = ms / 1000;
+          var sign = seconds > 0 ? '+' : '';
+          output.textContent = ms + ' ms (' + sign + seconds.toFixed(2) + ' seconds)';
+        }
+        input.addEventListener('input', render);
+        input.addEventListener('change', render);
+        render();
+      }
+
+      syncOffset('diag-hdhr-audio-offset', 'diag-hdhr-audio-offset-value');
+      syncOffset('diag-iptv-audio-offset', 'diag-iptv-audio-offset-value');
+      syncOffset('diag-file-audio-offset', 'diag-file-audio-offset-value');
+
+      document.querySelectorAll('[data-audio-offset-reset]').forEach(function (button) {
+        button.addEventListener('click', function () {
+          var input = document.getElementById(button.getAttribute('data-audio-offset-reset'));
+          if (!input) return;
+          input.value = '0';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
       });
     })();
   </script>

@@ -1,12 +1,31 @@
 # Configuration Reference
 
-Configuration is stored in SQLite at:
+Configuration storage depends on how RetroStation MC is launched:
+
+| Launch mode | Config / env location | Mutable state location |
+|---|---|---|
+| Linux installer (`retrostation_linux.sh install`) | `/etc/retrostation-mc/retrostation-mc.conf` | `/var/lib/retrostation-mc` |
+| Manual repo checkout (`python app.py`) | shell environment / repo checkout | repository-local `data/`, `output/`, and `runtime/` |
+
+On an installed Linux host:
+
+- the application code and `.venv` live under `/opt/retrostation-mc`
+- administrator-managed environment overrides live under `/etc/retrostation-mc/retrostation-mc.conf`
+- the SQLite database and other mutable files live under `/var/lib/retrostation-mc`
+- automatic legacy-layout migration markers live under `/var/lib/retrostation-mc/.migration`
+- automatic legacy-layout backups live under `/var/backups/retrostation-mc`
+
+The main configuration database is stored at:
 
 ```text
-data/config.db
+/var/lib/retrostation-mc/data/config.db
 ```
 
+When running directly from a repository checkout instead of the Linux installer, the equivalent file is `data/config.db` under that checkout root.
+
 The `settings` table stores one key per setting. Values are JSON-encoded.
+
+The installed layout is intentionally isolated from sibling projects such as RetroStation Player and RetroIPTVGuide: RSMC keeps its own service name, config tree, state tree, and backup root instead of sharing `/home/iptv`.
 
 ## Defaults
 
@@ -34,7 +53,8 @@ The `settings` table stores one key per setting. Values are JSON-encoded.
 | `guide_logo_mode` | `default` | `default`, `custom`, or `disabled` for exported guide-channel logo metadata |
 | `guide_logo_custom_file` | empty | Selected custom guide logo filename stored under `data/guide_logo/` |
 | `guide_preview_enabled` | `false` | Enable the optional Guide Channel video preview/information layout |
-| `guide_preview_source_type` | `file` | Preview source type: local `file`, `url`, or an enabled RSMC virtual channel |
+| `guide_preview_source_type` | `file` | Preview source type: local `file`, `url`, `virtual_channels`, or `hdhomerun` |
+| `guide_preview_virtual_channel` | empty | Selected enabled RSMC virtual channel when `guide_preview_source_type=virtual_channels` |
 | `guide_preview_file` | empty | Selected uploaded preview filename under `data/guide_preview/` |
 | `guide_preview_url` | empty | Direct HTTP/HTTPS stream URL or M3U playlist URL when source type is `url` |
 | `guide_preview_url_channel` | empty | Selected stream URL from `guide_preview_url` when it is an M3U playlist |
@@ -45,7 +65,11 @@ The `settings` table stores one key per setting. Values are JSON-encoded.
 | `guide_preview_detected_source_key` | empty | Source identity associated with the cached Auto detection so stale results are not reused after source changes |
 | `guide_preview_detected_transport` | empty | Cached Preview input transport: `hls`, `mpegts`, `file`, or empty/unknown |
 | `guide_preview_transport_source_key` | empty | Source identity associated with cached transport detection; prevents reuse after source changes |
-| `guide_message_enabled` | `false` | Enable rotating Guide Message text |
+| `guide_preview_hdhr_audio_offset_ms` | `0` | HDHomeRun Guide Preview audio compensation in milliseconds (`-5000` to `+5000`); negative advances audio, positive delays audio |
+| `guide_preview_iptv_audio_offset_ms` | `0` | IPTV/M3U (`url` source) Guide Preview audio compensation in milliseconds (`-5000` to `+5000`); negative advances audio, positive delays audio |
+| `guide_preview_file_audio_offset_ms` | `0` | Uploaded local video (`file` source) Guide Preview audio compensation in milliseconds (`-5000` to `+5000`); negative advances audio, positive delays audio |
+| `guide_message_enabled` | `false` | Enable rotating administrator Guide Message text |
+| `guide_message_now_playing_enabled` | `true` | Automatically include Now Playing information for a channel-aware Guide Preview source |
 | `guide_message_text` | empty | Guide Message content using explicit `[message]` blocks and optional `[blank]` directives |
 | `guide_message_interval_seconds` | `8` | Default Guide Message display interval, clamped to 3–60 seconds |
 | `standby_custom_file` | empty | Active uploaded standby pattern filename (empty uses generated default) |
@@ -59,6 +83,7 @@ The `settings` table stores one key per setting. Values are JSON-encoded.
 | `music_loop` | `false` | Whether selected music loops |
 | `music_single_file` | empty | Selected filename for single-track mode |
 | `music_playlist_files` | `[]` | Ordered filenames for playlist mode |
+| `source_channels_export_enabled` | `false` | Include configured Playlist Source channels and XMLTV programme listings in the combined `channel.m3u` / `channel.xmltv` export |
 | `virtual_channels_export_enabled` | `true` | Include enabled RSMC virtual channels in normal M3U/XMLTV exports |
 | `weather_aspect_ratio` | `16:9` | Weather output aspect ratio |
 | `weather_resolution` | `1280x720` | Weather output resolution |
@@ -104,6 +129,10 @@ The `settings` table stores one key per setting. Values are JSON-encoded.
 | `hdhomerun_enabled` | `false` | Enable HDHomeRun-compatible export backend |
 | `hdhomerun_device_id` | empty | Optional persisted HDHomeRun device ID; generated/normalized by the app when needed |
 | `hdhomerun_rebroadcast_channels` | `[]` | Imported source channels explicitly selected for HDHomeRun rebroadcast |
+| `hdhomerun_testing_host` | empty | Physical HDHomeRun Input hostname/IP |
+| `hdhomerun_testing_channels` | `[]` | Discovered physical tuner channels and per-channel Use selections |
+| `hdhomerun_testing_guide_enabled` | `false` | Add only selected physical HDHomeRun Input channels to the rendered Guide |
+| `hdhomerun_testing_output_mode` | `hls` | Aggregate Testing M3U output mode (`hls`, `mpegts`, or `raw`) |
 | `diag_delay_segments` | `2` | Segments hidden from the live edge before serving to clients |
 | `diag_min_buffer_secs` | `18` | Minimum age before fresh pipeline switches to live |
 | `diag_min_buffer_segments` | `3` | Minimum live guide segment count before switching to live |
@@ -135,6 +164,9 @@ The manager treats these as FFmpeg-level settings:
 - `guide_preview_detected_source_key`
 - `guide_preview_detected_transport`
 - `guide_preview_transport_source_key`
+- `guide_preview_hdhr_audio_offset_ms`
+- `guide_preview_iptv_audio_offset_ms`
+- `guide_preview_file_audio_offset_ms`
 - `weather_music_mode`
 - `weather_music_loop`
 - `weather_music_single_file`
@@ -144,7 +176,7 @@ Changing these should be followed by the relevant pipeline restart.
 
 ## Settings that can refresh without full restart
 
-Theme, title, guide content, page dwell, visible rows, guide duration, transition, and Guide Message content/timing are read through renderer state. Guide Message has its own live-save route and does not require a Guide restart. When the pipeline is active, saving configuration refreshes guide state so the renderer can pick up changes without necessarily rebuilding the FFmpeg process.
+Theme, title, guide content, page dwell, visible rows, guide duration, transition, and Guide Message content/timing are read through renderer state. Guide Message has its own live-save route and does not require a Guide restart. When the pipeline is active, saving configuration refreshes guide state so the renderer can pick up changes without necessarily rebuilding the FFmpeg process. When `guide_message_now_playing_enabled` is enabled and Guide Preview is pointed at a real channel (an imported playlist channel, an enabled RSMC virtual channel, or a selected HDHomeRun channel), the renderer automatically prepends a `Now Playing on <channel name>: <channel number> — <program>` slide to the Guide Message rotation. Disable the setting to suppress the automatic slide without affecting administrator-authored Guide Messages. The program title is selected from the current EPG block at render time, so programme transitions do not wait for the next state refresh. Files and bare direct URLs do not generate this automatic message.
 
 ## Hardware acceleration behavior
 
@@ -154,6 +186,18 @@ Theme, title, guide content, page dwell, visible rows, guide duration, transitio
 - `hardware_if_available` uses encoder-ready hardware when FFmpeg validation succeeds, otherwise software fallback remains active
 
 The admin Hardware Acceleration tab reports detected devices separately from encoder-ready providers and shows the currently active path.
+
+## Guide Preview audio sync compensation
+
+The **Diagnostics** tab provides independent audio-sync compensation for **HDHomeRun** and **IPTV / M3U** Guide Preview sources. Values are stored in milliseconds and shown in both milliseconds and seconds in the UI. The allowed range is `-5000` through `+5000` ms in 50 ms increments.
+
+- Negative values **advance audio**. Example: `-1200 ms (-1.20 seconds)` advances Preview audio by 1.20 seconds. RSMC rebases the rolling audio timeline, trims the requested amount, and rebases the remaining audio before encoding.
+- Positive values **delay audio**. Example: `+850 ms (+0.85 seconds)` delays Preview audio by 0.85 seconds.
+- `0 ms (0.00 seconds)` disables compensation.
+
+Compensation is keyed from `guide_preview_source_type`, not from cached transport detection. `hdhomerun` uses `guide_preview_hdhr_audio_offset_ms`; `url` (including an M3U-selected IPTV channel) uses `guide_preview_iptv_audio_offset_ms`; `file` uses `guide_preview_file_audio_offset_ms`. RSMC virtual channels are not modified by these controls. Changes require the Guide FFmpeg pipeline to be rebuilt; use **Save & Restart Pipeline** while the Guide is active.
+
+Defaults remain `0` because required compensation is environment/source dependent. A value around `-1200 ms` was useful during HDHomeRun troubleshooting on one test system but is not a universal HDHomeRun default.
 
 ## Guide Preview input transport detection
 
@@ -225,6 +269,25 @@ No guide data
 This keeps the grid visually complete instead of leaving empty rows.
 
 
+## Unified rendered-Guide ordering and duplicate channel numbers
+
+The rendered Guide combines imported M3U/XMLTV channels, enabled RSMC virtual channels, and (when opted in) selected HDHomeRun channels before pagination. The combined lineup is sorted by logical channel number, including numeric subchannels such as `7.1`, `7.2`, and `10.1`.
+
+Channel numbers are display attributes rather than unique identifiers. If more than one source uses the same channel number, RSMC preserves the original number and adds a Guide-only source marker: `[R]` for an RSMC virtual channel, `[I]` for an imported IPTV/M3U channel, and `[H]` for an HDHomeRun channel. Stable channel IDs remain the authoritative identity for programme matching and de-duplication.
+
+## HDHomeRun channels as Guide Preview sources
+
+When at least one detected physical HDHomeRun Input channel is checked under **Use**, **Guide Preview → Video Source** exposes a single **HDHomeRun** choice. Selecting it reveals a separate **Channel** dropdown containing the usable physical channels. The selected station is acquired through RSMC's shared per-channel HDHomeRun source relay and normalized by the existing Guide Preview pipeline, so Preview does not depend on the HDHomeRun Input HLS/MPEG-TS/Raw output-mode switch. If rebroadcast or another RSMC consumer uses the same physical station, it attaches to that same shared source instead of opening another tuner request. A channel that is no longer selected under **Use** is not eligible as a Preview source.
+
+## RSMC virtual channels in the rendered Guide
+
+The rendered Guide uses a combined internal lineup. Channels imported from the configured M3U/XMLTV remain first, and RSMC-owned channels are appended automatically. The primary Guide row is always present; the secondary Guide, Weather, Simulated Traffic, News Now, and Channel Mix rows are included when those features are enabled.
+
+RSMC generates rolling programme blocks for its own channels so the rendered grid shows meaningful entries such as **Local Weather**, **Traffic Conditions**, and **News Now** rather than the generic no-data fallback. This internal inclusion is independent of **Virtual Channel Export**, which only controls downstream M3U/XMLTV publication. Stable channel IDs prevent duplicate rows if an RSMC-owned channel is already present in the configured source playlist.
+
+The same combined-lineup layer now supports physical HDHomeRun channels. When **Include selected physical channels in the RetroStation MC Guide** is enabled, only HDHomeRun channels checked under **Use** are appended. Their SiliconDust XMLTV identifiers are used to map real current and future programme listings into the Guide. Existing imported channels remain authoritative and are de-duplicated by XMLTV id (or channel number/name when needed).
+
+
 ### Plex Live TV compatibility
 
 When using the RSMC HDHomeRun-compatible tuner with Plex, ensure Plex's **Disable video stream transcoding** option is not enabled. Live TV playback may need Plex to perform its own transcode/remux decision even when RSMC already delivers H.264/AAC MPEG-TS.
@@ -260,3 +323,25 @@ Legacy Weather-specific music files under `data/weather_music/` are copied into 
 ## HDHomeRun / Plex status in v1.4.0
 
 The HDHomeRun emulation implementation remains in the codebase, but its admin controls are temporarily hidden and the feature is forced disabled while Plex compatibility work is deferred. This does **not** disable RSMC's HLS segmenter or standard M3U/XMLTV outputs. `/channel.m3u` and the individual `/hls/*.m3u8` channels remain the supported output path for RetroStation Player, RetroIPTVGuide, TiViMate, VLC, and similar IPTV clients.
+
+
+## HDHomeRun rendered Guide and rebroadcast export
+
+Physical HDHomeRun channel selection has separate purposes. **Use** makes a discovered channel available to RetroStation MC features such as Guide Preview and, when the rendered-Guide option is enabled, the Guide grid. **Rebroadcast** independently controls whether that physical channel is published in the normal `channel.m3u` / `channel.m3u8` and `channel.xmltv` outputs. A channel must still be selected under **Use** before it can be rebroadcast.
+
+HDHomeRun rebroadcast follows the global HDHomeRun Output Mode. HLS Segmenter publishes an RSMC HLS URL, MPEG-TS publishes an RSMC continuous H.264/AAC transport-stream URL, and Raw publishes the native tuner MPEG-TS through an RSMC proxy. Downstream playlists never expose the physical tuner's private URL directly.
+
+Each rebroadcast channel receives a stable RSMC `tvg-id` in the form `rsmc-hdhr-physical-<key>`. The M3U uses that ID and an RSMC-owned stream URL such as `/hdhomerun/channel/<key>/index.m3u8` or `/hdhomerun/channel/<key>/stream.ts`. `channel.xmltv` uses the same RSMC ID and maps the SiliconDust current/future programme listings onto it, so downstream clients can match the stream and EPG without knowing SiliconDust's internal XMLTV identifier.
+
+
+### Shared tuner-session behavior
+
+RSMC maintains one shared physical-source session per active HDHomeRun station. Guide Preview, HLS rebroadcast, continuous MPEG-TS rebroadcast, raw passthrough, and Diagnostics all consume that internal source. Multiple clients on the same station therefore use one physical tuner. Distinct active stations consume separate tuners and are constrained by the device-reported tuner count. When the last consumer leaves, the source remains warm for the configured **Idle Timeout** before RSMC releases the tuner; a consumer that returns during that grace period reuses the existing source immediately.
+
+For HLS, TiViMate/VLC/other clients may make many playlist and segment requests, but those HTTP requests feed the existing channel-level HLS session and do not create separate physical tuner allocations.
+
+## HDHomeRun Input channel selection and diagnostics
+
+The **HDHomeRun Input** tab is the operational configuration surface for a physical SiliconDust tuner. Its channel list is a compact fixed-height table with sticky headers, search, All/Used/Rebroadcast/Unused filters, live discovered/used/rebroadcast/shown counts, and independent **Select All / Unselect All** controls for the **Use** and **Rebroadcast** columns.
+
+Low-level per-channel inspection is under **Diagnostics → HDHomeRun Diagnostics**. Select one discovered station from the Channel dropdown to display only that channel's metadata and direct HLS, MPEG-TS, and raw transport test URLs. Direct stream tests require the station to be enabled under **HDHomeRun Input → Use**.

@@ -1,16 +1,10 @@
-# RetroStation MC v1.4.0 Updated Documentation Files
+# RetroStation MC v1.5.0 Beta 1 Release Manifest
 
-- `README.md`
-- `CHANGELOG.md`
-- `docs/INDEX.md`
-- `docs/ADMIN_USER_GUIDE.md`
-- `docs/ARCHITECTURE.md`
-- `docs/DATA_FLOW.md`
-- `docs/FAQ.md`
-- `docs/INSTALLATION.md`
-- `docs/RENDERER.md`
-- `docs/SECURITY.md`
-- `docs/ROADMAP.md`
-- `docs/TESTING.md`
-- `docs/API_REFERENCE.md`
-- `docs/PLAYOUT_DOCUMENT.md`
+Public release package contents include the application source, Linux installer, Docker support, tests, sample data, and documentation.
+
+Release-cleanup notes:
+
+- Public repository: `https://github.com/thehack904/RetroStation_MC`
+- Generated Python/test caches and development backup files are excluded from the release archive.
+- Documentation examples use reserved example-network addresses rather than private development-network addresses.
+- Flask session signing uses a persistent per-install random key instead of a repository-wide hard-coded key.

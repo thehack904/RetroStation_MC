@@ -15,6 +15,7 @@ def test_patch_display_state_updates_only_display(tmp_path, monkeypatch):
 
     assert guide_state.patch_display_state({
         'guide_message_enabled': True,
+        'guide_message_now_playing_enabled': False,
         'guide_message_text': 'TONIGHT\nClassic Horror Night',
         'guide_message_interval_seconds': 8,
     }) is True
@@ -22,6 +23,7 @@ def test_patch_display_state_updates_only_display(tmp_path, monkeypatch):
     updated = json.loads(state_path.read_text(encoding='utf-8'))
     assert updated['display']['preview_enabled'] is True
     assert updated['display']['guide_message_enabled'] is True
+    assert updated['display']['guide_message_now_playing_enabled'] is False
     assert updated['display']['guide_message_text'] == 'TONIGHT\nClassic Horror Night'
     assert updated['pages'] == [{'keep': 'me'}]
     assert updated['theme'] == 'retrostation_mc'
@@ -41,5 +43,7 @@ def test_web_ui_has_live_guide_message_save_button():
     assert 'timing tags are never displayed' in template
     assert 'name="channel_group"' not in template
     assert 'Enter Guide Channel message text here...' in template
+    assert 'name="guide_message_now_playing_enabled"' in template
+    assert 'Include Now Playing information from the selected Preview channel' in template
     assert "formaction=\"{{ url_for('guide_message_settings') }}\"" in template
     assert 'no restart required' in template.lower()

@@ -47,8 +47,13 @@ PREFERRED_PROVIDER_VIDEO_ENCODERS: dict[str, tuple[str, ...]] = {
 }
 HARDWARE_PROVIDER_SELECTION_PRIORITY: dict[str, int] = {
     "nvidia": 0,
-    "intel": 1,
-    "vaapi": 2,
+    # On Linux Intel/AMD systems prefer VA-API when it has passed the
+    # functional encoder probe.  This is the path RSMC actually exercises
+    # for software-rendered Guide frames (format=nv12,hwupload) and for the
+    # HDHomeRun MPEG-2 -> H.264 transcode.  Keep QSV/AMF available as
+    # fallbacks when VA-API is not encoder-ready.
+    "vaapi": 1,
+    "intel": 2,
     "amd": 3,
 }
 

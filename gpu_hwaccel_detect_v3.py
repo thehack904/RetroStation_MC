@@ -11,7 +11,7 @@ def _ensure_app_importable() -> None:
 
     This allows the script to be run from any working directory, e.g.::
 
-        sudo python3 /home/iptv/retrostation-mc/gpu_hwaccel_detect_v3.py --test
+        sudo /opt/retrostation-mc/.venv/bin/python /opt/retrostation-mc/gpu_hwaccel_detect_v3.py --test
     """
     from pathlib import Path
 

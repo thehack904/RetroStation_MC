@@ -5,12 +5,73 @@ from pathlib import Path
 import json
 from typing import Any
 
-from .guide_preview import calculate_preview_layout, effective_preview_aspect_ratio, normalize_preview_aspect_mode, normalize_preview_audio_mode, normalize_preview_source_type
+from .hdhomerun_guide import preview_channel_details
+from .guide_preview import (
+    VIRTUAL_PREVIEW_SOURCES,
+    calculate_preview_layout,
+    effective_preview_aspect_ratio,
+    normalize_preview_aspect_mode,
+    normalize_preview_audio_mode,
+    normalize_preview_source_type,
+    selected_hdhomerun_preview_key,
+    selected_virtual_preview_source,
+)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATE_PATH = BASE_DIR / "data" / "guide_state.json"
 SECONDARY_STATE_PATH = BASE_DIR / "data" / "guide_state_secondary.json"
 THEMES_DIR = BASE_DIR / "app" / "themes"
+
+
+_VIRTUAL_PREVIEW_CHANNEL_IDS = {
+    "virtual_weather": "rsmc-weather",
+    "virtual_traffic": "rsmc-traffic",
+    "virtual_news": "rsmc-news",
+    "virtual_channel_mix": "rsmc-channel-mix",
+}
+
+
+def _preview_channel_metadata(config: dict, channels: list[dict]) -> dict[str, str]:
+    """Resolve the selected Guide Preview to a real channel in the Guide lineup.
+
+    Direct files and bare URLs intentionally return no channel metadata.  URL
+    playlist selections, RSMC virtual channels and physical HDHomeRun stations
+    resolve to the same stable channel objects already used by the rendered
+    Guide.  A future source can participate by setting ``guide_preview_channel_id``.
+    """
+    explicit_id = str(config.get("guide_preview_channel_id", "") or "").strip()
+    source_type = normalize_preview_source_type(config.get("guide_preview_source_type"))
+    target_id = explicit_id
+
+    if not target_id and source_type == "virtual_channels":
+        target_id = _VIRTUAL_PREVIEW_CHANNEL_IDS.get(selected_virtual_preview_source(config), "")
+    elif not target_id and source_type == "hdhomerun":
+        key = selected_hdhomerun_preview_key(config)
+        if key:
+            target_id = f"rsmc-hdhr-physical-{key}"
+
+    selected_url = ""
+    selected_name = ""
+    if source_type == "url":
+        selected_url = str(config.get("guide_preview_url_channel", "") or "").strip()
+        selected_name = str(config.get("guide_preview_url_channel_name", "") or "").strip()
+
+    match = None
+    if target_id:
+        match = next((row for row in channels if str(row.get("id") or "").strip() == target_id), None)
+    if match is None and selected_url:
+        match = next((row for row in channels if str(row.get("stream_url") or "").strip() == selected_url), None)
+    if match is None and selected_name:
+        folded = selected_name.casefold()
+        match = next((row for row in channels if str(row.get("name") or "").strip().casefold() == folded), None)
+    if match is None:
+        return {}
+
+    return {
+        "id": str(match.get("id") or "").strip(),
+        "name": str(match.get("name") or "").strip(),
+        "number": str(match.get("number") or "").strip(),
+    }
 
 
 def load_theme(theme_name: str) -> dict[str, Any]:
@@ -100,6 +161,30 @@ def build_state(config: dict, channels: list[dict], programmes: dict[str, list[d
         for i in range(0, max(len(filtered_channels), 1), visible_rows)
     ] or [[]]
 
+    preview_channel = _preview_channel_metadata(config, filtered_channels) if preview_enabled else {}
+    preview_channel_programs: list[dict] = []
+
+    # HDHomeRun Preview is intentionally independent of rendered-Guide
+    # inclusion. Resolve the selected physical station directly so Now Playing
+    # works even when ``hdhomerun_testing_guide_enabled`` is off.
+    preview_source_type = normalize_preview_source_type(config.get("guide_preview_source_type"))
+    if preview_enabled and preview_source_type == "hdhomerun":
+        hdhr_channel, hdhr_programmes = preview_channel_details(
+            config, selected_hdhomerun_preview_key(config)
+        )
+        if hdhr_channel:
+            preview_channel = hdhr_channel
+            preview_channel_programs = list(hdhr_programmes or [])
+
+    preview_channel_id = str(preview_channel.get("id", "") or "").strip()
+    if preview_channel_id and not preview_channel_programs:
+        preview_row = next(
+            (row for row in filtered_channels if str(row.get("id") or "").strip() == preview_channel_id),
+            None,
+        )
+        if preview_row is not None:
+            preview_channel_programs = list(preview_row.get("programs") or [])
+
     state = {
         "generated_at": now.isoformat(),
         "theme": theme_name,
@@ -121,7 +206,12 @@ def build_state(config: dict, channels: list[dict], programmes: dict[str, list[d
             "preview_aspect_mode": normalize_preview_aspect_mode(config.get("guide_preview_aspect_mode")),
             "preview_effective_aspect_ratio": effective_preview_aspect_ratio(config),
             "preview_layout": preview_layout,
+            "preview_channel_id": preview_channel.get("id", ""),
+            "preview_channel_name": preview_channel.get("name", ""),
+            "preview_channel_number": preview_channel.get("number", ""),
+            "preview_channel_programs": preview_channel_programs,
             "guide_message_enabled": bool(config.get("guide_message_enabled", False)),
+            "guide_message_now_playing_enabled": bool(config.get("guide_message_now_playing_enabled", True)),
             "guide_message_text": str(config.get("guide_message_text", "") or ""),
             "guide_message_interval_seconds": max(3, min(60, int(config.get("guide_message_interval_seconds", 8) or 8))),
         },

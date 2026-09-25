@@ -76,7 +76,7 @@ The renderer advances frames against a frame deadline to reduce cumulative drift
 
 When `guide_preview_enabled` is true, the renderer reserves a themed information/preview region above the guide grid. The header title and clock retain the normal theme styling, the entire reserved region uses the theme `header_bg`, and the guide timeline/listings begin at a resolution-aware `guide_top` boundary.
 
-The layout supports the four Guide Channel output profiles: `1280x720`, `1920x1080`, `960x720`, and `1440x1080`. The state builder reduces the effective rows per page when the smaller guide viewport cannot display the configured row count, preventing clipped/skipped channels. For HLS/local-file/unknown Preview inputs, the Pillow renderer samples the normalized `latest-preview.jpg` frame while still emitting one full raw RGB frame stream. For detected MPEG-TS inputs, the renderer reserves the same viewport and the Guide FFmpeg process overlays the dedicated local relay into it.
+The layout supports the four Guide Channel output profiles: `1280x720`, `1920x1080`, `960x720`, and `1440x1080`. The state builder reduces the effective rows per page when the smaller guide viewport cannot display the configured row count, preventing clipped/skipped channels. For external and local-file Preview inputs, the renderer reserves the preview viewport while the Guide FFmpeg process overlays the shared normalized local HLS relay. Keeping preview video and audio muxed in that relay preserves their common media timeline.
 
 ## Replacement strategy
 

@@ -1,6 +1,6 @@
 # Installation
 
-RetroStation MC v1.4.0 can run either as a Docker container or as a local Python application.
+RetroStation MC can run either as a Docker container or as a local Python application.
 
 ## Requirements
 
@@ -63,19 +63,140 @@ http://localhost:8787/
 sudo ./retrostation_linux.sh install
 ```
 
-The installer creates and owns the app under the dedicated `iptv` system user at `/home/iptv/retrostation-mc`.
-It also creates and starts the `retrostation-mc` systemd service.
-During installation it runs `gpu_hwaccel_detect_v3.py` to report whether hardware acceleration can be used or if software fallback is required.
+The installer creates a dedicated `retrostation-mc` system user, installs the application under `/opt/retrostation-mc`, stages mutable state under `/var/lib/retrostation-mc`, and creates/starts the `retrostation-mc` systemd service. During installation it runs `gpu_hwaccel_detect_v3.py` to report whether hardware acceleration can be used or if software fallback is required.
+
+### Fresh-install layout and permissions
+
+| Path | Ownership / mode | Notes |
+|---|---|---|
+| `/opt/retrostation-mc` | root-managed application tree | code and `.venv`; the service does not write here |
+| `/etc/retrostation-mc` | `root:root`, `0755` | administrator-managed configuration directory |
+| `/etc/retrostation-mc/retrostation-mc.conf` | `root:root`, `0644` | optional environment overrides loaded by systemd |
+| `/var/lib/retrostation-mc` | `retrostation-mc:retrostation-mc`, `0755` | database, generated HLS output, runtime files, migration state |
+| `/var/lib/retrostation-mc/.migration` | root-managed, `0750` | restartable legacy-migration markers |
+| `/var/backups/retrostation-mc` | root-managed, `0750` | legacy-layout backups and rollback instructions |
+
+The dedicated service account is created with:
+
+- service name and account: `retrostation-mc`
+- primary group: `retrostation-mc`
+- home directory: `/var/lib/retrostation-mc`
+- no-login shell
+
+If the host has `video` and/or `render` groups, the installer adds the service account to them so VA-API/QSV can access `/dev/dri` without reusing a shared `iptv` account.
+
+The generated systemd unit stays at `/etc/systemd/system/retrostation-mc.service` and uses:
+
+- `User=retrostation-mc`
+- `Group=retrostation-mc`
+- `WorkingDirectory=/opt/retrostation-mc`
+- `EnvironmentFile=-/etc/retrostation-mc/retrostation-mc.conf`
+- `ProtectSystem=full`
+- `NoNewPrivileges=yes`
+- `PrivateTmp=yes`
+- `ProtectHome=yes`
+- `ProtectKernelTunables=yes`
+- `ProtectKernelModules=yes`
+- `ProtectControlGroups=yes`
+- `ReadWritePaths=/var/lib/retrostation-mc`
+
+### Upgrade from `/home/iptv/retrostation-mc`
+
+Run the normal installer:
+
+```bash
+sudo ./retrostation_linux.sh install
+```
+
+Migration is automatic when the legacy tree is detected. The installer:
+
+1. Stops only the managed `retrostation-mc` service if it is already running.
+2. Backs up the existing systemd unit, legacy service environment files, and legacy `data/`, `output/`, and `runtime/` trees under `/var/backups/retrostation-mc/...`.
+3. Copies legacy config into `/etc/retrostation-mc/legacy/`.
+4. Copies legacy state into `/var/lib/retrostation-mc` without overwriting already-migrated files.
+5. Records restartable progress and completion markers under `/var/lib/retrostation-mc/.migration`.
+6. Leaves `/home/iptv/retrostation-mc` in place so cleanup is always an explicit manual decision.
+
+If installation is interrupted, re-run `sudo ./retrostation_linux.sh install`. The migration reuses the recorded backup path and continues from the remaining steps instead of starting over.
+
+Verify the upgraded layout with:
 
 ```bash
 sudo systemctl status retrostation-mc
+sudo systemctl cat retrostation-mc
+sudo journalctl -u retrostation-mc -n 100 --no-pager
 ```
 
-To remove that install and (when `/home/iptv` has no other files) the `iptv` user/group:
+Confirm the active unit points to `/opt/retrostation-mc/.venv/bin/python /opt/retrostation-mc/app.py` and that writable files are now under `/var/lib/retrostation-mc`.
+
+### Backup and restore
+
+Every automatic legacy migration writes a timestamped backup under `/var/backups/retrostation-mc`. Each backup contains:
+
+- `systemd/` — the previously managed unit
+- `config/` — legacy service env files and copied config files
+- `state/` — copied `data/`, `output/`, and `runtime/`
+- `rollback.txt` — a host-local rollback checklist
+
+Recommended backup flow before major host maintenance:
 
 ```bash
-sudo ./retrostation_linux.sh uninstall
+sudo tar -C / -czf retrostation-mc-backup.tgz \
+  etc/retrostation-mc \
+  var/lib/retrostation-mc \
+  var/backups/retrostation-mc
 ```
+
+To restore onto a rebuilt host, restore `/etc/retrostation-mc` and `/var/lib/retrostation-mc`, reinstall with `sudo ./retrostation_linux.sh install`, then verify the service with `systemctl status` and `journalctl`.
+
+### Rollback to the legacy layout
+
+Automatic migration is not destructive, so rollback uses the retained legacy tree plus the generated backup:
+
+1. Open the `rollback.txt` file inside the relevant `/var/backups/retrostation-mc/...` directory.
+2. Stop the current service: `sudo systemctl stop retrostation-mc`
+3. Restore the backed-up unit and any legacy service environment/config files from the backup.
+4. Reinstall or restore any needed legacy runtime files under `/home/iptv/retrostation-mc`.
+5. Reload systemd and restart the service.
+
+Because `/home/iptv/retrostation-mc` is left in place, rollback can be performed even after an interrupted migration as long as the retained legacy tree and backup are still available.
+
+### Safe uninstall versus purge
+
+| Command | Removes | Retains |
+|---|---|---|
+| `sudo ./retrostation_linux.sh uninstall` | `/opt/retrostation-mc`, managed systemd unit | `/etc/retrostation-mc`, `/var/lib/retrostation-mc`, migration metadata, dedicated account |
+| `sudo ./retrostation_linux.sh uninstall --purge` | above plus `/etc/retrostation-mc`, `/var/lib/retrostation-mc`, and the managed account/group when safe | legacy shared `/home/iptv` resources remain manual-review items |
+
+The uninstaller never uses broad user-wide kill operations such as `pkill -u iptv`, never removes sibling services, and only removes the dedicated account when no running processes or project-owned files still depend on it.
+
+### systemd status, logs, and troubleshooting
+
+```bash
+sudo systemctl status retrostation-mc
+sudo systemctl restart retrostation-mc
+sudo systemctl stop retrostation-mc
+sudo systemctl start retrostation-mc
+sudo systemctl is-active retrostation-mc
+sudo systemctl is-enabled retrostation-mc
+sudo journalctl -u retrostation-mc -n 100 --no-pager
+sudo journalctl -u retrostation-mc -f
+```
+
+Common checks:
+
+- `systemctl cat retrostation-mc` — confirm the installed unit uses `/opt/retrostation-mc` and `/etc/retrostation-mc/retrostation-mc.conf`
+- `journalctl -u retrostation-mc` — inspect Python import failures, missing FFmpeg, or permissions problems
+- `ls -ld /opt/retrostation-mc /etc/retrostation-mc /var/lib/retrostation-mc` — verify the expected split layout still exists
+
+### Coexistence with sibling projects and RetroStation Player
+
+RetroStation MC now uses dedicated Linux paths specifically so it can coexist with RetroStation Player, RetroIPTVGuide, and other sibling projects on the same host:
+
+- it does not reuse `/home/iptv` for fresh installs
+- it manages only the `retrostation-mc` systemd unit
+- it writes only to `/opt/retrostation-mc`, `/etc/retrostation-mc`, `/var/lib/retrostation-mc`, and `/var/backups/retrostation-mc`
+- legacy shared `/home/iptv` resources are left for manual review instead of being deleted automatically
 
 Or run the setup steps manually:
 

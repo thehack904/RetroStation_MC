@@ -6,3 +6,17 @@ __pycache__/
 /data/guide_state.json
 /data/guide_logo/
 /runtime/
+
+# Test/tool caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local development/editor backup files
+*.bak
+*.swp
+*.swo
+.DS_Store
+
+# Per-install Flask signing key
+/data/.flask_secret_key

@@ -279,8 +279,12 @@ class GuideRenderer:
         display = new_state.get("display", {}) or {}
         message_signature = (
             bool(display.get("guide_message_enabled", False)),
+            bool(display.get("guide_message_now_playing_enabled", True)),
             str(display.get("guide_message_text", "") or ""),
             str(display.get("guide_message_interval_seconds", 8)),
+            str(display.get("preview_channel_id", "") or ""),
+            str(display.get("preview_channel_name", "") or ""),
+            str(display.get("preview_channel_number", "") or ""),
         )
         if message_signature != self._guide_message_signature:
             self._guide_message_signature = message_signature
@@ -600,6 +604,83 @@ class GuideRenderer:
                     wrapped[last_text_index] = clipped
         return wrapped
 
+    def _preview_now_playing_slide(
+        self, display: dict[str, Any], epoch_time: float
+    ) -> dict[str, Any] | None:
+        """Build the automatic Now Playing slide for a channel Preview source.
+
+        The selected channel is identified by the stable id persisted in Guide
+        state.  The current programme is chosen at render time, so a programme
+        transition updates on-screen immediately without waiting for the next
+        30-second Guide-state refresh.
+        """
+        channel_id = str(display.get("preview_channel_id", "") or "").strip()
+        if not channel_id:
+            return None
+        channel_name = str(display.get("preview_channel_name", "") or "").strip()
+        channel_number = str(display.get("preview_channel_number", "") or "").strip()
+
+        # The selected Preview channel and its current Guide-window programmes
+        # are persisted directly in display state.  Older state files may not
+        # have that payload, so retain a page lookup only as an upgrade fallback.
+        programs = list(display.get("preview_channel_programs") or [])
+        if not programs or not channel_name:
+            channel = None
+            for page in self.state.get("pages", []) or []:
+                for row in page or []:
+                    if str(row.get("id") or "").strip() == channel_id:
+                        channel = row
+                        break
+                if channel is not None:
+                    break
+            if channel is not None:
+                if not channel_name:
+                    channel_name = str(channel.get("name") or "").strip()
+                if not channel_number:
+                    channel_number = str(channel.get("number") or "").strip()
+                if not programs:
+                    programs = list(channel.get("programs") or [])
+        if not channel_name:
+            return None
+
+        now = datetime.fromtimestamp(float(epoch_time), tz=timezone.utc)
+        program_title = "Programming information unavailable"
+        for program in programs:
+            try:
+                start = datetime.fromisoformat(str(program.get("start") or ""))
+                stop = datetime.fromisoformat(str(program.get("stop") or ""))
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=timezone.utc)
+                if stop.tzinfo is None:
+                    stop = stop.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            if start <= now < stop:
+                program_title = str(program.get("title") or program_title).strip() or program_title
+                break
+
+        station = f"{channel_name}: {channel_number}" if channel_number else channel_name
+        return {
+            "lines": [f"Now Playing on {station} — {program_title}"],
+            "blank": False,
+            "duration": None,
+            "automatic": "now_playing",
+        }
+
+    def _guide_message_slides(
+        self, display: dict[str, Any], epoch_time: float
+    ) -> list[dict[str, Any]]:
+        """Return automatic channel context followed by administrator slides."""
+        slides: list[dict[str, Any]] = []
+        now_playing = None
+        if bool(display.get("guide_message_now_playing_enabled", True)):
+            now_playing = self._preview_now_playing_slide(display, epoch_time)
+        if now_playing is not None:
+            slides.append(now_playing)
+        if bool(display.get("guide_message_enabled", False)):
+            slides.extend(self._parse_guide_message_slides(display.get("guide_message_text", "")))
+        return slides
+
     def _draw_guide_message(
         self,
         draw: ImageDraw.ImageDraw,
@@ -611,9 +692,7 @@ class GuideRenderer:
         """Draw one low-emphasis rotating message opposite the video preview."""
         if not bool(display.get("preview_enabled", False)):
             return
-        if not bool(display.get("guide_message_enabled", False)):
-            return
-        slides = self._parse_guide_message_slides(display.get("guide_message_text", ""))
+        slides = self._guide_message_slides(display, epoch_time)
         if not slides:
             return
 
@@ -958,7 +1037,8 @@ class GuideRenderer:
             program_bg = _resolve_program_cell_fill(colors, str(channel.get("group", "")))
             draw.rectangle([0, row_y, width, row_y + row_height], outline=colors.get("grid_line", "#2d4a7a"), width=1)
             chan_name = abbreviate_channel_name(channel.get('name', 'Unknown'))
-            chan_label = f"{channel.get('number', '')}  {chan_name}"
+            chan_number = channel.get('guide_number_label') or channel.get('number', '')
+            chan_label = f"{chan_number}  {chan_name}"
             chan_bbox = draw.textbbox((0, 0), chan_label, font=self.font_medium)
             chan_h = chan_bbox[3] - chan_bbox[1]
             chan_y = row_y + max(0, (row_height - chan_h) // 2)
@@ -1209,7 +1289,27 @@ class GuideRenderer:
         )
         footer_bbox = draw.textbbox((0, 0), footer_text, font=self.font_small)
         footer_y = height - footer_height + max(self._px(2), (footer_height - (footer_bbox[3] - footer_bbox[1])) // 2)
-        draw.text((self._px(24), footer_y), footer_text, font=self.font_small, fill=colors.get("footer_text", "#d9e6ff"))
+        footer_fill = colors.get("footer_text", "#d9e6ff")
+        footer_x = self._px(24)
+        draw.text((footer_x, footer_y), footer_text, font=self.font_small, fill=footer_fill)
+
+        # Unified-lineup source legend. Keep it on the opposite side of the
+        # pagination/status text. On narrower SD outputs, shorten the labels
+        # only when necessary so the two footer regions never overlap.
+        source_key = "[R] RSMC Virtual | [I] IPTV/M3U | [H] HDHomeRun"
+        compact_key = "[R] RSMC | [I] IPTV | [H] HDHR"
+        right_margin = self._px(24)
+        left_end = footer_x + (footer_bbox[2] - footer_bbox[0])
+        available = width - right_margin - left_end - self._px(20)
+        key_text = source_key
+        key_bbox = draw.textbbox((0, 0), key_text, font=self.font_small)
+        key_width = key_bbox[2] - key_bbox[0]
+        if key_width > available:
+            key_text = compact_key
+            key_bbox = draw.textbbox((0, 0), key_text, font=self.font_small)
+            key_width = key_bbox[2] - key_bbox[0]
+        if key_width <= available:
+            draw.text((width - right_margin - key_width, footer_y), key_text, font=self.font_small, fill=footer_fill)
 
         return img
 

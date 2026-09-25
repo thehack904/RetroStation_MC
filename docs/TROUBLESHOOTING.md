@@ -273,3 +273,19 @@ It should return `200 OK` with `Content-Type: video/mp2t`. A normal GET is a con
 ## Plex tuner playback shows "Source is unavailable"
 
 If Plex can discover the RSMC HDHomeRun tuner, guide mapping succeeds, and `/hdhr/channel/<n>` plays with `curl`/`ffprobe`, but Plex playback still fails, check **Settings → Server → Transcoder** in Plex. Ensure **Disable video stream transcoding** is **unchecked**. Plex may still require a transcode/remux decision for Live TV playback even when the incoming RSMC tuner stream is already H.264/AAC in MPEG-TS.
+## Guide Preview has a consistent audio/video offset
+
+If Guide Preview video is smooth but Preview audio is consistently early or late, first confirm the source itself and RSMC's normalized preview relay are stable. Do not compensate intermittent pauses, drift, or source discontinuities with a fixed offset.
+
+For a stable, repeatable offset, open **Diagnostics → Guide Preview Audio Sync Compensation** and adjust only the matching source class:
+
+- **HDHomeRun Audio Offset** for a selected HDHomeRun Preview channel
+- **IPTV / M3U Audio Offset**
+- **Uploaded Video Audio Offset** for a `url`/playlist Preview source
+
+The UI displays both milliseconds and seconds. Negative values advance audio; positive values delay it. Example: `-1200 ms (-1.20 seconds)` advances audio by 1.20 seconds. Save and restart the Guide pipeline after each adjustment. Use small increments (50–100 ms) near the final value.
+
+The controls intentionally modify audio only. Earlier troubleshooting showed that delaying Preview video timestamps can cause periodic overlay freezes while the Guide clock/grid continue normally.
+
+If changing the offset has no visible effect, confirm the active final Guide FFmpeg command contains the expected `-af` filter; a saved configuration does not affect an already-running FFmpeg process until the pipeline is rebuilt.
+

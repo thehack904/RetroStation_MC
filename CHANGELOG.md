@@ -1,15 +1,179 @@
-# Changelog
+# RetroStation MC Changelog
 
-All notable changes to RetroStation MC will be documented in this file.
+## [v1.5.0 Beta 1] - 2026-09-25
 
-This project uses a simple release-based changelog format with the following sections when applicable:
+The first public beta of RetroStation MC v1.5.0 consolidates all work completed during the v1.5.0 development cycle.
 
-- `Added` for new features.
-- `Changed` for changes in existing behavior.
-- `Fixed` for bug fixes.
-- `Removed` for removed files or behavior.
-- `Security` for vulnerability or hardening changes.
-- `Known Issues` for confirmed limitations that remain open.
+### Release and security cleanup
+
+- Replaced the repository-wide Flask session signing key with a persistent per-install random key.
+- Cleaned public-release packaging and documentation examples without changing validated streaming or channel behavior.
+
+- Fixed HDHomeRun MPEG-TS Guide Preview A/V synchronization by rebasing video and audio to the same zero-based timeline before the local HLS handoff, regenerating missing timestamps, correcting audio clock drift, and eliminating avoidable MPEG-TS mux delay.
+- Fixed late-join corruption on shared HDHomeRun tuner sessions by packet-aligning the internal MPEG-TS relay and seeding new consumers from a short rolling prebuffer, so Guide Preview -> direct-channel handoffs do not attach at an arbitrary TS/PES boundary.
+### Shared HDHomeRun source sessions
+
+- Guide Preview: local uploaded video now uses the shared muxed A/V normalization relay instead of splitting video through `latest-preview.jpg` and audio through UDP, preventing split-path A/V latency with sources such as 2160p60 test media.
+
+### Guide Preview A/V sync diagnostics
+
+- Added independent HDHomeRun and IPTV/M3U Guide Preview audio-sync compensation controls under Diagnostics.
+- Added live millisecond + seconds readouts, 50 ms slider increments, Reset-to-zero controls, and a ±5 second range.
+- Negative offsets advance Preview audio using timestamp rebase + trim; positive offsets delay Preview audio. Video timing is not modified.
+- Compensation is keyed by the selected Guide Preview source type rather than cached transport detection, avoiding false `unknown` transport states.
+- Audio-sync settings rebuild the Guide FFmpeg pipeline when changed; defaults remain 0 ms for backward-compatible behavior.
+
+
+### Guide Preview synchronization and source legend
+
+- Restored the synchronized local-HLS Guide Preview path for remote HLS and MPEG-TS/HDHomeRun sources so preview video and preview audio share one timeline instead of separate JPEG-video and UDP-audio latency paths.
+- Preserved `+genpts+discardcorrupt` input handling and added real-time `-re` pacing only for HLS preview inputs; continuous MPEG-TS/HDHomeRun inputs remain sender-paced.
+- Restored the Guide footer source key: `[R] RSMC Virtual | [I] IPTV/M3U | [H] HDHomeRun` (with a compact SD fallback when the full legend cannot fit).
+- No Now Playing behavior or configuration was changed.
+
+- Added a per-physical-channel shared HDHomeRun source relay so Guide Preview, HLS rebroadcast, MPEG-TS rebroadcast, raw passthrough, Diagnostics, and future consumers can share one tuner request when tuned to the same station.
+- Only the shared source manager opens the physical SiliconDust channel URL; downstream RSMC consumers attach to a localhost MPEG-TS relay.
+- Added a warm idle grace period using the existing HDHomeRun idle-timeout setting so a channel can be handed from the Guide Preview to VLC/TiViMate/RetroStation Player without immediately releasing and reacquiring the tuner.
+- Added tuner-capacity enforcement at the shared physical-source layer: multiple consumers of one station count as one tuner, while distinct simultaneously active stations count separately.
+- Added reconnect handling at the shared-source layer so an upstream interruption is recovered once per physical station instead of independently by every consumer.
+
+### HDHomeRun Input UI cleanup
+- Renamed the user-facing **HDHomeRun Testing** tab to **HDHomeRun Input** while retaining existing internal route/config identifiers for compatibility.
+- Reworked physical channel selection into a compact fixed-height table with sticky headers, channel/station search, All/Used/Rebroadcast/Unused filtering, live counts, and independent Use/Rebroadcast bulk controls.
+- Moved per-channel **Direct Tests** out of HDHomeRun Input and into **Diagnostics → HDHomeRun Diagnostics**.
+- Diagnostics now selects one discovered HDHomeRun channel at a time and displays only that station's metadata and HLS/MPEG-TS/raw test endpoints.
+
+### HDHomeRun bulk channel selection
+- Added opt-in Source Channel Export so the configured Playlist Source/XMLTV lineup can be aggregated with RSMC Virtual Channels and HDHomeRun rebroadcast channels in `channel.m3u` / `channel.xmltv`.
+- Added independent **Select All** and **Unselect All** controls for the physical HDHomeRun **Use** and **Rebroadcast** columns.
+- Bulk actions do not change the opposite column and skip disabled channel checkboxes.
+
+### Optional Guide Preview Now Playing message
+- Added **Include Now Playing information from the selected Preview channel** to Guide Message settings.
+- The option defaults enabled for backward compatibility and can be disabled independently of administrator-authored Guide Messages.
+- Saving Guide Message settings applies the Now Playing toggle live without restarting the Guide pipeline.
+
+### HDHomeRun channel rebroadcast export
+- Added a separate per-channel **Rebroadcast** selection for physical HDHomeRun channels; rendered-Guide inclusion remains independent.
+- Normal `channel.m3u` / `channel.m3u8` now include only physical channels that are both selected under **Use** and checked for **Rebroadcast**.
+- Rebroadcast follows the global HDHomeRun Output Mode: HLS Segmenter publishes an RSMC HLS endpoint, MPEG-TS publishes the continuous H.264/AAC transport stream, and Raw uses the RSMC passthrough proxy.
+- Public playlists expose only RSMC-owned URLs under `/hdhomerun/channel/<key>/...`; raw physical tuner URLs are not published.
+- `channel.xmltv` uses the same stable RSMC `tvg-id` as the M3U and remaps SiliconDust current/future programme listings onto that ID.
+
+### Rendered Guide combined lineup
+- Added a unified rendered-Guide lineup finalization step that numerically sorts imported IPTV, enabled RSMC virtual, and selected HDHomeRun channels (including subchannels such as `7.1`).
+- Duplicate display channel numbers are preserved rather than renumbered; the rendered Guide adds compact source markers (`[R]` RSMC, `[I]` IPTV, `[H]` HDHomeRun) only when a number collision exists.
+- Enabled HDHomeRun Testing channels selected under **Use** are now available as direct Guide Preview video sources through RSMC's stable HDHomeRun stream-dispatch URL.
+
+- Added enabled RSMC virtual channels directly to the internal lineup used by the rendered Guide Channel.
+- Weather, Simulated Traffic, News Now, Channel Mix, and the optional secondary Guide now appear as Guide rows when enabled; the primary Guide row is always present.
+- Added rolling programme blocks for RSMC-owned channels so the Guide displays programme titles and descriptions instead of `No guide data`.
+- Kept rendered-Guide inclusion independent from the downstream **Virtual Channel Export** switch.
+- Added stable-id de-duplication so an RSMC-owned channel is not shown twice if the configured source playlist already contains the same channel id.
+- Introduced a source-agnostic internal lineup merge point so future HDHomeRun channel integration can feed the same Guide model without changing the renderer.
+
+### Linux filesystem layout migration
+
+- Documented the standardized Linux layout for RetroStation MC: `/opt/retrostation-mc` for code and `.venv`, `/etc/retrostation-mc` for administrator-managed configuration, `/var/lib/retrostation-mc` for mutable state, and the dedicated `retrostation-mc` service account.
+- Documented the generated systemd unit behavior, including `EnvironmentFile=-/etc/retrostation-mc/retrostation-mc.conf`, `ProtectSystem=full`, and `ReadWritePaths=/var/lib/retrostation-mc`.
+- Clarified that migration from `/home/iptv/retrostation-mc` is automatic when `sudo ./retrostation_linux.sh install` detects the legacy layout.
+- Clarified that automatic migration is restartable, writes backups under `/var/backups/retrostation-mc`, records progress under `/var/lib/retrostation-mc/.migration`, and leaves `/home/iptv/retrostation-mc` in place for explicit follow-up cleanup or rollback.
+- Documented backup/restore, rollback, uninstall-versus-purge behavior, and systemd troubleshooting commands for the isolated Linux layout.
+- Clarified uninstall compatibility behavior: `uninstall` retains `/etc/retrostation-mc` and `/var/lib/retrostation-mc`, while `uninstall --purge` additionally removes those directories and the dedicated managed account when it is safe to do so.
+- Added regression coverage for service-unit generation, restartable migration backup/rollback artifacts, sibling-project safety, and a guardrail that limits legacy `/home/iptv` path assumptions to the installer and migration-warning code paths.
+
+### HDHomeRun stable client stream dispatch
+
+- Fixed output-mode switching for IPTV clients that cache imported M3U channel URLs, including RetroStation Player.
+- `/hdhomerun-testing/playlist.m3u` now publishes a stable per-channel `/hdhomerun-testing/stream/<channel-key>` URL instead of embedding the currently selected HLS, raw MPEG-TS, or transcoded MPEG-TS URL.
+- The stable stream endpoint resolves the active HDHomeRun Testing output mode at tune time and redirects with no-cache headers, so HLS → Raw → HLS changes take effect without rebuilding the client channel database.
+- Direct HLS, raw passthrough, and transcoded MPEG-TS URLs remain available for diagnostics and explicit testing.
+
+### HDHomeRun official channel artwork
+
+
+### HDHomeRun channel-logo fallback
+- Added a locally generated PNG placeholder for channels that do not have SiliconDust artwork or when the official image fetch fails.
+- HDHomeRun Testing M3U entries now always publish a stable `tvg-logo` URL, so RSP and other clients receive artwork for every channel.
+- The HDHomeRun Testing channel table now displays the same stable logo endpoint for official and fallback artwork.
+
+- HDHomeRun Testing now uses the tuner `DeviceAuth` to retrieve SiliconDust XMLTV channel metadata during Discover/Refresh.
+- Matches SiliconDust XMLTV channels to the local tuner lineup by logical channel number (`lcn` / `GuideNumber`).
+- Imports the official SiliconDust channel icon and XMLTV channel id when available.
+- Added `/hdhomerun-testing/logo/<channel-key>` as a stable RSMC proxy URL for official `img.hdhomerun.com` station artwork.
+- The HDHomeRun Testing M3U now emits `tvg-logo` plus the SiliconDust XMLTV channel id, allowing RetroStation Player and other playlist clients to display official station icons.
+- XMLTV/artwork lookup is non-fatal: local HDHomeRun lineup import still succeeds if SiliconDust guide metadata is temporarily unavailable.
+
+### HDHomeRun live timing stabilization
+
+#### HDHomeRun continuous MPEG-TS testing
+
+- Added an HDHomeRun Testing **Output Mode** selector for HLS or continuous MPEG-TS.
+- Added per-channel continuous MPEG-TS test URLs at `/hdhomerun-testing/mpegts/<channel-key>.ts`.
+- The aggregate HDHomeRun Testing M3U now follows the selected output mode.
+- MPEG-TS uses the same validated source-aware pipeline as HLS: native H.264 video is copied, while interlaced MPEG-2 is YADIF bob-deinterlaced to 59.94p and encoded with VA-API when hardware acceleration is enabled.
+- HLS remains on the validated 6-second / 3-completed-segment startup baseline.
+- Tuned HDHomeRun Testing HLS startup buffering to require three complete 6-second segments before advertising a newly started stream. This targets roughly 18 seconds of startup headroom after the two-segment (~12 second) production test still showed occasional segment-transition skips.
+
+- Tuned HDHomeRun Testing HLS for production-style startup: 6-second segments, a 10-segment live window, and two complete segments required before advertising a newly started stream. This keeps the buffering that eliminated segment-boundary stutter while reducing expected first-tune latency to roughly 12–14 seconds.
+
+- Stabilized live MPEG-2 transcoding by explicitly locking bob-deinterlaced NTSC output to `60000/1001` CFR with `-fps_mode cfr`, matching the successful manual HDHomeRun test.
+- Added `aresample=async=1:first_pts=0` to transcoded HDHomeRun audio so AAC timing follows the normalized video clock without periodic skips or drift.
+- Kept native H.264 video-copy channels unchanged; they continue to bypass video decode/encode and do not receive the new timing filters.
+
+### HDHomeRun source-aware transcoding
+
+- HDHomeRun interlaced MPEG-2 normalization now uses YADIF `send_field` bob deinterlacing, preserving 59.94p field-rate motion and using a 120-frame (~2 second) GOP for NTSC sources.
+
+- HDHomeRun Testing now probes each native tuner stream before startup and selects a pipeline from the actual codec, dimensions, field order, and frame rate instead of treating every station the same.
+- Native H.264 stations now use direct video stream copy (`-c:v copy`) with AC-3-to-AAC audio conversion, avoiding unnecessary decode/re-encode, GPU load, latency, and generation loss.
+- Interlaced MPEG-2 stations now use the proven Ivy Bridge/i965 path: software MPEG-2 decode, YADIF deinterlace to progressive video, optional SD raster normalization (for example 704x480 to 720x480), NV12 upload, then `h264_vaapi -qp 23`.
+- 1080i MPEG-2 keeps native 1920x1080 resolution after deinterlacing; validated 1080i29.97 -> 1080p29.97 hardware encode sustained faster than real time on the Ivy Bridge test host.
+- Progressive MPEG-2 attempts VA-API decode + VA-API H.264 encode first, then software decode + VA-API encode, then `libx264` as the final fallback.
+- GOP length is derived from source frame rate to retain the existing approximately two-second keyframe cadence used by the 6-second HLS segmenter.
+- H.264 passthrough remains preferred even for interlaced H.264 when the native bitstream is already client-compatible; no video processing is performed in that case.
+
+### HDHomeRun full VA-API decode/encode
+
+- HDHomeRun Testing now attempts a zero-copy VA-API video path first: MPEG-2 hardware decode (`-hwaccel vaapi -hwaccel_output_format vaapi`) directly into `h264_vaapi` hardware encode.
+- When full hardware decode is not accepted by a station/driver, RSMC falls back to software decode + VA-API H.264 encode before using full software `libx264`.
+- HDHomeRun Testing follows the same `hardware_if_available` setting and validated `i965`/`iHD` userspace driver selected before the normal Guide starts.
+- Audio remains AC-3 decode/AAC encode on the CPU; the video decode and H.264 encode are the accelerated portions.
+- Kept the normal v1.4.0 Guide render/decode behavior unchanged; Guide frames are generated by RSMC rather than decoded from a compressed source.
+
+
+### HDHomeRun Testing fixes
+
+- Fixed `/hdhomerun-testing/playlist.m3u` generation so it emits real line breaks instead of literal `\n` text, allowing VLC and IPTV clients to parse the channel list correctly.
+- Added process-wide VA-API driver validation before RSMC starts its Guide pipeline. Intel systems probe `i965` and `iHD` and pin the first driver that can complete an H.264 VA-API encode.
+- The validated VA-API driver is inherited by both normal Guide/virtual-channel FFmpeg processes and HDHomeRun Testing sessions, preventing Ivy Bridge systems from silently falling back to libx264 because `iHD` was selected by default.
+
+
+### HDHomeRun Testing follow-up
+
+- Keep the v1.4.0 Guide pipeline unchanged while testing physical HDHomeRun inputs in the isolated HDHomeRun Testing tab.
+- Do not expose FFmpeg's transient startup HLS playlist until it contains a completed, non-empty positive-duration MPEG-TS segment. This prevents clients from receiving `TARGETDURATION:0` / `EXTINF:0.000000` during tuner startup.
+- Add copyable URLs for the aggregate HDHomeRun test `.m3u` playlist and every enabled channel's direct `.m3u8` HLS playlist.
+
+### HDHomeRun channels in rendered Guide
+
+- Added an opt-in **Include selected physical channels in the RetroStation MC Guide** setting to HDHomeRun Testing.
+- Only physical channels checked under **Use** are merged into the rendered Guide.
+- Maps SiliconDust XMLTV current/future programme titles, times, and descriptions onto selected HDHomeRun Guide rows.
+- Keeps selected channels visible with a fallback programme entry if SiliconDust guide retrieval is unavailable.
+- De-duplicates physical channels when the configured M3U/XMLTV already contains the same XMLTV station.
+- Leaves the validated HDHomeRun HLS/MPEG-TS/raw tuner transport implementation unchanged.
+
+### HDHomeRun Testing baseline
+
+- Started directly from the released v1.4.0 codebase so Guide Configuration and Guide generation remain unchanged.
+- Added an isolated **HDHomeRun Testing** admin tab for physical tuner discovery, lineup import, channel selection, and on-demand H.264/AAC MPEG-TS HLS testing.
+- Added a separate `/hdhomerun-testing/playlist.m3u` test playlist.
+- HDHomeRun Testing does not replace or modify the normal Guide playlist/XMLTV sources or Guide pipeline.
+
+### HDHomeRun output-mode resource handling
+
+- Output-mode changes now actively terminate HLS, transcoded MPEG-TS, and raw passthrough streams from the previous mode so tuner resources are released immediately when switching HLS ↔ MPEG-TS ↔ Raw.
 
 ---
 
@@ -27,6 +191,14 @@ This project uses a simple release-based changelog format with the following sec
 - Added timed Guide Message blocks (`[message:seconds]`) and blank intervals (`[blank]`, `[blank:seconds]`), with explicit durations capped at one hour.
 - Added regression coverage in `tests/test_guide_preview_transport.py`, `tests/test_guide_preview_integration.py`, and `tests/test_guide_message_live_update.py` for transport detection/caching, pipeline routing, and the corrected message syntax.
 - This change concerns **Guide Preview input detection and processing only**. Selectable HLS versus MPEG-TS Guide/Virtual Channel **output** remains a separate future feature request and is not implemented here.
+
+### HDHomeRun raw MPEG-TS passthrough testing
+
+- Added a third HDHomeRun Testing output mode: **Raw HDHomeRun MPEG-TS Passthrough**.
+- Raw passthrough proxies the native tuner transport stream through an RSMC URL without FFmpeg, decode, encode, deinterlace, audio conversion, or remuxing.
+- Added per-channel Copy/Open Raw TS controls alongside HLS and transcoded continuous MPEG-TS.
+- The aggregate HDHomeRun Testing M3U can now select HLS, transcoded MPEG-TS, or raw tuner passthrough.
+- Existing validated HLS and transcoded MPEG-TS pipelines are unchanged.
 
 ### Hardware acceleration reliability
 

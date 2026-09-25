@@ -60,7 +60,7 @@ Use lower FPS and 720p when testing on limited hardware.
 The **Guide Preview** tab controls the optional 1990s/2000s-style video window. The feature is disabled by default.
 
 - **Video Preview** enables/disables the preview layout.
-- **Video Source** chooses an uploaded local video, a direct HTTP/HTTPS stream, a channel from an M3U playlist URL, or an enabled RSMC Virtual Channel.
+- **Video Source** chooses an uploaded local video, a direct HTTP/HTTPS stream, **Virtual Channels**, or **HDHomeRun**. When **Virtual Channels** is chosen, a separate **Channel** selector lists only currently enabled RSMC virtual channels. When **HDHomeRun** is chosen, the same two-stage pattern lists physical channels currently checked under **Use**.
 - When a network source/channel is selected, RSMC detects whether the resolved input is **HLS** or **MPEG-TS** and caches that result for the exact selected source. Local uploads are classified as **file**. Changing the source invalidates stale transport detection.
 - Detection can run immediately from the admin UI through `POST /guide-preview/detect-transport`; saving settings performs the same bounded server-side check when a valid cached result is not available. If detection is still unknown, RSMC uses the conservative non-MPEG-TS path rather than guessing.
 - **Aspect Ratio** has **Auto**, **16:9**, and **4:3**. Auto uses 16:9 immediately when no cached result exists, then detects/caches the selected source display aspect ratio in the background. Manual modes skip detection. Guide startup never waits for aspect probing.
@@ -191,7 +191,7 @@ Upload audio files and configure background music. See [Background Music](BACKGR
 
 ### Diagnostics
 
-Tune HLS live-edge delay, minimum buffer requirements, standby playlist size, and log display length. See [Diagnostics and Logging](DIAGNOSTICS_AND_LOGGING.md).
+Tune HLS live-edge delay, minimum buffer requirements, standby playlist size, and log display length. The tab also provides independent **HDHomeRun** and **IPTV / M3U** Guide Preview audio-sync offsets. Sliders use 50 ms steps and always show both units, for example `-1200 ms (-1.20 seconds)`. Negative values advance audio, positive values delay audio, and Reset returns a source to `0 ms`. Use **Save & Restart Pipeline** to apply a changed offset to an active Guide. See [Diagnostics and Logging](DIAGNOSTICS_AND_LOGGING.md).
 
 ### Hardware Acceleration
 

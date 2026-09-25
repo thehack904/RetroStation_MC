@@ -107,3 +107,25 @@ Decrease buffer settings only when startup latency is more important than playba
 Guide Preview startup writes transport/pipeline information to the event log. Useful categories/messages include `config` entries showing the cached detected transport, `guide-preview-normalizer` for the shared HLS/local-file worker, and `guide-preview-mpegts-relay` / MPEG-TS relay startup messages.
 
 For Preview A/V or startup problems, confirm that the selected source's cached transport matches the current source, then look for normalizer/relay startup failures or the eight-second first-output startup timeout. An unknown network transport is not automatically treated as MPEG-TS; it follows the conservative shared-normalizer path.
+## Guide Preview audio sync compensation
+
+The Diagnostics tab includes source-specific **Guide Preview Audio Sync Compensation** controls for:
+
+- **HDHomeRun Audio Offset**
+- **IPTV / M3U Audio Offset**
+- **Uploaded Video Audio Offset**
+
+Each control ranges from `-5000` to `+5000` milliseconds in 50 ms steps and displays the equivalent seconds value live. For example, `-1200 ms` is displayed as `-1200 ms (-1.20 seconds)`.
+
+The sign convention is:
+
+- negative = advance audio
+- positive = delay audio
+- zero = no compensation
+
+These settings apply only when Guide Preview audio mode is **Preview** and the selected source class matches the control. HDHomeRun and IPTV/M3U are independent. The controls do not alter Preview video timestamps or cadence.
+
+After changing an offset on a running Guide, use **Save & Restart Pipeline** so the final Guide FFmpeg command is rebuilt. To verify the effective setting at the command line, inspect the active Guide process. A negative offset uses an audio filter similar to `asetpts=PTS-STARTPTS,atrim=start=1.2,asetpts=PTS-STARTPTS`; a positive offset uses `adelay=<milliseconds>:all=1`.
+
+Do not assume a compensation value is portable between systems. Source encoder latency, hardware acceleration, host performance, and playback paths can differ. Start at zero and calibrate only when a consistent A/V offset is observed.
+

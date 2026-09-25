@@ -8,7 +8,10 @@ import io
 import json
 import logging
 import math
+import os
 import posixpath
+import re
+import secrets
 import shutil
 import subprocess
 import threading
@@ -21,28 +24,44 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import requests as _requests
+from PIL import Image, ImageDraw, ImageFont
 
 from flask import Flask, Response, abort, flash, jsonify, redirect, render_template, send_from_directory, stream_with_context, url_for
 from flask import request
 from werkzeug.utils import secure_filename
 
 from app.config_store import ConfigStore, DEFAULT_CONFIG
-from app.ffmpeg_profiles import normalize_hardware_acceleration_mode
+from app.ffmpeg_profiles import normalize_hardware_acceleration_mode, resolve_ffmpeg_profile
+from app.gpu_capabilities import detect_gpu_capabilities
+from app.vaapi_driver import configure_vaapi_driver
 from app.hls_playlist import trim_playlist_for_delayed_live_edge
 from app.guide_state import patch_display_state
 from app.guide_preview import (
     detect_preview_aspect_ratio, detect_preview_transport, effective_preview_aspect_ratio, is_http_url, known_preview_aspect_ratio,
-    normalize_preview_aspect_mode, normalize_preview_audio_mode, normalize_preview_source_type, normalize_preview_transport, parse_preview_m3u,
+    VIRTUAL_PREVIEW_SOURCES, normalize_preview_aspect_mode, normalize_preview_audio_mode, normalize_preview_source_type, normalize_preview_transport, parse_preview_m3u,
     preview_source_cache_key, resolve_preview_source,
 )
 from app.hdhomerun_discovery import HDHomeRunDiscoveryService, normalize_or_generate_device_id
+from app.hdhomerun_source import (
+    apply_xmltv_channel_metadata,
+    discover_base_urls,
+    fetch_device_and_lineup,
+    fetch_silicondust_xmltv_channels,
+    merge_lineup_channels,
+)
+from app.hdhomerun_hls import HDHomeRunHLSSession, build_hdhomerun_mpegts_command, probe_hdhomerun_video
+from app.hdhomerun_shared import shared_hdhomerun_sources, shared_hdhomerun_source_url
+from app.hdhomerun_guide import rebroadcast_export_programmes
 from app.manager import (
     GuideManager, WeatherChannelManager, TrafficChannelManager, NewsChannelManager,
     STANDBY_SEGMENT, STATIC_SEGMENT, STANDBY_DURATION_SECS, MUSIC_DIR, WEATHER_MUSIC_DIR,
     WEATHER_PLAYLIST, TRAFFIC_PLAYLIST, NEWS_PLAYLIST, _build_audio_ffmpeg_args,
 )
 from app.m3u_parser import parse_m3u
+from app.xmltv_parser import parse_xmltv
 from app.source_fetch import read_text_or_file
+from app.source_channel_export import build_source_export_entries, remap_source_programmes, source_channel_key
+from app.channel_registry import sort_exported_lineup
 from app.traffic_channel import (
     _TRAFFIC_DEMO_CITIES_SEED,
     build_traffic_payload as _build_traffic_payload,
@@ -69,6 +88,7 @@ from app.weather_radar import (
 )
 
 BASE_DIR = Path(__file__).resolve().parent
+LEGACY_BASE_DIR = Path("/home/iptv/retrostation-mc")
 THEMES_DIR = BASE_DIR / "app" / "themes"
 OUTPUT_DIR = BASE_DIR / "output"
 GUIDE_LOGO_DIR = BASE_DIR / "data" / "guide_logo"
@@ -87,7 +107,24 @@ HDHOMERUN_TUNER_COUNT = 2
 CHANNEL_MIX_LOCAL_PLAYLIST = "channel-mix.m3u8"
 CHANNEL_MIX_SOURCE_PLAYLIST = "channel-mix-source.m3u8"
 CHANNEL_MIX_REFRESH_SECONDS = 1.0
-HDHOMERUN_FEATURE_AVAILABLE = False  # backend retained but hidden/disabled for v1.4.0
+HDHOMERUN_FEATURE_AVAILABLE = False  # legacy Plex/HDHR emulation remains hidden exactly as in v1.4.0
+HDHOMERUN_TESTING_AVAILABLE = True
+
+if BASE_DIR == LEGACY_BASE_DIR:
+    logging.warning(
+        "RetroStation MC is running from legacy path %s. "
+        "Run 'sudo ./retrostation_linux.sh install' to migrate to /opt/retrostation-mc.",
+        LEGACY_BASE_DIR,
+    )
+_hdhomerun_testing_sessions_lock = threading.RLock()
+_hdhomerun_testing_sessions: dict[str, HDHomeRunHLSSession] = {}
+# Continuous MPEG-TS and raw passthrough responses are long-lived request
+# generators rather than HDHomeRunHLSSession instances. Track them separately
+# so changing the Testing output mode can immediately release tuner/FFmpeg
+# resources from the previous mode instead of waiting for the client or socket
+# timeout to clean them up.
+_hdhomerun_testing_live_streams_lock = threading.RLock()
+_hdhomerun_testing_live_streams: dict[object, dict] = {}
 
 ALLOWED_AUDIO_EXTENSIONS = {".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac"}
 MAX_MUSIC_FILE_BYTES = 100 * 1024 * 1024  # 100 MB per file
@@ -104,12 +141,52 @@ MAX_STANDBY_PATTERN_BYTES = 10 * 1024 * 1024  # 10 MB
 ALLOWED_GUIDE_PREVIEW_EXTENSIONS = {".mp4", ".mkv", ".mov", ".m4v", ".webm", ".mpeg", ".mpg", ".ts"}
 MAX_GUIDE_PREVIEW_BYTES = 1024 * 1024 * 1024  # 1 GB; also bounded by MAX_CONTENT_LENGTH
 
+def _load_or_create_flask_secret_key() -> str:
+    """Return a persistent per-install Flask signing key.
+
+    Linux service installs keep it in the writable persistent state directory.
+    Local/development runs fall back to the repository data directory.
+    """
+    state_dir = Path(os.environ.get("RETROSTATION_MC_STATE_DIR", BASE_DIR / "data"))
+    secret_path = state_dir / ".flask_secret_key"
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        secret = secret_path.read_text(encoding="utf-8").strip()
+        if secret:
+            try:
+                secret_path.chmod(0o600)
+            except OSError:
+                pass
+            return secret
+    except FileNotFoundError:
+        pass
+
+    secret = secrets.token_hex(32)
+    try:
+        fd = os.open(secret_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        secret = secret_path.read_text(encoding="utf-8").strip()
+        if not secret:
+            raise RuntimeError(f"Flask secret key file is empty: {secret_path}")
+        return secret
+
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(secret + "\n")
+    return secret
+
+
 app = Flask(__name__, template_folder="app/templates", static_folder="app/static")
-app.secret_key = "retro-guide-poc-local-only"
+app.secret_key = _load_or_create_flask_secret_key()
 app.config["SESSION_COOKIE_NAME"] = "retro_guide_session"
 app.config["MAX_CONTENT_LENGTH"] = MAX_MUSIC_REQUEST_BYTES
 
 GUIDE_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+
+# Pin a functional VA-API userspace driver before any Guide/virtual-channel
+# FFmpeg process is started.  This is process-local and is inherited by all
+# child FFmpeg jobs, including HDHomeRun Testing.
+configure_vaapi_driver()
 
 store = ConfigStore()
 if not HDHOMERUN_FEATURE_AVAILABLE and store.get_config().get("hdhomerun_enabled"):
@@ -256,6 +333,7 @@ _migrate_legacy_weather_music()
 
 def coerce_form(form) -> dict:
     hdhomerun_values = form.getlist("hdhomerun_enabled") if hasattr(form, "getlist") else [form.get("hdhomerun_enabled")]
+    source_channel_values = form.getlist("source_channels_export_enabled") if hasattr(form, "getlist") else [form.get("source_channels_export_enabled")]
     virtual_channel_values = form.getlist("virtual_channels_export_enabled") if hasattr(form, "getlist") else [form.get("virtual_channels_export_enabled")]
     secondary_values = form.getlist("guide_secondary_enabled") if hasattr(form, "getlist") else [form.get("guide_secondary_enabled")]
     hdhomerun_rebroadcast_values = form.getlist("hdhomerun_rebroadcast_channels") if hasattr(form, "getlist") else []
@@ -281,6 +359,10 @@ def coerce_form(form) -> dict:
         "output_format": form.get("output_format", DEFAULT_CONFIG["output_format"]).strip(),
         "transition": form.get("transition", DEFAULT_CONFIG["transition"]).strip(),
         "guide_logo_mode": _coerce_guide_logo_mode(form.get("guide_logo_mode")),
+        # Export the Guide Configuration Playlist/XMLTV lineup into the combined
+        # channel.m3u/channel.xmltv.  Stream URLs are preserved from the source
+        # playlist; RSMC remaps M3U/XMLTV identity for collision-safe aggregation.
+        "source_channels_export_enabled": any(_coerce_bool(value, False) for value in source_channel_values),
         # Export selection is independent from each virtual channel's enabled state.
         # This checkbox controls whether enabled optional virtual channels appear
         # in channel.m3u/channel.m3u8/channel.xmltv; it never enables/disables them.
@@ -386,6 +468,189 @@ def _read_diag_settings(config: dict) -> dict:
     }
 
 
+
+def _hdhomerun_testing_channels(config: dict, *, enabled_only: bool = False) -> list[dict]:
+    raw = config.get("hdhomerun_testing_channels", DEFAULT_CONFIG["hdhomerun_testing_channels"])
+    if not isinstance(raw, list):
+        return []
+    channels: list[dict] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        if enabled_only and not bool(item.get("enabled", True)):
+            continue
+        key = str(item.get("key") or "").strip()
+        url = str(item.get("URL") or "").strip()
+        if not key or not url:
+            continue
+        channels.append({
+            **item,
+            "key": key,
+            "enabled": bool(item.get("enabled", True)),
+            "rebroadcast": bool(item.get("rebroadcast", False)),
+            "GuideNumber": str(item.get("GuideNumber") or index + 1).strip(),
+            "GuideName": str(item.get("GuideName") or f"Channel {index + 1}").strip(),
+            "URL": url,
+        })
+    return channels
+
+
+def _hdhomerun_testing_timeout(config: dict) -> int:
+    try:
+        value = int(config.get("hdhomerun_testing_idle_timeout_secs", 30) or 30)
+    except (TypeError, ValueError):
+        value = 30
+    return max(15, min(3600, value))
+
+
+def _hdhomerun_testing_logger(level: str, message: str) -> None:
+    method = getattr(manager.logger, level, manager.logger.info)
+    method("hdhomerun-testing", message)
+
+
+def _hdhomerun_testing_device_key(config: dict) -> str:
+    device = config.get("hdhomerun_testing_device")
+    if isinstance(device, dict):
+        value = str(device.get("DeviceID") or device.get("BaseURL") or "").strip()
+        if value:
+            return value
+    return str(config.get("hdhomerun_testing_host") or "hdhomerun").strip() or "hdhomerun"
+
+
+def _stop_hdhomerun_testing_sessions() -> None:
+    with _hdhomerun_testing_sessions_lock:
+        sessions = list(_hdhomerun_testing_sessions.values())
+        _hdhomerun_testing_sessions.clear()
+    for session in sessions:
+        try:
+            session.stop(remove_files=True)
+        except Exception:
+            pass
+
+
+def _register_hdhomerun_testing_live_stream(mode: str, channel_key: str, stop_callback):
+    token = object()
+    stop_event = threading.Event()
+    with _hdhomerun_testing_live_streams_lock:
+        _hdhomerun_testing_live_streams[token] = {
+            "mode": str(mode),
+            "channel_key": str(channel_key),
+            "stop_event": stop_event,
+            "stop_callback": stop_callback,
+        }
+    return token, stop_event
+
+
+def _unregister_hdhomerun_testing_live_stream(token: object) -> None:
+    with _hdhomerun_testing_live_streams_lock:
+        _hdhomerun_testing_live_streams.pop(token, None)
+
+
+def _stop_hdhomerun_testing_live_streams() -> None:
+    with _hdhomerun_testing_live_streams_lock:
+        entries = list(_hdhomerun_testing_live_streams.values())
+        _hdhomerun_testing_live_streams.clear()
+    for entry in entries:
+        try:
+            entry["stop_event"].set()
+        except Exception:
+            pass
+        try:
+            entry["stop_callback"]()
+        except Exception:
+            pass
+
+
+def _stop_all_hdhomerun_testing_streams(*, reason: str = "") -> None:
+    _stop_hdhomerun_testing_sessions()
+    _stop_hdhomerun_testing_live_streams()
+    if reason:
+        try:
+            manager.logger.info("hdhomerun-testing", reason)
+        except Exception:
+            pass
+
+
+def _hdhomerun_testing_session(config: dict, channel: dict) -> tuple[HDHomeRunHLSSession | None, str | None]:
+    key = str(channel.get("key") or "").strip()
+    physical_stream_url = str(channel.get("URL") or "").strip()
+    if not key or not physical_stream_url.startswith(("http://", "https://")):
+        return None, "Invalid HDHomeRun test channel."
+    try:
+        stream_url = shared_hdhomerun_source_url(config, channel)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        return None, f"Unable to prepare shared HDHomeRun source: {exc}"
+    registry_key = f"{_hdhomerun_testing_device_key(config)}\\x1f{key}"
+
+    device = config.get("hdhomerun_testing_device") if isinstance(config.get("hdhomerun_testing_device"), dict) else {}
+    try:
+        tuner_count = max(0, int(device.get("TunerCount") or 0))
+    except (TypeError, ValueError):
+        tuner_count = 0
+
+    with _hdhomerun_testing_sessions_lock:
+        session = _hdhomerun_testing_sessions.get(registry_key)
+        if session is not None and session.stream_url != stream_url:
+            session.stop(remove_files=True)
+            _hdhomerun_testing_sessions.pop(registry_key, None)
+            session = None
+        if session is None:
+            active = sum(1 for value in _hdhomerun_testing_sessions.values() if value.is_running())
+            if tuner_count and active >= tuner_count:
+                return None, f"All {tuner_count} HDHomeRun tuner(s) are currently in use."
+            session = HDHomeRunHLSSession(
+                channel_key=key,
+                channel_name=str(channel.get("GuideName") or key),
+                stream_url=stream_url,
+                output_dir=OUTPUT_DIR,
+                idle_timeout_secs=_hdhomerun_testing_timeout(config),
+                logger=_hdhomerun_testing_logger,
+            )
+            _hdhomerun_testing_sessions[registry_key] = session
+
+    # Follow the same validated hardware policy used by the Guide.  For the
+    # HDHomeRun test pipeline we specifically need a VA-API encoder because
+    # its command builder uploads decoded MPEG-2 frames through
+    # format=nv12,hwupload.  Do not treat an independently detected QSV
+    # provider as a reason to disable VA-API; on older Intel generations such
+    # as Ivy Bridge, VA-API/i965 is the proven path.
+    prefer_vaapi = False
+    if normalize_hardware_acceleration_mode(config.get("hardware_acceleration_mode")) == "hardware_if_available":
+        try:
+            # configure_vaapi_driver() performs the end-to-end h264_vaapi probe
+            # with a real SD frame size.  Trust that result directly instead of
+            # subjecting HDHomeRun to a second generic capability gate.
+            vaapi_driver = configure_vaapi_driver()
+            prefer_vaapi = bool(vaapi_driver)
+            if prefer_vaapi:
+                manager.logger.info(
+                    "hdhomerun-testing",
+                    "Using validated VA-API hardware path "
+                    f"(driver={vaapi_driver}, "
+                    f"device={os.environ.get('RSMC_VAAPI_DEVICE', '/dev/dri/renderD128')}).",
+                )
+            else:
+                manager.logger.warning(
+                    "hdhomerun-testing",
+                    "Hardware acceleration is enabled, but the direct h264_vaapi probe failed; using libx264 fallback.",
+                )
+        except Exception as exc:
+            manager.logger.warning("hdhomerun-testing", f"Hardware detection failed; using libx264: {_error_label(exc)}")
+    if not session.start(prefer_vaapi=prefer_vaapi):
+        with _hdhomerun_testing_sessions_lock:
+            if _hdhomerun_testing_sessions.get(registry_key) is session:
+                _hdhomerun_testing_sessions.pop(registry_key, None)
+        error = session.last_error or "HDHomeRun HLS test pipeline did not become ready."
+        session.stop(remove_files=True)
+        return None, error
+    session.touch()
+    return session, None
+
+
+shared_hdhomerun_sources.set_logger(_hdhomerun_testing_logger)
+atexit.register(shared_hdhomerun_sources.stop_all)
+atexit.register(_stop_all_hdhomerun_testing_streams)
+
 @app.get("/")
 def index():
     config = {**DEFAULT_CONFIG, **store.get_config()}
@@ -443,9 +708,16 @@ def index():
     config["guide_preview_enabled"] = _coerce_bool(
         config.get("guide_preview_enabled"), DEFAULT_CONFIG["guide_preview_enabled"]
     )
-    config["guide_preview_source_type"] = normalize_preview_source_type(
-        config.get("guide_preview_source_type")
-    )
+    # Preserve the channel component of legacy flattened Preview source values
+    # before normalizing them to the newer two-stage source/channel UI.
+    raw_preview_source_type = str(config.get("guide_preview_source_type", "") or "").strip()
+    if raw_preview_source_type in VIRTUAL_PREVIEW_SOURCES and not config.get("guide_preview_virtual_channel"):
+        config["guide_preview_virtual_channel"] = raw_preview_source_type
+    if raw_preview_source_type.lower().startswith("hdhomerun_testing:") and not config.get("guide_preview_hdhomerun_channel"):
+        legacy_hdhr_key = raw_preview_source_type.split(":", 1)[1].strip()
+        if legacy_hdhr_key and re.fullmatch(r"[A-Za-z0-9._~-]+", legacy_hdhr_key):
+            config["guide_preview_hdhomerun_channel"] = legacy_hdhr_key
+    config["guide_preview_source_type"] = normalize_preview_source_type(raw_preview_source_type)
     config["guide_preview_audio_mode"] = normalize_preview_audio_mode(
         config.get("guide_preview_audio_mode")
     )
@@ -455,6 +727,9 @@ def index():
     config["guide_preview_effective_aspect_ratio"] = effective_preview_aspect_ratio(config)
     config["guide_message_enabled"] = _coerce_bool(
         config.get("guide_message_enabled"), DEFAULT_CONFIG["guide_message_enabled"]
+    )
+    config["guide_message_now_playing_enabled"] = _coerce_bool(
+        config.get("guide_message_now_playing_enabled"), DEFAULT_CONFIG["guide_message_now_playing_enabled"]
     )
     config["guide_message_text"] = str(config.get("guide_message_text", "") or "")
     try:
@@ -523,7 +798,488 @@ def index():
         standby_custom_file=standby_custom_file,
         off_air_now=_is_off_air(config),
         hdhomerun_source_channels=_source_playlist_channels_for_admin(config) if HDHOMERUN_FEATURE_AVAILABLE else [],
+        hdhomerun_testing_available=HDHOMERUN_TESTING_AVAILABLE,
+        hdhomerun_testing_channels=_hdhomerun_testing_channels(config),
+        hdhomerun_testing_device=config.get("hdhomerun_testing_device") if isinstance(config.get("hdhomerun_testing_device"), dict) else {},
     )
+
+
+
+@app.post("/hdhomerun-testing")
+def hdhomerun_testing_settings():
+    """Manage the physical-HDHomeRun test subsystem.
+
+    Testing remains isolated from Playlist Source/XMLTV Source and the tuner
+    transport pipeline.  When explicitly enabled, selected physical channels
+    are also merged into the rendered Guide and a state refresh is requested.
+    """
+    action = str(request.form.get("action") or "save").strip().lower()
+    current = {**DEFAULT_CONFIG, **store.get_config()}
+    host = str(request.form.get("hdhomerun_testing_host") or current.get("hdhomerun_testing_host") or "").strip()
+    try:
+        timeout = int(request.form.get("hdhomerun_testing_idle_timeout_secs") or current.get("hdhomerun_testing_idle_timeout_secs") or 30)
+    except (TypeError, ValueError):
+        timeout = 30
+    timeout = max(15, min(3600, timeout))
+
+    previous_output_mode = str(current.get("hdhomerun_testing_output_mode") or "hls").strip().lower()
+    if previous_output_mode not in {"hls", "mpegts", "raw"}:
+        previous_output_mode = "hls"
+    output_mode = str(request.form.get("hdhomerun_testing_output_mode") or previous_output_mode).strip().lower()
+    if output_mode not in {"hls", "mpegts", "raw"}:
+        output_mode = "hls"
+
+    guide_enabled = "1" in {str(v).strip() for v in request.form.getlist("hdhomerun_testing_guide_enabled")}
+    updates = {
+        "hdhomerun_testing_host": host,
+        "hdhomerun_testing_idle_timeout_secs": timeout,
+        "hdhomerun_testing_output_mode": output_mode,
+        "hdhomerun_testing_guide_enabled": guide_enabled,
+    }
+
+    existing = current.get("hdhomerun_testing_channels") if isinstance(current.get("hdhomerun_testing_channels"), list) else []
+    selected = {str(v).strip() for v in request.form.getlist("hdhomerun_testing_enabled_channels") if str(v).strip()}
+    rebroadcast_selected = {str(v).strip() for v in request.form.getlist("hdhomerun_testing_rebroadcast_channels") if str(v).strip()}
+    submitted_keys = {str(v).strip() for v in request.form.getlist("hdhomerun_testing_channel_keys") if str(v).strip()}
+    if submitted_keys:
+        normalized = []
+        for item in existing:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            key = str(row.get("key") or "").strip()
+            if key in submitted_keys:
+                row["enabled"] = key in selected
+                # Rebroadcast is intentionally independent of rendered-Guide inclusion,
+                # but a channel must still be selected under Use before it can be served.
+                row["rebroadcast"] = key in rebroadcast_selected
+            normalized.append(row)
+        updates["hdhomerun_testing_channels"] = normalized
+
+    try:
+        if action in {"discover", "refresh"}:
+            discovered = []
+            target = host
+            if action == "discover" or not target:
+                discovered = discover_base_urls()
+                if discovered:
+                    target = discovered[0]
+            if not target:
+                raise ValueError("No HDHomeRun found. Enter its hostname/IP or use Discover on the same subnet.")
+            device, lineup = fetch_device_and_lineup(target)
+            xmltv_channels = {}
+            device_auth = str(device.get("DeviceAuth") or "").strip()
+            if device_auth:
+                try:
+                    xmltv_channels = fetch_silicondust_xmltv_channels(device_auth)
+                    lineup = apply_xmltv_channel_metadata(lineup, xmltv_channels)
+                    manager.logger.info(
+                        "hdhomerun-testing",
+                        f"Loaded SiliconDust XMLTV metadata for {len(xmltv_channels)} channel(s).",
+                    )
+                except Exception as exc:
+                    manager.logger.warning(
+                        "hdhomerun-testing",
+                        f"SiliconDust XMLTV/logo refresh failed; keeping lineup without new artwork: {_error_label(exc)}",
+                    )
+            merged = merge_lineup_channels(lineup, existing=updates.get("hdhomerun_testing_channels", existing))
+            updates.update({
+                "hdhomerun_testing_host": str(device.get("BaseURL") or target).strip(),
+                "hdhomerun_testing_device": device,
+                "hdhomerun_testing_channels": merged,
+            })
+            flash(f"Imported {len(merged)} HDHomeRun channels from {device.get('FriendlyName') or target}.", "success")
+        else:
+            flash("HDHomeRun Testing settings saved.", "success")
+        store.save_config(updates)
+        previous_guide_enabled = bool(current.get("hdhomerun_testing_guide_enabled", False))
+        if guide_enabled or previous_guide_enabled:
+            try:
+                manager.refresh_state()
+            except Exception as exc:
+                manager.logger.warning(
+                    "hdhomerun-testing",
+                    f"HDHomeRun Guide refresh failed after settings update: {_error_label(exc)}",
+                )
+                flash(f"HDHomeRun settings saved, but Guide refresh failed: {_error_label(exc)}", "error")
+        if output_mode != previous_output_mode:
+            _stop_all_hdhomerun_testing_streams(
+                reason=(
+                    f"HDHomeRun Testing output mode changed from {previous_output_mode} to {output_mode}; "
+                    "stopped streams from the previous mode and released tuner resources."
+                )
+            )
+    except Exception as exc:
+        manager.logger.error("hdhomerun-testing", f"HDHomeRun Testing update failed: {_error_label(exc)}")
+        flash(f"HDHomeRun Testing failed: {_error_label(exc)}", "error")
+    return redirect(url_for("index") + "#tab-hdhomerun-testing")
+
+
+@app.get("/hdhomerun-testing/playlist.m3u")
+def hdhomerun_testing_playlist():
+    config = {**DEFAULT_CONFIG, **store.get_config()}
+    base_url = request.host_url.rstrip("/")
+    lines = ["#EXTM3U"]
+    for item in _hdhomerun_testing_channels(config, enabled_only=True):
+        key = str(item.get("key") or "").strip()
+        number = str(item.get("GuideNumber") or "").strip()
+        name = str(item.get("GuideName") or number or key).strip()
+        xmltv_id = str(item.get("XMLTVID") or "").strip()
+        tvg_id = xmltv_id or f"hdhr-test-{key}"
+        attrs = [f'tvg-id="{tvg_id}"', f'tvg-name="{name}"', 'group-title="HDHomeRun Testing"']
+        if number:
+            attrs.append(f'tvg-chno="{number}"')
+        attrs.append(f'tvg-logo="{base_url}/hdhomerun-testing/logo/{key}"')
+        lines.append(f"#EXTINF:-1 {' '.join(attrs)},{name}")
+        # Keep the aggregate playlist URL stable across output-mode changes.
+        # IPTV clients such as RetroStation Player commonly import/cache the M3U
+        # channel URL instead of re-fetching the playlist before every tune.
+        # The dispatch endpoint resolves the currently selected output mode at
+        # tune time, so HLS -> Raw -> HLS works without rebuilding the client
+        # channel database.
+        lines.append(f"{base_url}/hdhomerun-testing/stream/{key}")
+    response = Response("\n".join(lines) + "\n", mimetype="audio/x-mpegurl")
+    response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
+@app.get("/hdhomerun-testing/stream/<channel_key>")
+def hdhomerun_testing_stream(channel_key: str):
+    """Dispatch a stable HDHomeRun Testing channel URL to the active mode.
+
+    The aggregate M3U deliberately points here rather than embedding HLS, raw,
+    or transcoded MPEG-TS URLs.  Clients can therefore retain their imported
+    channel list while the administrator changes the RSMC output mode.
+    """
+    config = {**DEFAULT_CONFIG, **store.get_config()}
+    matched = next(
+        (item for item in _hdhomerun_testing_channels(config, enabled_only=True)
+         if str(item.get("key") or "") == channel_key),
+        None,
+    )
+    if matched is None:
+        abort(404)
+
+    output_mode = str(config.get("hdhomerun_testing_output_mode") or "hls").strip().lower()
+    if output_mode == "raw":
+        target = url_for("hdhomerun_testing_raw", channel_key=channel_key)
+    elif output_mode == "mpegts":
+        target = url_for("hdhomerun_testing_mpegts", channel_key=channel_key)
+    else:
+        target = url_for("hdhomerun_testing_hls", channel_key=channel_key)
+
+    response = redirect(target, code=302)
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+def _hdhomerun_fallback_logo(channel: dict) -> bytes:
+    """Generate a local PNG placeholder when a station logo is unavailable."""
+    width, height = 360, 270
+    image = Image.new("RGB", (width, height), (20, 22, 26))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((8, 8, width - 9, height - 9), radius=18, outline=(92, 99, 112), width=3)
+
+    number = str(channel.get("GuideNumber") or "").strip() or "TV"
+    name = str(channel.get("GuideName") or "Channel").strip() or "Channel"
+    name = name.upper()
+
+    font_candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    ]
+
+    def load_font(size: int):
+        for candidate in font_candidates:
+            try:
+                return ImageFont.truetype(candidate, size=size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
+
+    number_font = load_font(88 if len(number) <= 4 else 68)
+    name_font = load_font(34)
+    label_font = load_font(19)
+
+    def centered(text_value: str, font, y: int, fill=(242, 244, 248)) -> None:
+        box = draw.textbbox((0, 0), text_value, font=font)
+        text_width = box[2] - box[0]
+        draw.text(((width - text_width) / 2, y), text_value, font=font, fill=fill)
+
+    centered(number, number_font, 42)
+
+    display_name = name
+    while len(display_name) > 4:
+        box = draw.textbbox((0, 0), display_name, font=name_font)
+        if box[2] - box[0] <= width - 42:
+            break
+        display_name = display_name[:-1]
+    if display_name != name:
+        display_name = display_name.rstrip() + "…"
+    centered(display_name, name_font, 151, fill=(215, 219, 226))
+    centered("RETROSTATION MC", label_font, 219, fill=(138, 146, 160))
+
+    output = io.BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
+
+
+def _require_hdhomerun_rebroadcast_channel(channel_key: str) -> dict:
+    config = {**DEFAULT_CONFIG, **store.get_config()}
+    matched = next((item for item in _hdhomerun_testing_rebroadcast_channels(config) if str(item.get("key") or "") == channel_key), None)
+    if not matched:
+        abort(404)
+    return matched
+
+
+@app.get("/hdhomerun/channel/<channel_key>/index.m3u8")
+def hdhomerun_rebroadcast_hls(channel_key: str):
+    _require_hdhomerun_rebroadcast_channel(channel_key)
+    return hdhomerun_testing_hls(channel_key)
+
+
+@app.get("/hdhomerun/channel/<channel_key>/stream.ts")
+def hdhomerun_rebroadcast_mpegts(channel_key: str):
+    _require_hdhomerun_rebroadcast_channel(channel_key)
+    return hdhomerun_testing_mpegts(channel_key)
+
+
+@app.get("/hdhomerun/channel/<channel_key>/raw.ts")
+def hdhomerun_rebroadcast_raw(channel_key: str):
+    _require_hdhomerun_rebroadcast_channel(channel_key)
+    return hdhomerun_testing_raw(channel_key)
+
+
+@app.get("/hdhomerun-testing/logo/<channel_key>")
+def hdhomerun_testing_logo(channel_key: str):
+    """Proxy the official SiliconDust channel logo through a stable RSMC URL."""
+    config = {**DEFAULT_CONFIG, **store.get_config()}
+    matched = next((item for item in _hdhomerun_testing_channels(config) if str(item.get("key") or "") == channel_key), None)
+    if matched is None:
+        abort(404)
+    logo_url = str(matched.get("logo") or "").strip()
+    if logo_url:
+        parsed = urlparse(logo_url)
+        if parsed.scheme == "https" and parsed.hostname in {"img.hdhomerun.com"}:
+            try:
+                upstream = _requests.get(
+                    logo_url,
+                    timeout=10,
+                    headers={"User-Agent": "RetroStation-MC/1.5 HDHomeRun Artwork"},
+                )
+                upstream.raise_for_status()
+                content_type = str(upstream.headers.get("Content-Type") or "image/png").split(";", 1)[0].strip() or "image/png"
+                if content_type.startswith("image/"):
+                    response = Response(upstream.content, mimetype=content_type)
+                    response.headers["Cache-Control"] = "public, max-age=86400"
+                    response.headers["Access-Control-Allow-Origin"] = "*"
+                    response.headers["X-RSMC-Logo-Source"] = "silicondust"
+                    return response
+            except _requests.RequestException as exc:
+                manager.logger.warning(
+                    "hdhomerun-testing",
+                    f"Unable to fetch official channel logo for {matched.get('GuideNumber') or channel_key}; using fallback: {_error_label(exc)}",
+                )
+
+    response = Response(_hdhomerun_fallback_logo(matched), mimetype="image/png")
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["X-RSMC-Logo-Source"] = "fallback"
+    return response
+
+
+@app.get("/hdhomerun-testing/hls/<channel_key>.m3u8")
+def hdhomerun_testing_hls(channel_key: str):
+    config = {**DEFAULT_CONFIG, **store.get_config()}
+    matched = next((item for item in _hdhomerun_testing_channels(config, enabled_only=True) if str(item.get("key") or "") == channel_key), None)
+    if matched is None:
+        abort(404)
+    session, error = _hdhomerun_testing_session(config, matched)
+    if session is None:
+        manager.logger.warning("hdhomerun-testing", error or "Unable to start HDHomeRun HLS test session")
+        return Response(error or "HDHomeRun HLS test unavailable", status=503, mimetype="text/plain", headers={"Retry-After": "5"})
+    try:
+        content = session.playlist_path.read_text(encoding="utf-8")
+    except OSError:
+        abort(503)
+    # FFmpeg writes segment filenames relative to the playlist file on disk.
+    # The public playlist is served from /hdhomerun-testing/hls/<key>.m3u8,
+    # while media segments are served by RSMC's existing /hls/<filename> route.
+    rewritten = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and stripped.endswith(".ts"):
+            rewritten.append(url_for("hls_file", filename=Path(stripped).name))
+        else:
+            rewritten.append(line)
+    content = "\n".join(rewritten) + ("\n" if content.endswith("\n") else "")
+    session.touch()
+    response = Response(content, mimetype="application/vnd.apple.mpegurl")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
+
+@app.get("/hdhomerun-testing/mpegts/<channel_key>.ts")
+def hdhomerun_testing_mpegts(channel_key: str):
+    """Stream one physical HDHomeRun channel as continuous MPEG-TS."""
+    config = {**DEFAULT_CONFIG, **store.get_config()}
+    matched = next((item for item in _hdhomerun_testing_channels(config, enabled_only=True) if str(item.get("key") or "") == channel_key), None)
+    if matched is None:
+        abort(404)
+    physical_stream_url = str(matched.get("URL") or "").strip()
+    if not physical_stream_url.startswith(("http://", "https://")):
+        abort(503)
+    try:
+        stream_url = shared_hdhomerun_source_url(config, matched)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        manager.logger.warning("hdhomerun-testing", f"Unable to prepare shared MPEG-TS source: {_error_label(exc)}")
+        return Response("Unable to prepare shared HDHomeRun source", status=503, mimetype="text/plain")
+    try:
+        profile = probe_hdhomerun_video(stream_url)
+    except Exception as exc:
+        manager.logger.warning("hdhomerun-testing", f"MPEG-TS source probe failed: {_error_label(exc)}")
+        return Response("Unable to probe HDHomeRun source", status=503, mimetype="text/plain")
+
+    codec = str(profile.get("codec") or "").lower()
+    video_copy = codec in {"h264", "avc", "avc1"}
+    use_vaapi = False
+    if not video_copy and normalize_hardware_acceleration_mode(config.get("hardware_acceleration_mode")) == "hardware_if_available":
+        try:
+            use_vaapi = bool(configure_vaapi_driver())
+        except Exception as exc:
+            manager.logger.warning("hdhomerun-testing", f"MPEG-TS hardware detection failed; using libx264: {_error_label(exc)}")
+
+    hardware_decode = bool(use_vaapi and not profile.get("interlaced"))
+    command = build_hdhomerun_mpegts_command(
+        stream_url, use_vaapi=use_vaapi, hardware_decode=hardware_decode,
+        source_profile=profile, video_copy=video_copy,
+    )
+    if video_copy:
+        mode = "H.264 video copy"
+    elif use_vaapi and profile.get("interlaced"):
+        mode = "YADIF send_field + h264_vaapi"
+    elif use_vaapi and hardware_decode:
+        mode = "VA-API decode+encode"
+    elif use_vaapi:
+        mode = "software decode + h264_vaapi"
+    else:
+        mode = "libx264"
+    channel_name = str(matched.get("GuideName") or channel_key)
+    manager.logger.info("hdhomerun-testing", f"Starting continuous MPEG-TS '{channel_name}' with {mode}")
+
+    child_env = os.environ.copy()
+    if use_vaapi:
+        configured_driver = str(os.environ.get("RSMC_VAAPI_DRIVER") or os.environ.get("LIBVA_DRIVER_NAME") or "").strip()
+        if configured_driver:
+            child_env["LIBVA_DRIVER_NAME"] = configured_driver
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0, env=child_env)
+
+    def stop_proc() -> None:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    live_token, stop_event = _register_hdhomerun_testing_live_stream("mpegts", channel_key, stop_proc)
+
+    @stream_with_context
+    def generate():
+        try:
+            if proc.stdout is None:
+                return
+            while not stop_event.is_set():
+                chunk = proc.stdout.read(188 * 256)
+                if not chunk:
+                    break
+                yield chunk
+        except (GeneratorExit, BrokenPipeError, ConnectionResetError):
+            return
+        finally:
+            _unregister_hdhomerun_testing_live_stream(live_token)
+            try:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+            except Exception:
+                pass
+            stop_proc()
+
+    response = Response(generate(), mimetype="video/mp2t")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
+@app.get("/hdhomerun-testing/raw/<channel_key>.ts")
+def hdhomerun_testing_raw(channel_key: str):
+    """Proxy the native HDHomeRun MPEG-TS byte stream without FFmpeg.
+
+    This mode intentionally performs no video/audio decode, encode, filtering,
+    remuxing, or timestamp normalization.  It preserves the tuner transport
+    stream as delivered by the HDHomeRun while keeping a stable RSMC URL.
+    """
+    config = {**DEFAULT_CONFIG, **store.get_config()}
+    matched = next((item for item in _hdhomerun_testing_channels(config, enabled_only=True) if str(item.get("key") or "") == channel_key), None)
+    if matched is None:
+        abort(404)
+    physical_stream_url = str(matched.get("URL") or "").strip()
+    if not physical_stream_url.startswith(("http://", "https://")):
+        abort(503)
+    try:
+        stream_url = shared_hdhomerun_source_url(config, matched)
+    except (TypeError, ValueError, RuntimeError) as exc:
+        manager.logger.warning("hdhomerun-testing", f"Unable to prepare shared raw source: {_error_label(exc)}")
+        return Response("Unable to prepare shared HDHomeRun source", status=503, mimetype="text/plain")
+
+    channel_name = str(matched.get("GuideName") or channel_key)
+    manager.logger.info("hdhomerun-testing", f"Attaching raw MPEG-TS passthrough '{channel_name}' to shared source")
+    try:
+        upstream = _requests.get(
+            stream_url,
+            stream=True,
+            timeout=(5, 30),
+            headers={"User-Agent": "RetroStation-MC/1.5 HDHomeRun Raw Proxy"},
+        )
+        upstream.raise_for_status()
+    except _requests.RequestException as exc:
+        manager.logger.warning("hdhomerun-testing", f"Raw HDHomeRun passthrough failed to open source: {_error_label(exc)}")
+        return Response("Unable to open native HDHomeRun stream", status=503, mimetype="text/plain")
+
+    def stop_upstream() -> None:
+        upstream.close()
+
+    live_token, stop_event = _register_hdhomerun_testing_live_stream("raw", channel_key, stop_upstream)
+
+    @stream_with_context
+    def generate():
+        try:
+            # 188-byte TS packets; use a reasonably large packet-aligned chunk
+            # so Flask is not flushing individual transport packets.
+            for chunk in upstream.iter_content(chunk_size=188 * 256):
+                if stop_event.is_set():
+                    break
+                if chunk:
+                    yield chunk
+        except (GeneratorExit, BrokenPipeError, ConnectionResetError):
+            return
+        except (_requests.RequestException, OSError, ValueError) as exc:
+            if not stop_event.is_set():
+                manager.logger.warning("hdhomerun-testing", f"Raw HDHomeRun passthrough interrupted: {_error_label(exc)}")
+        finally:
+            _unregister_hdhomerun_testing_live_stream(live_token)
+            upstream.close()
+
+    response = Response(generate(), mimetype="video/mp2t")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["X-Accel-Buffering"] = "no"
+    response.headers["Connection"] = "close"
+    return response
 
 
 @app.post("/config")
@@ -641,6 +1397,24 @@ def diagnostics_settings():
             min_value=10,
             max_value=2000,
         ),
+        "guide_preview_hdhr_audio_offset_ms": _coerce_int(
+            request.form.get("guide_preview_hdhr_audio_offset_ms"),
+            old_cfg["guide_preview_hdhr_audio_offset_ms"],
+            min_value=-5000,
+            max_value=5000,
+        ),
+        "guide_preview_iptv_audio_offset_ms": _coerce_int(
+            request.form.get("guide_preview_iptv_audio_offset_ms"),
+            old_cfg["guide_preview_iptv_audio_offset_ms"],
+            min_value=-5000,
+            max_value=5000,
+        ),
+        "guide_preview_file_audio_offset_ms": _coerce_int(
+            request.form.get("guide_preview_file_audio_offset_ms"),
+            old_cfg["guide_preview_file_audio_offset_ms"],
+            min_value=-5000,
+            max_value=5000,
+        ),
     }
     store.save_config(updated_cfg)
     manager.logger.info(
@@ -650,7 +1424,10 @@ def diagnostics_settings():
         f"min_buffer_secs={updated_cfg['diag_min_buffer_secs']}, "
         f"min_buffer_segments={updated_cfg['diag_min_buffer_segments']}, "
         f"standby_window_segments={updated_cfg['diag_standby_window_segments']}, "
-        f"log_tail_lines={updated_cfg['diag_log_tail_lines']}",
+        f"log_tail_lines={updated_cfg['diag_log_tail_lines']}, "
+        f"hdhr_audio_offset_ms={updated_cfg['guide_preview_hdhr_audio_offset_ms']}, "
+        f"iptv_audio_offset_ms={updated_cfg['guide_preview_iptv_audio_offset_ms']}, "
+        f"file_audio_offset_ms={updated_cfg['guide_preview_file_audio_offset_ms']}",
     )
     if request.form.get("action") == "restart" and manager.status()["pipeline_active"]:
         manager.start_pipeline(message="Guide is Restarting...")
@@ -898,6 +1675,84 @@ def _build_virtual_channel_entries(config: dict, base_url: str) -> list[dict]:
 
 
 
+def _hdhomerun_testing_rebroadcast_channels(config: dict) -> list[dict]:
+    """Return physical tuner channels explicitly selected for RSMC rebroadcast."""
+    return [
+        item
+        for item in _hdhomerun_testing_channels(config, enabled_only=True)
+        if bool(item.get("rebroadcast", False))
+    ]
+
+
+def _hdhomerun_rebroadcast_stream_url(config: dict, base_url: str, channel_key: str) -> str:
+    """Return the public RSMC stream URL matching the global HDHomeRun output mode."""
+    mode = str(config.get("hdhomerun_testing_output_mode") or "hls").strip().lower()
+    if mode == "mpegts":
+        return f"{base_url}/hdhomerun/channel/{channel_key}/stream.ts"
+    if mode == "raw":
+        return f"{base_url}/hdhomerun/channel/{channel_key}/raw.ts"
+    return f"{base_url}/hdhomerun/channel/{channel_key}/index.m3u8"
+
+
+def _build_exported_hdhomerun_entries(config: dict, base_url: str) -> list[dict]:
+    """Build public M3U/XMLTV channel metadata for selected physical tuners."""
+    entries: list[dict] = []
+    for item in _hdhomerun_testing_rebroadcast_channels(config):
+        key = str(item.get("key") or "").strip()
+        if not key:
+            continue
+        name = str(item.get("GuideName") or item.get("CallSign") or "HDHomeRun").strip() or "HDHomeRun"
+        number = str(item.get("ChannelNumber") or item.get("GuideNumber") or "").strip()
+        entries.append({
+            "id": f"rsmc-hdhr-physical-{key}",
+            "name": name,
+            "description": f"Live broadcast from HDHomeRun channel {number or name}.",
+            "channel_number": number,
+            "stream_url": _hdhomerun_rebroadcast_stream_url(config, base_url, key),
+            "logo_url": f"{base_url}/hdhomerun-testing/logo/{key}",
+            "group_title": "HDHomeRun",
+            "source_kind": "hdhomerun",
+            "hdhomerun_key": key,
+            "upstream_xmltv_id": str(item.get("XMLTVID") or item.get("upstream_xmltv_id") or "").strip(),
+            "advertise_h264_aac": str(config.get("hdhomerun_testing_output_mode") or "hls").strip().lower() != "raw",
+        })
+    return entries
+
+
+def _build_exported_source_entries(config: dict) -> list[dict]:
+    """Return the configured Playlist Source lineup for the combined export."""
+    if not _coerce_bool(config.get("source_channels_export_enabled"), DEFAULT_CONFIG["source_channels_export_enabled"]):
+        return []
+    try:
+        source_channels = _source_playlist_channels(config)
+    except Exception as exc:
+        manager.logger.warning("export", f"Unable to load Playlist Source for combined export: {_error_label(exc)}")
+        return []
+    return build_source_export_entries(source_channels)
+
+
+def _source_export_programmes(config: dict, entries: list[dict]) -> dict[str, list[dict]]:
+    """Remap configured XMLTV programmes onto RSMC's public source ids."""
+    if not entries:
+        return {}
+    xmltv_source = str(config.get("xmltv_source") or DEFAULT_CONFIG["xmltv_source"]).strip()
+    try:
+        upstream = parse_xmltv(xmltv_source)
+    except Exception as exc:
+        manager.logger.warning("export", f"Unable to load XMLTV Source for combined export: {_error_label(exc)}")
+        return {}
+    return remap_source_programmes(entries, upstream)
+
+
+def _build_exported_channel_entries(config: dict, base_url: str) -> list[dict]:
+    entries = (
+        _build_exported_virtual_channel_entries(config, base_url)
+        + _build_exported_source_entries(config)
+        + _build_exported_hdhomerun_entries(config, base_url)
+    )
+    return sort_exported_lineup(entries)
+
+
 def _build_exported_virtual_channel_entries(config: dict, base_url: str) -> list[dict]:
     """Return playlist/XMLTV entries without changing channel runtime state.
 
@@ -920,12 +1775,19 @@ def _build_channels_m3u_content(channels: list[dict], xmltv_url: str) -> str:
         logo_url = channel.get("logo_url") or ""
         logo_attr = f' tvg-logo="{logo_url}"' if logo_url else ""
         channel_name = _sanitize_m3u_text(channel.get("name"), "Virtual Channel")
+        group_title = _sanitize_m3u_text(channel.get("group_title"), "Virtual Channels")
+        codec_attrs = ''
+        advertise_codecs = channel.get("advertise_h264_aac")
+        if advertise_codecs is None:
+            advertise_codecs = str(channel.get("source_kind") or "") != "hdhomerun"
+        if bool(advertise_codecs):
+            codec_attrs = ' tvc-stream-vcodec="h264" tvc-stream-acodec="aac"'
         lines.append(
             f'#EXTINF:-1 tvg-id="{channel["id"]}" tvg-name="{channel_name}"'
             f"{logo_attr}"
             f' tvg-chno="{channel["channel_number"]}"'
-            f' group-title="Virtual Channels"'
-            f' tvc-stream-vcodec="h264" tvc-stream-acodec="aac"'
+            f' group-title="{group_title}"'
+            f'{codec_attrs}'
             f',{channel_name}'
         )
         lines.append(str(channel["stream_url"]))
@@ -962,18 +1824,8 @@ def _hdhomerun_discovery_device_id() -> str:
 
 
 def _source_channel_key(channel: dict, index: int) -> str:
-    """Return a stable opaque key for an imported source-playlist channel.
-
-    The key intentionally excludes the stream URL so regenerated HLS URLs or
-    query tokens do not silently clear an administrator's rebroadcast choice.
-    """
-    identity = "\x1f".join(
-        str(channel.get(field) or "").strip()
-        for field in ("id", "number", "name", "group")
-    )
-    if not identity.replace("\x1f", ""):
-        identity = f"source-index:{index}"
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+    """Compatibility wrapper for the shared source-channel identity helper."""
+    return source_channel_key(channel, index)
 
 
 def _source_playlist_channels(config: dict) -> list[dict]:
@@ -1079,7 +1931,7 @@ def channel_playlist():
     config = {**DEFAULT_CONFIG, **store.get_config()}
     base_url = request.host_url.rstrip("/")
     xmltv_url = base_url + "/channel.xmltv"
-    content = _build_channels_m3u_content(_build_exported_virtual_channel_entries(config, base_url), xmltv_url)
+    content = _build_channels_m3u_content(_build_exported_channel_entries(config, base_url), xmltv_url)
     resp = Response(content, mimetype="application/x-mpegURL")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
@@ -1090,7 +1942,7 @@ def channel_playlist_m3u8():
     config = {**DEFAULT_CONFIG, **store.get_config()}
     base_url = request.host_url.rstrip("/")
     xmltv_url = base_url + "/channel.xmltv"
-    content = _build_channels_m3u_content(_build_exported_virtual_channel_entries(config, base_url), xmltv_url)
+    content = _build_channels_m3u_content(_build_exported_channel_entries(config, base_url), xmltv_url)
     resp = Response(content, mimetype="application/vnd.apple.mpegurl")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
@@ -1478,21 +2330,55 @@ def _build_xmltv_content(channel_name: str) -> str:
     return '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(tv, encoding="unicode")
 
 
-def _build_channels_xmltv_content(channels: list[dict]) -> str:
+def _build_channels_xmltv_content(channels: list[dict], programme_overrides: dict[str, list[dict]] | None = None) -> str:
     now = datetime.now(timezone.utc)
     slot_start = now.replace(minute=0, second=0, microsecond=0)
     slot_start = slot_start.replace(hour=(slot_start.hour // 4) * 4)
     total_slots = 6 * 7
+    programme_overrides = programme_overrides or {}
 
-    tv = ET.Element("tv", {"generator-info-name": "retro-guide-poc"})
+    tv = ET.Element("tv", {"generator-info-name": "retrostation-mc"})
     for channel in channels:
         channel_el = ET.SubElement(tv, "channel", {"id": channel["id"]})
-        ET.SubElement(channel_el, "display-name").text = _sanitize_xmltv_text(channel.get("name"), "Virtual Channel")
+        number = str(channel.get("channel_number") or "").strip()
+        name = _sanitize_xmltv_text(channel.get("name"), "Virtual Channel")
+        ET.SubElement(channel_el, "display-name").text = f"{number} {name}".strip()
+        if number:
+            ET.SubElement(channel_el, "lcn").text = number
         logo_url = str(channel.get("logo_url") or "").strip()
         if logo_url:
             ET.SubElement(channel_el, "icon", {"src": logo_url})
 
     for channel in channels:
+        channel_id = str(channel["id"])
+        override_rows = programme_overrides.get(channel_id)
+        if override_rows:
+            for row in override_rows:
+                try:
+                    start_dt = datetime.fromisoformat(str(row.get("start") or ""))
+                    stop_dt = datetime.fromisoformat(str(row.get("stop") or ""))
+                except (TypeError, ValueError):
+                    continue
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+                if stop_dt.tzinfo is None:
+                    stop_dt = stop_dt.replace(tzinfo=timezone.utc)
+                start_dt = start_dt.astimezone(timezone.utc)
+                stop_dt = stop_dt.astimezone(timezone.utc)
+                prog = ET.SubElement(
+                    tv, "programme",
+                    {
+                        "start": start_dt.strftime("%Y%m%d%H%M%S +0000"),
+                        "stop": stop_dt.strftime("%Y%m%d%H%M%S +0000"),
+                        "channel": channel_id,
+                    },
+                )
+                ET.SubElement(prog, "title").text = _sanitize_xmltv_text(row.get("title"), channel.get("name") or "HDHomeRun")
+                desc = str(row.get("desc") or "").strip()
+                if desc:
+                    ET.SubElement(prog, "desc").text = _sanitize_xmltv_text(desc, "")
+            continue
+
         entry_start = slot_start
         for _ in range(total_slots):
             slot_end = entry_start + timedelta(hours=4)
@@ -1502,7 +2388,7 @@ def _build_channels_xmltv_content(channels: list[dict]) -> str:
                 {
                     "start": entry_start.strftime("%Y%m%d%H%M%S +0000"),
                     "stop": slot_end.strftime("%Y%m%d%H%M%S +0000"),
-                    "channel": channel["id"],
+                    "channel": channel_id,
                 },
             )
             ET.SubElement(prog, "title").text = _sanitize_xmltv_text(channel.get("name"), "Virtual Channel")
@@ -1515,7 +2401,12 @@ def _build_channels_xmltv_content(channels: list[dict]) -> str:
 @app.get("/channel.xmltv")
 def channel_xmltv():
     config = {**DEFAULT_CONFIG, **store.get_config()}
-    content = _build_channels_xmltv_content(_build_exported_virtual_channel_entries(config, request.host_url.rstrip("/")))
+    base_url = request.host_url.rstrip("/")
+    channels = _build_exported_channel_entries(config, base_url)
+    programme_overrides = rebroadcast_export_programmes(config)
+    source_entries = [channel for channel in channels if str(channel.get("source_kind") or "") == "source"]
+    programme_overrides.update(_source_export_programmes(config, source_entries))
+    content = _build_channels_xmltv_content(channels, programme_overrides)
     resp = Response(content, mimetype="application/xml")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
@@ -1837,6 +2728,13 @@ def hls_weather_playlist():
 
 @app.get("/hls/<path:filename>")
 def hls_file(filename: str):
+    basename = Path(filename).name
+    with _hdhomerun_testing_sessions_lock:
+        sessions = list(_hdhomerun_testing_sessions.values())
+    for session in sessions:
+        if basename == session.playlist_path.name or basename.startswith(session.file_prefix + "_"):
+            session.touch()
+            break
     response = send_from_directory(OUTPUT_DIR, filename)
     if filename.endswith(".m3u8"):
         response.headers["Content-Type"] = "application/vnd.apple.mpegurl"
@@ -2310,6 +3208,8 @@ def guide_preview_settings():
     aspect_mode = normalize_preview_aspect_mode(request.form.get("guide_preview_aspect_mode"))
     message_enabled_values = request.form.getlist("guide_message_enabled")
     message_enabled = any(_coerce_bool(value, False) for value in message_enabled_values)
+    now_playing_enabled_values = request.form.getlist("guide_message_now_playing_enabled")
+    now_playing_enabled = any(_coerce_bool(value, False) for value in now_playing_enabled_values)
     message_text = str(request.form.get("guide_message_text", "") or "").replace("\r\n", "\n").replace("\r", "\n")
     # Bound stored text so malformed/accidental huge submissions cannot inflate guide_state.json.
     message_text = message_text[:12000]
@@ -2324,6 +3224,14 @@ def guide_preview_settings():
 
     preview_channel_url = str(request.form.get("guide_preview_url_channel", "") or "").strip()
     preview_channel_name = str(request.form.get("guide_preview_url_channel_name", "") or "").strip()
+    preview_hdhomerun_channel = str(request.form.get("guide_preview_hdhomerun_channel", "") or "").strip()
+    preview_virtual_channel = str(request.form.get("guide_preview_virtual_channel", "") or "").strip().lower()
+    if preview_hdhomerun_channel and not re.fullmatch(r"[A-Za-z0-9._~-]+", preview_hdhomerun_channel):
+        flash("Invalid HDHomeRun preview channel selection.", "error")
+        return redirect(url_for("index") + "#tab-guide-preview")
+    if preview_virtual_channel and preview_virtual_channel not in VIRTUAL_PREVIEW_SOURCES:
+        flash("Invalid virtual preview channel selection.", "error")
+        return redirect(url_for("index") + "#tab-guide-preview")
     if preview_channel_url and not is_http_url(preview_channel_url):
         flash("Selected preview channel URL must use http:// or https://.", "error")
         return redirect(url_for("index") + "#tab-guide-preview")
@@ -2334,6 +3242,8 @@ def guide_preview_settings():
         "guide_preview_url": preview_url,
         "guide_preview_url_channel": preview_channel_url if source_type == "url" else cfg.get("guide_preview_url_channel", ""),
         "guide_preview_url_channel_name": preview_channel_name if source_type == "url" else cfg.get("guide_preview_url_channel_name", ""),
+        "guide_preview_hdhomerun_channel": preview_hdhomerun_channel if source_type == "hdhomerun" else cfg.get("guide_preview_hdhomerun_channel", ""),
+        "guide_preview_virtual_channel": preview_virtual_channel if source_type == "virtual_channels" else cfg.get("guide_preview_virtual_channel", ""),
     }
     source_changed = preview_source_cache_key(proposed_source) != preview_source_cache_key(cfg)
 
@@ -2376,6 +3286,8 @@ def guide_preview_settings():
         "guide_preview_url": preview_url,
         "guide_preview_url_channel": preview_channel_url if source_type == "url" else cfg.get("guide_preview_url_channel", ""),
         "guide_preview_url_channel_name": preview_channel_name if source_type == "url" else cfg.get("guide_preview_url_channel_name", ""),
+        "guide_preview_hdhomerun_channel": preview_hdhomerun_channel if source_type == "hdhomerun" else cfg.get("guide_preview_hdhomerun_channel", ""),
+        "guide_preview_virtual_channel": preview_virtual_channel if source_type == "virtual_channels" else cfg.get("guide_preview_virtual_channel", ""),
         "guide_preview_audio_mode": audio_mode,
         "guide_preview_aspect_mode": aspect_mode,
         "guide_preview_detected_aspect_ratio": cached_ratio,
@@ -2383,13 +3295,14 @@ def guide_preview_settings():
         "guide_preview_detected_transport": cached_transport,
         "guide_preview_transport_source_key": cached_transport_key,
         "guide_message_enabled": message_enabled,
+        "guide_message_now_playing_enabled": now_playing_enabled,
         "guide_message_text": message_text,
         "guide_message_interval_seconds": message_interval,
     }
     store.save_config(update)
     manager.logger.info(
         "config",
-        f"Guide preview settings updated: enabled={enabled}, source_type={source_type}, transport={cached_transport or 'unknown'}, audio={audio_mode}, aspect={aspect_mode}, message_enabled={message_enabled}, message_interval={message_interval}s",
+        f"Guide preview settings updated: enabled={enabled}, source_type={source_type}, transport={cached_transport or 'unknown'}, audio={audio_mode}, aspect={aspect_mode}, message_enabled={message_enabled}, now_playing_enabled={now_playing_enabled}, message_interval={message_interval}s",
     )
 
     action = request.form.get("action", "save")
@@ -2417,6 +3330,8 @@ def guide_message_settings():
     cfg = store.get_config()
     enabled_values = request.form.getlist("guide_message_enabled")
     message_enabled = any(_coerce_bool(value, False) for value in enabled_values)
+    now_playing_enabled_values = request.form.getlist("guide_message_now_playing_enabled")
+    now_playing_enabled = any(_coerce_bool(value, False) for value in now_playing_enabled_values)
     message_text = str(request.form.get("guide_message_text", "") or "").replace("\r\n", "\n").replace("\r", "\n")
     message_text = message_text[:12000]
     try:
@@ -2427,18 +3342,20 @@ def guide_message_settings():
     store.save_config({
         **cfg,
         "guide_message_enabled": message_enabled,
+        "guide_message_now_playing_enabled": now_playing_enabled,
         "guide_message_text": message_text,
         "guide_message_interval_seconds": message_interval,
     })
 
     live_applied = patch_display_state({
         "guide_message_enabled": message_enabled,
+        "guide_message_now_playing_enabled": now_playing_enabled,
         "guide_message_text": message_text,
         "guide_message_interval_seconds": message_interval,
     })
     manager.logger.info(
         "config",
-        f"Guide Message updated live: enabled={message_enabled}, interval={message_interval}s, state_patched={live_applied}",
+        f"Guide Message updated live: enabled={message_enabled}, now_playing_enabled={now_playing_enabled}, interval={message_interval}s, state_patched={live_applied}",
     )
 
     # If no state file exists yet, build one so the settings are ready for the

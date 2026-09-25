@@ -43,11 +43,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Optional classic cable-guide preview video. Disabled by default so existing
     # Guide Channel behavior and resource usage remain unchanged.
     "guide_preview_enabled": False,
-    "guide_preview_source_type": "file",  # "file" | "url" | enabled virtual-channel source
+    "guide_preview_source_type": "file",  # "file" | "url" | "virtual_channels" | "hdhomerun"
     "guide_preview_file": "",
     "guide_preview_url": "",
     "guide_preview_url_channel": "",      # selected stream URL when guide_preview_url is an M3U playlist
     "guide_preview_url_channel_name": "", # display label for the selected playlist channel
+    "guide_preview_hdhomerun_channel": "", # selected HDHomeRun Testing channel key
+    "guide_preview_virtual_channel": "", # selected enabled RSMC virtual-channel key
     "guide_preview_audio_mode": "guide",  # "guide" | "preview" | "silent"
     "guide_preview_aspect_mode": "auto",  # "auto" | "16:9" | "4:3"
     "guide_preview_detected_aspect_ratio": "",  # cached Auto detection: "16:9" | "4:3" | empty
@@ -57,6 +59,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Optional rotating informational text shown opposite the Guide preview.
     # Blank lines separate slides; each slide may contain multiple display lines.
     "guide_message_enabled": False,
+    "guide_message_now_playing_enabled": True,
     "guide_message_text": "",
     "guide_message_interval_seconds": 8,
     "standby_custom_file": "",
@@ -72,6 +75,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "music_loop": False,         # loop the audio
     "music_single_file": "",     # selected filename for single mode
     "music_playlist_files": [],  # ordered list of filenames for playlist mode
+    # Combined public export controls.  Imported Playlist/XMLTV channels are
+    # opt-in so existing installs do not suddenly republish their upstream lineup.
+    "source_channels_export_enabled": False,
     # Virtual Channels — exported playlist inclusion. Individual channel enablement is separate.
     "virtual_channels_export_enabled": True,
     # Virtual Channels — Weather Channel
@@ -128,12 +134,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # Source-playlist channels are opt-in for HDHomeRun rebroadcast. RSMC-owned
     # virtual channels are exported automatically when enabled.
     "hdhomerun_rebroadcast_channels": [],
+    # Isolated v1.5 HDHomeRun Testing subsystem. These settings do not alter
+    # Guide Configuration, GuideManager playlist/XMLTV inputs, or normal channel exports.
+    "hdhomerun_testing_host": "",
+    "hdhomerun_testing_device": {},
+    "hdhomerun_testing_channels": [],
+    "hdhomerun_testing_guide_enabled": False,
+    "hdhomerun_testing_idle_timeout_secs": 30,
+    "hdhomerun_testing_output_mode": "hls",
     # Diagnostics / HLS live-edge tuning
     "diag_delay_segments": 2,
     "diag_min_buffer_secs": 18,
     "diag_min_buffer_segments": 3,
     "diag_standby_window_segments": 3,
     "diag_log_tail_lines": 120,
+    # Guide Preview A/V sync compensation. Negative advances audio; positive delays audio.
+    "guide_preview_hdhr_audio_offset_ms": 0,
+    "guide_preview_iptv_audio_offset_ms": 0,
+    "guide_preview_file_audio_offset_ms": 0,
 }
 
 

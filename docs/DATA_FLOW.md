@@ -73,9 +73,9 @@ Renderer output is continuous. Dynamic elements such as the clock and current-ti
 
 ## 5a. Guide Preview source processing
 
-When Guide Preview is enabled, `app/guide_preview.py` resolves the selected local file, direct URL, M3U-selected channel, or enabled virtual channel. Input transport detection is cached against that exact source key.
+When Guide Preview is enabled, `app/guide_preview.py` resolves the selected local file, direct URL, M3U-selected channel, selected enabled virtual channel, or selected HDHomeRun channel. Input transport detection is cached against that exact source key.
 
-- `hls`, `file`, and unknown network inputs use the shared preview normalizer. It writes a continuously replaced normalized JPEG for renderer sampling and, when Preview audio is selected and present, creates AAC-over-MPEG-TS UDP audio relays from the same input session.
+- `hls`, `file`, and unknown network inputs use the shared preview normalizer. It keeps normalized video and audio together on one local HLS timeline consumed by the Guide encoders, preventing independent JPEG/video and UDP/audio buffering from introducing A/V offset.
 - detected `mpegts` network inputs use the dedicated MPEG-TS relay, which normalizes the source into a short local HLS relay before the Guide FFmpeg process overlays it. Preview audio is mapped from that same relayed input.
 
 This branch affects Preview **input** handling only. The Guide output remains HLS.

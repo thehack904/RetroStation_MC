@@ -64,6 +64,9 @@ def test_admin_ui_contains_preview_controls_audio_modes_and_all_resolutions() ->
     assert 'id="tab-guide-preview"' in html
     assert 'name="guide_preview_enabled"' in html
     assert 'name="guide_preview_source_type"' in html
+    assert 'value="hdhomerun"' in html
+    assert 'name="guide_preview_hdhomerun_channel"' in html
+    assert 'HDHomeRun — {{ channel.GuideNumber }}' not in html
     assert 'name="guide_preview_audio_mode"' in html
     assert 'value="guide"' in html
     assert 'value="preview"' in html
@@ -81,16 +84,19 @@ def test_four_by_three_preview_is_not_wider_relative_to_canvas_than_widescreen()
     assert wide["preview_max_width"] < wide["width"] // 2
 
 
-def test_virtual_preview_source_types_are_supported() -> None:
-    from app.guide_preview import SUPPORTED_PREVIEW_SOURCE_TYPES
-    assert {"virtual_weather", "virtual_traffic", "virtual_news", "virtual_channel_mix"} <= SUPPORTED_PREVIEW_SOURCE_TYPES
+def test_virtual_preview_uses_single_source_with_legacy_normalization() -> None:
+    from app.guide_preview import SUPPORTED_PREVIEW_SOURCE_TYPES, normalize_preview_source_type
+    assert "virtual_channels" in SUPPORTED_PREVIEW_SOURCE_TYPES
+    for legacy in ("virtual_weather", "virtual_traffic", "virtual_news", "virtual_channel_mix"):
+        assert normalize_preview_source_type(legacy) == "virtual_channels"
 
 
 def test_enabled_virtual_channel_resolves_to_local_hls(monkeypatch, tmp_path) -> None:
     from app.guide_preview import resolve_preview_source
     monkeypatch.setenv("RETROGUIDE_PORT", "9876")
     cfg = {
-        "guide_preview_source_type": "virtual_weather",
+        "guide_preview_source_type": "virtual_channels",
+        "guide_preview_virtual_channel": "virtual_weather",
         "weather_channel_enabled": True,
     }
     assert resolve_preview_source(cfg, tmp_path) == "http://127.0.0.1:9876/hls/weather.m3u8"
@@ -99,19 +105,32 @@ def test_enabled_virtual_channel_resolves_to_local_hls(monkeypatch, tmp_path) ->
 def test_disabled_virtual_channel_does_not_resolve(tmp_path) -> None:
     from app.guide_preview import resolve_preview_source
     cfg = {
-        "guide_preview_source_type": "virtual_news",
+        "guide_preview_source_type": "virtual_channels",
+        "guide_preview_virtual_channel": "virtual_news",
         "news_channel_enabled": False,
     }
     assert resolve_preview_source(cfg, tmp_path) is None
 
 
-def test_admin_ui_offers_enabled_virtual_channels_as_preview_sources() -> None:
+def test_legacy_virtual_preview_selection_still_resolves_after_upgrade(monkeypatch, tmp_path) -> None:
+    from app.guide_preview import resolve_preview_source
+    monkeypatch.setenv("RETROGUIDE_PORT", "9876")
+    cfg = {
+        "guide_preview_source_type": "virtual_traffic",
+        "traffic_channel_enabled": True,
+    }
+    assert resolve_preview_source(cfg, tmp_path) == "http://127.0.0.1:9876/hls/traffic.m3u8"
+
+
+def test_admin_ui_uses_single_virtual_channels_source_and_channel_selector() -> None:
     html = Path("app/templates/index.html").read_text(encoding="utf-8")
-    for value in ("virtual_weather", "virtual_traffic", "virtual_news", "virtual_channel_mix"):
-        assert f'value="{value}"' in html
-    assert "Virtual Channel — Weather Channel" in html
-    assert "Virtual Channel — Simulated Traffic" in html
-    assert "Virtual Channel — News Now" in html
+    assert '<option value="virtual_channels"' in html
+    assert 'name="guide_preview_virtual_channel"' in html
+    assert 'id="guide-preview-virtual-row"' in html
+    assert 'id="guide-preview-virtual-channel"' in html
+    assert '>Virtual Channels</option>' in html
+    # Individual virtual channels belong only in the dependent Channel selector.
+    assert 'Virtual Channel — Weather Channel' not in html
 
 @pytest.mark.parametrize(
     ("resolution", "aspect"),
@@ -277,3 +296,29 @@ def test_admin_ui_contains_preview_aspect_auto_and_manual_controls() -> None:
     assert 'value="16:9"' in html
     assert 'value="4:3"' in html
     assert "Guide startup never waits for ffprobe" in html
+
+
+def test_virtual_preview_cache_key_tracks_selected_channel() -> None:
+    from app.guide_preview import preview_source_cache_key
+    cfg = {
+        "guide_preview_source_type": "virtual_channels",
+        "guide_preview_virtual_channel": "virtual_weather",
+        "weather_channel_enabled": True,
+        "traffic_channel_enabled": True,
+    }
+    assert preview_source_cache_key(cfg) == "virtual_channels:virtual_weather"
+    cfg["guide_preview_virtual_channel"] = "virtual_traffic"
+    assert preview_source_cache_key(cfg) == "virtual_channels:virtual_traffic"
+
+
+def test_virtual_preview_known_aspect_follows_selected_channel() -> None:
+    from app.guide_preview import known_preview_aspect_ratio
+    cfg = {
+        "guide_preview_source_type": "virtual_channels",
+        "guide_preview_virtual_channel": "virtual_weather",
+        "weather_aspect_ratio": "4:3",
+        "traffic_aspect_ratio": "16:9",
+    }
+    assert known_preview_aspect_ratio(cfg) == "4:3"
+    cfg["guide_preview_virtual_channel"] = "virtual_traffic"
+    assert known_preview_aspect_ratio(cfg) == "16:9"

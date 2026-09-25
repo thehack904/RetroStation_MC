@@ -161,7 +161,7 @@ Guide Preview input transport is resolved before the Guide pipeline is built. Lo
 
 The detected **input** transport chooses one of two internal processing paths:
 
-- **HLS / local file / unknown network input:** one shared FFmpeg preview worker normalizes video to the Guide frame rate and a 640x360 or 640x480 `yuv420p` canvas, continuously replacing `data/guide_preview/latest-preview.jpg`. The renderer samples that frame without blocking. In **Preview** audio mode, the same source session resamples audio (`async=1`, 48 kHz stereo AAC) and tees MPEG-TS audio to local UDP relays consumed by the primary/secondary Guide FFmpeg processes. Detected HLS sources are realtime-paced; local files loop in realtime.
+- **HLS / local file / unknown network input:** one shared FFmpeg preview worker keeps normalized video and audio muxed on a common local HLS timeline. Video is normalized to the Guide frame rate and a 640x360 or 640x480 `yuv420p` canvas; audio is resampled to 48 kHz stereo AAC when present. The primary and secondary Guide encoders consume that same timestamped relay for both overlay video and Preview audio. HLS and local files are realtime-paced; local files loop continuously. This avoids the former split `latest-preview.jpg` + UDP-audio path and its independent buffering latency.
 - **Detected MPEG-TS network input:** a dedicated FFmpeg relay normalizes video/audio and writes a short local one-second-segment HLS relay (`data/guide_preview/mpegts-preview.m3u8` plus `mpegts-preview-*.ts`). The Guide FFmpeg process overlays that relay directly; Preview audio is mapped from the same relay input. This preserves the transport-specific path used for sustained MPEG-TS testing.
 
 Preview audio mode remains independent:

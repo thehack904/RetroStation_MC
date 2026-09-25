@@ -19,7 +19,10 @@ from .config_store import ConfigStore
 from .ffmpeg_profiles import FFmpegProfile, normalize_hardware_acceleration_mode, resolve_ffmpeg_profile
 from .gpu_capabilities import detect_gpu_capabilities
 from .guide_state import STATE_PATH, SECONDARY_STATE_PATH, build_state, _scaled_secondary_theme
+from .channel_registry import finalize_guide_lineup
 from .guide_preview import cached_preview_transport, calculate_preview_layout, effective_preview_aspect_ratio, normalize_preview_audio_mode, resolve_preview_source
+from .guide_lineup import merge_rsmc_into_guide
+from .hdhomerun_guide import merge_hdhomerun_testing_into_guide
 from .logging_utils import AppLogger
 from .m3u_parser import parse_m3u
 from .xmltv_parser import parse_xmltv
@@ -690,6 +693,44 @@ def _build_guide_preview_overlay_args(
     return ["-i", source], ["-filter_complex", graph], ["-map", "[vout]"], True
 
 
+def _guide_preview_audio_sync_filter(config: dict) -> str | None:
+    """Return source-specific Guide Preview audio compensation for FFmpeg.
+
+    Diagnostics stores offsets in milliseconds using a user-facing convention:
+    negative values advance audio and positive values delay audio. Compensation
+    is applied only to external HDHomeRun or URL/M3U preview sources.
+    """
+    source_type = str(config.get("guide_preview_source_type", "") or "").strip().lower()
+    if source_type.startswith("hdhomerun_testing:"):
+        source_type = "hdhomerun"
+
+    if source_type == "hdhomerun":
+        raw_offset = config.get("guide_preview_hdhr_audio_offset_ms", 0)
+    elif source_type == "url":
+        raw_offset = config.get("guide_preview_iptv_audio_offset_ms", 0)
+    elif source_type == "file":
+        raw_offset = config.get("guide_preview_file_audio_offset_ms", 0)
+    else:
+        return None
+
+    try:
+        offset_ms = max(-5000, min(5000, int(raw_offset)))
+    except (TypeError, ValueError):
+        offset_ms = 0
+
+    if offset_ms == 0:
+        return None
+    if offset_ms < 0:
+        seconds = abs(offset_ms) / 1000.0
+        value = f"{seconds:.3f}".rstrip("0").rstrip(".")
+        # Rebase the rolling HLS timeline before trimming so the requested
+        # advance is measured from the first audio sample, then rebase again.
+        return f"asetpts=PTS-STARTPTS,atrim=start={value},asetpts=PTS-STARTPTS"
+
+    # Positive values intentionally delay audio without changing video cadence.
+    return f"adelay={offset_ms}:all=1"
+
+
 def _secondary_guide_bitrate(resolution: str) -> str:
     """Conservative SD bitrate caps for low-power IPTV clients.
 
@@ -995,6 +1036,19 @@ class GuideManager:
                     f"xmltv_source={xmltv_source!r}",
                 )
                 raise
+
+        # The rendered Guide is a combined internal lineup.  Imported
+        # M3U/XMLTV rows remain authoritative and RSMC-owned virtual channels
+        # are appended when enabled.  Keep this merge source-agnostic so other
+        # providers (notably HDHomeRun) can contribute to the same Guide model
+        # later without changing the renderer.
+        channels, programmes = merge_rsmc_into_guide(config, channels, programmes)
+        channels, programmes = merge_hdhomerun_testing_into_guide(config, channels, programmes)
+        # Build one deterministic lineup after every provider has contributed.
+        # Channel number is not unique; collisions retain their real number and
+        # receive a Guide-only source label so rows remain distinguishable.
+        channels = finalize_guide_lineup(channels)
+
         build_state(config, channels, programmes)
         if bool(config.get("guide_secondary_enabled", False)):
             secondary_resolution = str(config.get("guide_secondary_resolution", "720x480") or "720x480")
@@ -1319,9 +1373,15 @@ class GuideManager:
         (GUIDE_PREVIEW_DIR / "mpegts-preview.m3u8").unlink(missing_ok=True)
 
     def _start_mpegts_preview_relay_locked(self, config: dict) -> str | None:
-        """Restore the MPEG-TS preview path that passed sustained testing."""
+        """Restore the MPEG-TS preview path that passed sustained testing.
+
+        Physical broadcasts can begin with different (and sometimes very
+        large) audio and video PTS values. Rebase both streams here, before
+        the local HLS handoff, so the Guide encoder receives one zero-based
+        A/V timeline instead of preserving the tuner's startup offset.
+        """
         source = resolve_preview_source(config, BASE_DIR)
-        if not source or not source.startswith(("http://", "https://")):
+        if not source:
             return None
         self._cleanup_preview_normalizer_files()
         playlist = GUIDE_PREVIEW_DIR / "mpegts-preview.m3u8"
@@ -1338,17 +1398,26 @@ class GuideManager:
             f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bilinear,"
             "format=yuv420p,setsar=1,"
             f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:black,"
-            "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+            "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709,"
+            "setpts=PTS-STARTPTS"
         )
+        transport = cached_preview_transport(config)
+        has_audio = _probe_preview_has_audio(source)
+        # Keep relay A/V on the source timeline. Source-specific diagnostic
+        # compensation is applied once by each Guide consumer after ingest.
+        audio_filter = "aresample=48000:async=1:first_pts=0"
+
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+            "-fflags", "+genpts+discardcorrupt",
+            *_preview_source_input_args(source, transport),
             "-i", source,
             "-map", "0:v:0", "-map", "0:a:0?",
             "-vf", vf,
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
             "-pix_fmt", "yuv420p", "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
-            "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+            *(["-af", audio_filter, "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2"] if has_audio else ["-an"]),
+            "-avoid_negative_ts", "make_zero", "-muxdelay", "0", "-muxpreload", "0",
             "-f", "hls", "-hls_time", "1", "-hls_list_size", "8",
             "-hls_flags", "delete_segments+omit_endlist+independent_segments+program_date_time",
             "-hls_segment_filename", str(segment_pattern), str(playlist),
@@ -1435,6 +1504,15 @@ class GuideManager:
         ])
 
         if relay_audio:
+            # Apply source-specific A/V compensation in the shared normalizer.
+            # The Guide encoders consume this worker's UDP audio relay directly,
+            # so applying the filter only in the downstream Guide command would
+            # bypass compensation for this shared-feed architecture.
+            sync_filter = _guide_preview_audio_sync_filter(config)
+            audio_filter = "aresample=48000:async=1:first_pts=0"
+            if sync_filter:
+                audio_filter = f"{audio_filter},{sync_filter}"
+
             tee_spec = (
                 f"[f=mpegts:onfail=ignore]udp://127.0.0.1:{GUIDE_PREVIEW_AUDIO_PORT_PRIMARY}"
                 "?pkt_size=1316&buffer_size=262144|"
@@ -1444,7 +1522,7 @@ class GuideManager:
             cmd.extend([
                 # Output 1: audio from the exact same source clock as video.
                 "-map", "0:a:0", "-vn",
-                "-af", "aresample=48000:async=1:first_pts=0",
+                "-af", audio_filter,
                 "-ac", "2", "-ar", "48000",
                 "-c:a", "aac", "-b:a", "128k",
                 "-flush_packets", "1", "-muxdelay", "0", "-muxpreload", "0",
@@ -1567,18 +1645,23 @@ class GuideManager:
             preview_transport = cached_preview_transport(config)
             preview_audio_mode = normalize_preview_audio_mode(config.get("guide_preview_audio_mode"))
 
-            # Transport routing is resolved before Guide startup. HLS retains the
-            # decoupled cached-frame path that passed current testing. MPEG-TS
-            # restores the earlier shared local-HLS relay + FFmpeg overlay path
-            # that passed sustained Commercial TV testing. Local files stay on
-            # the decoupled path for the separate A/V-sync investigation.
+            # Keep remote Guide Preview video and audio on one synchronized local
+            # HLS timeline.  Splitting preview video through latest-preview.jpg
+            # while relaying audio over UDP introduced a fixed A/V offset because
+            # the two media paths have different buffering latency.  Both HLS and
+            # continuous MPEG-TS/HDHomeRun network sources therefore use the
+            # proven local-HLS relay + FFmpeg overlay path. HLS and local files
+            # are paced in real time inside that relay; MPEG-TS remains sender-
+            # paced. Keeping local-file preview video and audio muxed on this one
+            # timestamped timeline avoids the JPEG + UDP split-path A/V drift.
             mpegts_overlay_source = None
             preview_frame_source, preview_audio_relay = None, False
             if preview_enabled and raw_preview_source:
-                if preview_transport == "mpegts":
-                    mpegts_overlay_source = self._start_mpegts_preview_relay_locked(config)
-                else:
-                    preview_frame_source, preview_audio_relay = self._start_preview_normalizer_locked(config)
+                # All supported external/file preview sources use one muxed local
+                # A/V relay. This preserves a common timeline through normalization
+                # and into the Guide overlay instead of splitting video to JPEG and
+                # audio to a separate UDP clock.
+                mpegts_overlay_source = self._start_mpegts_preview_relay_locked(config)
 
             if mpegts_overlay_source:
                 preview_input_args, video_filter_args, video_map_args, preview_active = _build_guide_preview_overlay_args(
@@ -1586,7 +1669,10 @@ class GuideManager:
                 )
                 if preview_audio_mode == "preview":
                     audio_input_args = []
-                    audio_codec_args = ["-c:a", profile.audio_codec, "-b:a", "128k"]
+                    audio_filter = _guide_preview_audio_sync_filter(config)
+                    audio_codec_args = (["-af", audio_filter] if audio_filter else []) + [
+                        "-c:a", profile.audio_codec, "-b:a", "128k"
+                    ]
                     audio_map_args = ["-map", "1:a:0?"]
                 else:
                     audio_config = {**config, "music_mode": "none"} if preview_audio_mode == "silent" else config
@@ -1711,7 +1797,10 @@ class GuideManager:
                     )
                     if preview_audio_mode == "preview":
                         sec_audio_input_args = []
-                        sec_audio_codec_args = ["-c:a", secondary_profile.audio_codec, "-b:a", "128k"]
+                        sec_audio_filter = _guide_preview_audio_sync_filter(secondary_config)
+                        sec_audio_codec_args = (["-af", sec_audio_filter] if sec_audio_filter else []) + [
+                            "-c:a", secondary_profile.audio_codec, "-b:a", "128k"
+                        ]
                         sec_audio_map_args = ["-map", "1:a:0?"]
                     else:
                         sec_audio_config = {**secondary_config, "music_mode": "none"} if preview_audio_mode == "silent" else secondary_config
@@ -1977,9 +2066,10 @@ class GuideManager:
             "resolution", "fps", "segment_seconds",
             "music_mode", "music_loop", "music_single_file", "music_playlist_files",
             "guide_preview_enabled", "guide_preview_source_type", "guide_preview_file",
-            "guide_preview_url", "guide_preview_url_channel", "guide_preview_url_channel_name", "guide_preview_audio_mode",
+            "guide_preview_url", "guide_preview_url_channel", "guide_preview_url_channel_name", "guide_preview_hdhomerun_channel", "guide_preview_audio_mode",
             "guide_preview_aspect_mode", "guide_preview_detected_aspect_ratio", "guide_preview_detected_source_key",
             "guide_preview_detected_transport", "guide_preview_transport_source_key",
+            "guide_preview_hdhr_audio_offset_ms", "guide_preview_iptv_audio_offset_ms", "guide_preview_file_audio_offset_ms",
         }
         return any(old_config.get(k) != new_config.get(k) for k in pipeline_keys)
 

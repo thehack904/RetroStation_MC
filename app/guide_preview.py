@@ -5,6 +5,8 @@ import os
 import re
 import subprocess
 from pathlib import Path
+
+from .hdhomerun_shared import shared_hdhomerun_source_url
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -26,7 +28,8 @@ VIRTUAL_PREVIEW_SOURCES = {
     "virtual_news": ("news_channel_enabled", "/hls/news.m3u8"),
     "virtual_channel_mix": ("channel_mix_enabled", "/hls/channel-mix.m3u8"),
 }
-SUPPORTED_PREVIEW_SOURCE_TYPES = {"file", "url", *VIRTUAL_PREVIEW_SOURCES}
+SUPPORTED_PREVIEW_SOURCE_TYPES = {"file", "url", "hdhomerun", "virtual_channels"}
+HDHOMERUN_PREVIEW_PREFIX = "hdhomerun_testing:"  # legacy per-channel source value
 TIMELINE_HEADER_HEIGHT = 40
 CLOCK_TEXT_Y = 28
 CLOCK_FONT_SIZE = 26
@@ -107,6 +110,34 @@ def cached_preview_transport(config: dict[str, Any]) -> str:
         return transport
     return "file" if normalize_preview_source_type(config.get("guide_preview_source_type")) == "file" else ""
 
+def selected_hdhomerun_preview_key(config: dict[str, Any]) -> str:
+    key = str(config.get("guide_preview_hdhomerun_channel", "") or "").strip()
+    if key:
+        return key
+    # Upgrade compatibility for configs saved by the earlier flattened source
+    # selector (hdhomerun_testing:<key>).
+    raw = str(config.get("guide_preview_source_type", "") or "").strip()
+    if raw.lower().startswith(HDHOMERUN_PREVIEW_PREFIX):
+        legacy = raw.split(":", 1)[1].strip()
+        if legacy and re.fullmatch(r"[A-Za-z0-9._~-]+", legacy):
+            return legacy
+    return ""
+
+
+def selected_virtual_preview_source(config: dict[str, Any]) -> str:
+    """Return the selected enabled virtual-channel preview key.
+
+    Older builds encoded the virtual channel directly in
+    ``guide_preview_source_type``. Preserve that selection when upgrading to
+    the single Virtual Channels source plus Channel selector.
+    """
+    selected = str(config.get("guide_preview_virtual_channel", "") or "").strip().lower()
+    if selected in VIRTUAL_PREVIEW_SOURCES:
+        return selected
+    raw = str(config.get("guide_preview_source_type", "") or "").strip().lower()
+    return raw if raw in VIRTUAL_PREVIEW_SOURCES else ""
+
+
 def preview_source_cache_key(config: dict[str, Any]) -> str:
     """Return a stable key identifying the currently selected preview source."""
     source_type = normalize_preview_source_type(config.get("guide_preview_source_type"))
@@ -116,6 +147,25 @@ def preview_source_cache_key(config: dict[str, Any]) -> str:
         return f"url:{selected or raw}"
     if source_type == "file":
         return f"file:{Path(str(config.get('guide_preview_file', '') or '')).name}"
+    if source_type == "virtual_channels":
+        selected = selected_virtual_preview_source(config)
+        return f"virtual_channels:{selected}" if selected else "virtual_channels:"
+    if source_type == "hdhomerun":
+        channel_key = selected_hdhomerun_preview_key(config)
+        raw_channels = config.get("hdhomerun_testing_channels")
+        if isinstance(raw_channels, list) and channel_key:
+            selected = next(
+                (item for item in raw_channels
+                 if isinstance(item, dict)
+                 and bool(item.get("enabled", True))
+                 and str(item.get("key") or "").strip() == channel_key),
+                None,
+            )
+            if selected is not None:
+                stream_url = str(selected.get("URL") or "").strip()
+                if stream_url:
+                    return f"hdhomerun:{channel_key}|{stream_url}"
+        return f"hdhomerun:{channel_key}" if channel_key else "hdhomerun:"
     return source_type
 
 
@@ -127,7 +177,8 @@ def known_preview_aspect_ratio(config: dict[str, Any]) -> str | None:
         "virtual_traffic": "traffic_aspect_ratio",
         "virtual_news": "news_aspect_ratio",
     }
-    key = key_map.get(source_type)
+    selected_type = selected_virtual_preview_source(config) if source_type == "virtual_channels" else source_type
+    key = key_map.get(selected_type)
     if not key:
         return None
     value = str(config.get(key, "") or "").strip()
@@ -216,8 +267,23 @@ def detect_preview_aspect_ratio(source: str, timeout_seconds: float = 3.0) -> st
 
 
 def normalize_preview_source_type(value: Any) -> str:
-    source_type = str(value or "file").strip().lower()
-    return source_type if source_type in SUPPORTED_PREVIEW_SOURCE_TYPES else "file"
+    source_type = str(value or "file").strip()
+    lowered = source_type.lower()
+    if lowered in SUPPORTED_PREVIEW_SOURCE_TYPES:
+        return lowered
+    # Backward compatibility with the earlier UI that exposed each virtual
+    # channel directly in Video Source. The new UI has one Virtual Channels
+    # source plus a separate Channel selector.
+    if lowered in VIRTUAL_PREVIEW_SOURCES:
+        return "virtual_channels"
+    # Backward compatibility with the earlier UI that encoded the selected
+    # physical channel directly in guide_preview_source_type.  The new UI has
+    # one HDHomeRun source plus a separate channel selector.
+    if lowered.startswith(HDHOMERUN_PREVIEW_PREFIX):
+        key = source_type.split(":", 1)[1].strip()
+        if key and re.fullmatch(r"[A-Za-z0-9._~-]+", key):
+            return "hdhomerun"
+    return "file"
 
 
 def is_http_url(value: str) -> bool:
@@ -396,8 +462,36 @@ def resolve_preview_source(config: dict[str, Any], base_dir: Path) -> str | None
         raw = str(config.get("guide_preview_url", "") or "").strip()
         return raw if is_http_url(raw) else None
 
-    if source_type in VIRTUAL_PREVIEW_SOURCES:
-        enabled_key, stream_path = VIRTUAL_PREVIEW_SOURCES[source_type]
+    if source_type == "hdhomerun":
+        channel_key = selected_hdhomerun_preview_key(config)
+        if not channel_key:
+            return None
+        raw_channels = config.get("hdhomerun_testing_channels")
+        if not isinstance(raw_channels, list):
+            return None
+        selected = next(
+            (item for item in raw_channels
+             if isinstance(item, dict)
+             and bool(item.get("enabled", True))
+             and str(item.get("key") or "").strip() == channel_key),
+            None,
+        )
+        if selected is None:
+            return None
+        # All physical HDHomeRun consumers use the shared localhost source
+        # relay.  This lets Guide Preview and rebroadcast outputs share one
+        # physical tuner session when they are tuned to the same station.
+        try:
+            return shared_hdhomerun_source_url(config, selected)
+        except (TypeError, ValueError, RuntimeError):
+            return None
+
+    if source_type == "virtual_channels":
+        selected_type = selected_virtual_preview_source(config)
+        virtual = VIRTUAL_PREVIEW_SOURCES.get(selected_type)
+        if virtual is None:
+            return None
+        enabled_key, stream_path = virtual
         if not bool(config.get(enabled_key, False)):
             return None
         port = str(os.environ.get("RETROGUIDE_PORT", "8787") or "8787").strip()

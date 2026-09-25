@@ -81,7 +81,7 @@ The manager then selects one of two processing paths:
 ```text
 HLS / local file / unknown network source
     └── shared FFmpeg preview worker
-        ├── normalized latest-preview.jpg for renderer sampling
+        ├── normalized local HLS A/V relay for Guide overlay
         └── optional AAC-over-MPEG-TS UDP relays for Preview audio
 
 Detected MPEG-TS network source
