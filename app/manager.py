@@ -178,10 +178,19 @@ HW_ENCODER_MAX_CONSECUTIVE_FAILURES = 3
 # call is treated as a "quick" (likely encoder-init) failure.
 HW_ENCODER_QUICK_FAILURE_WINDOW_SECS = 10.0
 
+# Guide Preview relay supervision. A live ffmpeg PID is not sufficient: HLS
+# demux/filter graphs can remain alive while output stops advancing.
+PREVIEW_RELAY_STALE_SECS = 8.0
+PREVIEW_HLS_RELAY_STALE_SECS = 15.0
+PREVIEW_RELAY_STARTUP_GRACE_SECS = 12.0
+PREVIEW_SUPERVISOR_INTERVAL_SECS = 2.0
+STATE_REFRESH_INTERVAL_SECS = 30.0
+
 # PID files let us reattach to the pipeline after a Flask restart without
 # killing the already-running renderer and ffmpeg processes.
 RENDERER_PID_FILE = DATA_DIR / "renderer.pid"
 FFMPEG_PID_FILE = DATA_DIR / "ffmpeg.pid"
+PREVIEW_NORMALIZER_PID_FILE = DATA_DIR / "guide_preview_normalizer.pid"
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +634,39 @@ def _preview_source_input_args(source: str, transport: str = "") -> list[str]:
     return ["-thread_queue_size", "1024", "-re", "-stream_loop", "-1"]
 
 
+
+def _preview_relay_video_args(profile: FFmpegProfile, vf: str) -> tuple[list[str], list[str], str]:
+    """Return global/video args for Preview relay encoding.
+
+    Preview normalization remains in system memory for broad filter compatibility.
+    When the selected Guide profile uses VA-API or NVENC, only the final H.264
+    encode is offloaded. This avoids the fragile hwdownload round-trip while still
+    honoring the administrator's Hardware Acceleration selection where supported.
+    """
+    codec, codec_args, preset, tune, path_label, pix_fmt = _resolve_video_encoder_path(profile)
+    global_args = _resolve_hw_device_init_args(codec)
+    video_args: list[str] = []
+    if codec in {"h264_vaapi", "hevc_vaapi", "av1_vaapi"}:
+        video_args += ["-vf", f"{vf},format=nv12,hwupload", "-c:v", codec, *codec_args]
+    elif codec == "h264_nvenc":
+        video_args += ["-vf", vf, "-c:v", codec, *codec_args, "-pix_fmt", pix_fmt or "yuv420p"]
+    else:
+        # QSV/AMF preview upload paths vary substantially across host generations;
+        # keep the relay on the proven software encoder unless VA-API/NVENC is
+        # selected. The main Guide encoder may still use those providers.
+        if codec not in {"libx264"}:
+            codec, codec_args, preset, tune, path_label, pix_fmt = (
+                "libx264", [], "ultrafast", "zerolatency", f"software:preview-fallback-from-{codec}", "yuv420p"
+            )
+        video_args += ["-vf", vf, "-c:v", codec]
+        if preset:
+            video_args += ["-preset", preset]
+        if tune:
+            video_args += ["-tune", tune]
+        video_args += ["-pix_fmt", pix_fmt or "yuv420p"]
+    return global_args, video_args, path_label
+
+
 def _probe_preview_has_audio(source: str) -> bool:
     """Best-effort check used only when Preview audio mode is selected."""
     cmd = [
@@ -876,9 +918,16 @@ class GuideManager:
         self._preview_normalizer_pid: Optional[int] = None
         self._preview_normalizer_popen: Optional[subprocess.Popen] = None
         self._preview_normalized_playlist: Optional[Path] = None
+        self._preview_normalizer_started_at: Optional[float] = None
+        self._preview_normalizer_kind: Optional[str] = None
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
+        # Serialize whole-pipeline start/recovery requests.  The internal _lock
+        # protects process teardown/spawn, but standby generation happens before
+        # that lock; without this gate a web restart and watchdog recovery can
+        # overlap and trigger back-to-back normalizer/Guide restarts.
+        self._pipeline_start_gate = threading.Lock()
         self.last_refresh_status = "never"
         # Wall-clock time (time.time()) when start_pipeline() was last called.
         # None means the pipeline was reattached rather than freshly started,
@@ -940,6 +989,24 @@ class GuideManager:
             self._renderer_pid = renderer_pid
             self._ffmpeg_pid = ffmpeg_pid
             self._pipeline_active = True
+            preview_pid = _load_pid(PREVIEW_NORMALIZER_PID_FILE)
+            if preview_pid and _pid_alive(preview_pid) and _pid_matches(preview_pid, "ffmpeg"):
+                self._preview_normalizer_pid = preview_pid
+                relay_playlist = GUIDE_PREVIEW_DIR / "mpegts-preview.m3u8"
+                relay_frame = GUIDE_PREVIEW_DIR / "latest-preview.jpg"
+                if relay_playlist.is_file():
+                    self._preview_normalized_playlist = relay_playlist
+                    try:
+                        cfg = self.store.get_config()
+                        transport = cached_preview_transport(cfg)
+                    except Exception:
+                        transport = ""
+                    self._preview_normalizer_kind = "hls" if transport == "hls" else "mpegts-or-file"
+                elif relay_frame.is_file():
+                    self._preview_normalized_playlist = relay_frame
+                    self._preview_normalizer_kind = "jpeg"
+                self._preview_normalizer_started_at = time.monotonic() - PREVIEW_RELAY_STARTUP_GRACE_SECS
+                self.logger.info("system", f"Reattached to Guide Preview normalizer PID {preview_pid}")
             # _renderer_popen / _ffmpeg_popen stay None because we are not
             # the parent of these processes; init owns them now.
             self.logger.info(
@@ -979,9 +1046,16 @@ class GuideManager:
     # ------------------------------------------------------------------
 
     def _worker_loop(self) -> None:
+        # Pipeline/preview health needs a short cadence, but parsing M3U/XMLTV
+        # every two seconds is unnecessary. Keep state refresh at the historic
+        # 30-second cadence while supervising processes/output every 2 seconds.
+        next_refresh = 0.0
         while not self._stop_event.is_set():
             try:
-                self.refresh_state()
+                now = time.monotonic()
+                if now >= next_refresh:
+                    self.refresh_state()
+                    next_refresh = now + STATE_REFRESH_INTERVAL_SECS
                 self.ensure_pipeline_running()
             except Exception as exc:
                 try:
@@ -994,11 +1068,11 @@ class GuideManager:
                 self.last_refresh_status = f"error: {exc}"
                 self.logger.error(
                     "worker",
-                    f"Refresh failed ({exc.__class__.__name__}): {exc}; "
+                    f"Refresh/supervision failed ({exc.__class__.__name__}): {exc}; "
                     f"playlist_source={playlist_source!r}; xmltv_source={xmltv_source!r}",
                 )
                 self.logger.error("worker.traceback", traceback.format_exc().strip())
-            self._stop_event.wait(30)
+            self._stop_event.wait(PREVIEW_SUPERVISOR_INTERVAL_SECS)
 
     # ------------------------------------------------------------------
     # State / pipeline management
@@ -1372,7 +1446,7 @@ class GuideManager:
         (GUIDE_PREVIEW_DIR / "latest-preview.jpg").unlink(missing_ok=True)
         (GUIDE_PREVIEW_DIR / "mpegts-preview.m3u8").unlink(missing_ok=True)
 
-    def _start_mpegts_preview_relay_locked(self, config: dict) -> str | None:
+    def _start_mpegts_preview_relay_locked(self, config: dict, profile: FFmpegProfile) -> str | None:
         """Restore the MPEG-TS preview path that passed sustained testing.
 
         Physical broadcasts can begin with different (and sometimes very
@@ -1406,16 +1480,19 @@ class GuideManager:
         # Keep relay A/V on the source timeline. Source-specific diagnostic
         # compensation is applied once by each Guide consumer after ingest.
         audio_filter = "aresample=48000:async=1:first_pts=0"
+        preview_hw_args, preview_video_args, preview_encoder_path = _preview_relay_video_args(profile, vf)
 
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            *preview_hw_args,
             "-fflags", "+genpts+discardcorrupt",
             *_preview_source_input_args(source, transport),
+            "-re",
             "-i", source,
             "-map", "0:v:0", "-map", "0:a:0?",
-            "-vf", vf,
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            "-pix_fmt", "yuv420p", "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
+            *preview_video_args,
+            "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
+            "-r", fps, "-fps_mode", "cfr",
             *(["-af", audio_filter, "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2"] if has_audio else ["-an"]),
             "-avoid_negative_ts", "make_zero", "-muxdelay", "0", "-muxpreload", "0",
             "-f", "hls", "-hls_time", "1", "-hls_list_size", "8",
@@ -1429,7 +1506,10 @@ class GuideManager:
             return None
         self._preview_normalizer_popen = popen
         self._preview_normalizer_pid = popen.pid
+        _save_pid(PREVIEW_NORMALIZER_PID_FILE, popen.pid)
         self._preview_normalized_playlist = playlist
+        self._preview_normalizer_started_at = time.monotonic()
+        self._preview_normalizer_kind = "mpegts-or-file"
         _start_stderr_reader(popen, "guide-preview-mpegts-relay", self.logger)
         deadline = time.monotonic() + 8.0
         while time.monotonic() < deadline:
@@ -1438,9 +1518,11 @@ class GuideManager:
                 self._preview_normalizer_pid = None
                 self._preview_normalizer_popen = None
                 self._preview_normalized_playlist = None
+                self._preview_normalizer_started_at = None
+                self._preview_normalizer_kind = None
                 return None
             if playlist.is_file() and any(GUIDE_PREVIEW_DIR.glob("mpegts-preview-*.ts")):
-                self.logger.info("guide-preview-normalizer", f"MPEG-TS preview relay ready at {canvas_w}x{canvas_h}@{fps} fps (PID {popen.pid}).")
+                self.logger.info("guide-preview-normalizer", f"MPEG-TS preview relay ready at {canvas_w}x{canvas_h}@{fps} fps (PID {popen.pid}, encoder={preview_encoder_path}).")
                 return str(playlist)
             time.sleep(0.05)
         self.logger.error("guide-preview-normalizer", "Timed out waiting for MPEG-TS preview relay startup.")
@@ -1448,6 +1530,118 @@ class GuideManager:
         self._preview_normalizer_pid = None
         self._preview_normalizer_popen = None
         self._preview_normalized_playlist = None
+        self._preview_normalizer_started_at = None
+        self._preview_normalizer_kind = None
+        PREVIEW_NORMALIZER_PID_FILE.unlink(missing_ok=True)
+        self._cleanup_preview_normalizer_files()
+        return None
+
+    def _start_hls_preview_relay_locked(self, config: dict, profile: FFmpegProfile) -> str | None:
+        """Normalize a live HLS preview onto a stable local A/V HLS timeline.
+
+        Live HLS already carries a continuous timestamp domain and is paced by
+        playlist availability.  Do not rebase PTS/DTS or apply ``first_pts=0``
+        here; those transforms are useful for file/MPEG-TS normalization but can
+        fight HLS discontinuities and eventually starve the muxer while input is
+        still being downloaded.
+
+        This relay intentionally uses libx264 even when the Guide outputs use
+        hardware encoding.  It is only 640px wide at 15 fps, and keeping this
+        stage in software avoids VA-API relay exits observed on older Intel
+        generations while the primary/secondary Guide encoders remain hardware
+        accelerated.
+        """
+        source = resolve_preview_source(config, BASE_DIR)
+        if not source:
+            return None
+        self._cleanup_preview_normalizer_files()
+        playlist = GUIDE_PREVIEW_DIR / "mpegts-preview.m3u8"
+        segment_pattern = GUIDE_PREVIEW_DIR / "mpegts-preview-%06d.ts"
+        aspect = str(effective_preview_aspect_ratio(config) or "16:9").strip().lower()
+        canvas_w, canvas_h = (640, 480) if (aspect.startswith("4") or aspect in {"1.333", "1.33", "4/3"}) else (640, 360)
+        fps = str(config.get("fps") or 15)
+        try:
+            gop = max(1, int(round(float(fps))))
+        except (TypeError, ValueError):
+            fps, gop = "15", 15
+
+        # Preserve the live HLS timestamp domain.  In particular, do not append
+        # setpts=PTS-STARTPTS here.
+        vf = (
+            f"fps={fps},"
+            f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=bilinear,"
+            "format=yuv420p,setsar=1,"
+            f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:black,"
+            "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+        )
+        has_audio = _probe_preview_has_audio(source)
+        start_number = str(int(time.time()))
+        input_args = ["-thread_queue_size", "1024", "-re"]
+        if source.startswith(("http://", "https://")):
+            input_args += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"]
+
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+            "-fflags", "+genpts+discardcorrupt",
+            *input_args, "-i", source,
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", vf,
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-pix_fmt", "yuv420p",
+            "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
+            "-r", fps, "-fps_mode", "cfr",
+            *(["-af", "aresample=48000:async=1", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2"] if has_audio else ["-an"]),
+            "-muxdelay", "0", "-muxpreload", "0",
+            "-f", "hls", "-hls_time", "1", "-hls_list_size", "8",
+            "-hls_flags", "delete_segments+omit_endlist+independent_segments+program_date_time+discont_start",
+            "-start_number", start_number,
+            "-hls_segment_filename", str(segment_pattern), str(playlist),
+        ]
+        try:
+            popen = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            self.logger.error("guide-preview-normalizer", f"Failed to start HLS preview relay: {exc}")
+            return None
+        self._preview_normalizer_popen = popen
+        self._preview_normalizer_pid = popen.pid
+        _save_pid(PREVIEW_NORMALIZER_PID_FILE, popen.pid)
+        self._preview_normalized_playlist = playlist
+        self._preview_normalizer_started_at = time.monotonic()
+        self._preview_normalizer_kind = "hls"
+        _start_stderr_reader(popen, "guide-preview-hls-relay", self.logger)
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            if popen.poll() is not None:
+                self.logger.error("guide-preview-normalizer", f"HLS preview relay exited during startup with status {popen.returncode}.")
+                self._preview_normalizer_pid = None
+                self._preview_normalizer_popen = None
+                self._preview_normalized_playlist = None
+                self._preview_normalizer_started_at = None
+                self._preview_normalizer_kind = None
+                return None
+            if playlist.is_file() and any(GUIDE_PREVIEW_DIR.glob("mpegts-preview-*.ts")):
+                self.logger.info(
+                    "guide-preview-normalizer",
+                    f"HLS preview relay ready at {canvas_w}x{canvas_h}@{fps} fps "
+                    f"(PID {popen.pid}, input paced with -re, encoder=software:libx264, live timestamps preserved).",
+                )
+                return str(playlist)
+            time.sleep(0.05)
+        self.logger.error("guide-preview-normalizer", "Timed out waiting for HLS preview relay startup.")
+        _terminate_pid(popen.pid, popen, self.logger, "guide-preview-hls-relay")
+        self._preview_normalizer_pid = None
+        self._preview_normalizer_popen = None
+        self._preview_normalized_playlist = None
+        self._preview_normalizer_started_at = None
+        self._preview_normalizer_kind = None
+        PREVIEW_NORMALIZER_PID_FILE.unlink(missing_ok=True)
         self._cleanup_preview_normalizer_files()
         return None
 
@@ -1544,7 +1738,10 @@ class GuideManager:
 
         self._preview_normalizer_popen = popen
         self._preview_normalizer_pid = popen.pid
+        _save_pid(PREVIEW_NORMALIZER_PID_FILE, popen.pid)
         self._preview_normalized_playlist = frame_path
+        self._preview_normalizer_started_at = time.monotonic()
+        self._preview_normalizer_kind = "jpeg"
         _start_stderr_reader(popen, "guide-preview-normalizer", self.logger)
 
         deadline = time.monotonic() + 8.0
@@ -1575,11 +1772,23 @@ class GuideManager:
         self._preview_normalizer_pid = None
         self._preview_normalizer_popen = None
         self._preview_normalized_playlist = None
+        self._preview_normalizer_started_at = None
+        self._preview_normalizer_kind = None
+        PREVIEW_NORMALIZER_PID_FILE.unlink(missing_ok=True)
         self._cleanup_preview_normalizer_files()
         return None, False
 
 
     def start_pipeline(self, message: str = "Guide is Loading...") -> None:
+        if not self._pipeline_start_gate.acquire(blocking=False):
+            self.logger.warning("pipeline", "Pipeline start/recovery already in progress; ignoring duplicate request")
+            return
+        try:
+            self._start_pipeline_impl(message)
+        finally:
+            self._pipeline_start_gate.release()
+
+    def _start_pipeline_impl(self, message: str = "Guide is Loading...") -> None:
         # Mark the pipeline as intentionally active so the background worker
         # will restart it automatically if it ever crashes.
         self._pipeline_active = True
@@ -1645,23 +1854,20 @@ class GuideManager:
             preview_transport = cached_preview_transport(config)
             preview_audio_mode = normalize_preview_audio_mode(config.get("guide_preview_audio_mode"))
 
-            # Keep remote Guide Preview video and audio on one synchronized local
-            # HLS timeline.  Splitting preview video through latest-preview.jpg
-            # while relaying audio over UDP introduced a fixed A/V offset because
-            # the two media paths have different buffering latency.  Both HLS and
-            # continuous MPEG-TS/HDHomeRun network sources therefore use the
-            # proven local-HLS relay + FFmpeg overlay path. HLS and local files
-            # are paced in real time inside that relay; MPEG-TS remains sender-
-            # paced. Keeping local-file preview video and audio muxed on this one
-            # timestamped timeline avoids the JPEG + UDP split-path A/V drift.
+            # Keep preview video/audio muxed for synchronized playback, but do
+            # not collapse unlike transports into one input-pacing path. MPEG-TS
+            # keeps the sustained-tested relay. Live HLS uses its own relay with
+            # no additional -re throttle. Local files retain the real-time looped
+            # muxed relay so they do not regress to JPEG+UDP A/V drift.
             mpegts_overlay_source = None
             preview_frame_source, preview_audio_relay = None, False
             if preview_enabled and raw_preview_source:
-                # All supported external/file preview sources use one muxed local
-                # A/V relay. This preserves a common timeline through normalization
-                # and into the Guide overlay instead of splitting video to JPEG and
-                # audio to a separate UDP clock.
-                mpegts_overlay_source = self._start_mpegts_preview_relay_locked(config)
+                if preview_transport == "hls" or _preview_source_is_hls(raw_preview_source):
+                    mpegts_overlay_source = self._start_hls_preview_relay_locked(config, profile)
+                else:
+                    # Preserve the validated MPEG-TS path and the existing local
+                    # file pacing behavior.
+                    mpegts_overlay_source = self._start_mpegts_preview_relay_locked(config, profile)
 
             if mpegts_overlay_source:
                 preview_input_args, video_filter_args, video_map_args, preview_active = _build_guide_preview_overlay_args(
@@ -1926,9 +2132,14 @@ class GuideManager:
         self._preview_normalizer_pid = None
         self._preview_normalizer_popen = None
         self._preview_normalized_playlist = None
+        self._preview_normalizer_started_at = None
+        self._preview_normalizer_kind = None
+        PREVIEW_NORMALIZER_PID_FILE.unlink(missing_ok=True)
         self._cleanup_preview_normalizer_files()
 
     def stop_pipeline(self) -> None:
+        # BETA 2: mark inactive before teardown so the watchdog cannot resurrect an intentional stop.
+        self._pipeline_active = False
         with self._lock:
             self._stop_pipeline_locked()
             self._clean_output_dir()
@@ -1953,6 +2164,18 @@ class GuideManager:
         # auto-start behaviour.
         if not self._pipeline_active:
             return
+
+        # BETA 2: intentional teardown can briefly leave _pipeline_active True
+        # after all process handles/PIDs have already been cleared. That state
+        # is not a crash and must not cause the watchdog to resurrect the Guide.
+        if (
+            self._renderer_popen is None
+            and self._ffmpeg_popen is None
+            and self._renderer_pid is None
+            and self._ffmpeg_pid is None
+        ):
+            return
+
         # Use popen.poll() for processes we own: os.kill(pid, 0) returns 0
         # for zombie processes on Linux (process table entry still exists),
         # so _pid_alive() would incorrectly report a dead process as alive.
@@ -1995,22 +2218,74 @@ class GuideManager:
                 guide_had_output = playlist_path_has_segments(OUTPUT_DIR / "guide.m3u8", "guide_")
             except Exception:
                 guide_had_output = False
+            # BETA 2 stabilization:
+            # Do not globally blacklist VA-API merely because the Guide pipeline
+            # exited/restarted quickly. Preview-relay/watchdog/source failures can
+            # cascade into Guide FFmpeg restarts even when the VA-API encoder is
+            # healthy. Keep hardware selected while transport stability is tested.
             if self._last_encoder_type == "hardware" and (
                 elapsed < HW_ENCODER_QUICK_FAILURE_WINDOW_SECS or not guide_had_output
             ):
                 self._hw_failure_count += 1
-                if self._hw_failure_count >= HW_ENCODER_MAX_CONSECUTIVE_FAILURES and not self._hw_fallback_forced:
-                    self._hw_fallback_forced = True
+                if self._hw_failure_count >= HW_ENCODER_MAX_CONSECUTIVE_FAILURES:
                     self.logger.warning(
                         "pipeline",
-                        f"Hardware encoder has failed {self._hw_failure_count} time(s) before establishing stable HLS output; "
-                        "switching to software (libx264) fallback.",
+                        f"Hardware pipeline restarted {self._hw_failure_count} consecutive time(s) quickly; "
+                        "global software fallback suppressed during Beta 2 stabilization.",
                     )
+                    self._hw_failure_count = 0
             else:
                 # Ran long enough (or was already on software) — reset the counter.
                 self._hw_failure_count = 0
 
             self.start_pipeline(message="Guide is Restarting...")
+            return
+
+        # Preview relay health is output-based, not PID-only. ffmpeg can remain
+        # alive and continue downloading HLS while its filter/mux path stops
+        # writing the local relay. A coordinated guide restart is required
+        # because existing guide ffmpeg consumers do not reliably reattach to a
+        # replacement rolling HLS playlist.
+        try:
+            cfg = self.store.get_config()
+        except Exception:
+            cfg = {}
+        if bool(cfg.get("guide_preview_enabled", False)) and resolve_preview_source(cfg, BASE_DIR):
+            preview_dead = False
+            preview_rc = None
+            if self._preview_normalizer_popen is not None:
+                preview_rc = self._preview_normalizer_popen.poll()
+                preview_dead = preview_rc is not None
+            elif self._preview_normalizer_pid is not None:
+                preview_dead = not _pid_alive(self._preview_normalizer_pid)
+
+            started_at = self._preview_normalizer_started_at
+            startup_age = (time.monotonic() - started_at) if started_at is not None else float("inf")
+            output_stale = False
+            output_age = None
+            path = self._preview_normalized_playlist
+            if path is not None and path.exists():
+                try:
+                    output_age = max(0.0, time.time() - path.stat().st_mtime)
+                    stale_limit = PREVIEW_HLS_RELAY_STALE_SECS if self._preview_normalizer_kind == "hls" else PREVIEW_RELAY_STALE_SECS
+                    output_stale = startup_age >= PREVIEW_RELAY_STARTUP_GRACE_SECS and output_age > stale_limit
+                except OSError:
+                    pass
+            elif startup_age >= PREVIEW_RELAY_STARTUP_GRACE_SECS:
+                output_stale = True
+
+            if preview_dead or output_stale:
+                reason = (
+                    f"process exited (PID {self._preview_normalizer_pid}, exit {preview_rc})"
+                    if preview_dead else
+                    f"output stalled for {output_age:.1f}s" if output_age is not None else "output missing"
+                )
+                self.logger.warning(
+                    "guide-preview-normalizer",
+                    f"Preview relay unhealthy: {reason}; kind={self._preview_normalizer_kind or 'unknown'} — restarting coordinated Guide pipeline",
+                )
+                self.start_pipeline(message="Guide Preview is Recovering...")
+                return
 
     def is_guide_buffered(self, min_secs: float = 25.0, min_segments: int = 5) -> bool:
         """Return True when the live guide has enough buffer to play smoothly.
@@ -2067,7 +2342,7 @@ class GuideManager:
             "music_mode", "music_loop", "music_single_file", "music_playlist_files",
             "guide_preview_enabled", "guide_preview_source_type", "guide_preview_file",
             "guide_preview_url", "guide_preview_url_channel", "guide_preview_url_channel_name", "guide_preview_hdhomerun_channel", "guide_preview_audio_mode",
-            "guide_preview_aspect_mode", "guide_preview_detected_aspect_ratio", "guide_preview_detected_source_key",
+            "guide_preview_aspect_mode",
             "guide_preview_detected_transport", "guide_preview_transport_source_key",
             "guide_preview_hdhr_audio_offset_ms", "guide_preview_iptv_audio_offset_ms", "guide_preview_file_audio_offset_ms",
         }
@@ -2953,6 +3228,24 @@ class TrafficChannelManager:
             self._renderer_pid = renderer_pid
             self._ffmpeg_pid = ffmpeg_pid
             self._pipeline_active = True
+            preview_pid = _load_pid(PREVIEW_NORMALIZER_PID_FILE)
+            if preview_pid and _pid_alive(preview_pid) and _pid_matches(preview_pid, "ffmpeg"):
+                self._preview_normalizer_pid = preview_pid
+                relay_playlist = GUIDE_PREVIEW_DIR / "mpegts-preview.m3u8"
+                relay_frame = GUIDE_PREVIEW_DIR / "latest-preview.jpg"
+                if relay_playlist.is_file():
+                    self._preview_normalized_playlist = relay_playlist
+                    try:
+                        cfg = self.store.get_config()
+                        transport = cached_preview_transport(cfg)
+                    except Exception:
+                        transport = ""
+                    self._preview_normalizer_kind = "hls" if transport == "hls" else "mpegts-or-file"
+                elif relay_frame.is_file():
+                    self._preview_normalized_playlist = relay_frame
+                    self._preview_normalizer_kind = "jpeg"
+                self._preview_normalizer_started_at = time.monotonic() - PREVIEW_RELAY_STARTUP_GRACE_SECS
+                self.logger.info("system", f"Reattached to Guide Preview normalizer PID {preview_pid}")
             self.logger.info("traffic", f"Reattached to existing traffic pipeline (renderer PID {renderer_pid}, ffmpeg PID {ffmpeg_pid})")
         self._worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="traffic-worker")
         self._worker_thread.start()

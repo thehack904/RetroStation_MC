@@ -1,6 +1,6 @@
 # RetroStation MC Changelog
 
-## [v1.5.0 Beta 1] - 2026-09-25
+## [v1.5.0 Beta 2] - 2026-09-25
 
 The first public beta of RetroStation MC v1.5.0 consolidates all work completed during the v1.5.0 development cycle.
 
@@ -11,6 +11,15 @@ The first public beta of RetroStation MC v1.5.0 consolidates all work completed 
 
 - Fixed HDHomeRun MPEG-TS Guide Preview A/V synchronization by rebasing video and audio to the same zero-based timeline before the local HLS handoff, regenerating missing timestamps, correcting audio clock drift, and eliminating avoidable MPEG-TS mux delay.
 - Fixed late-join corruption on shared HDHomeRun tuner sessions by packet-aligning the internal MPEG-TS relay and seeding new consumers from a short rolling prebuffer, so Guide Preview -> direct-channel handoffs do not attach at an arbitrary TS/PES boundary.
+
+### Beta 2 Guide Preview stabilization
+
+- Enforced `-r 15 -fps_mode cfr` on the HDHomeRun/MPEG-TS Preview relay and added real-time `-re` pacing before its input.
+- Kept HLS Preview on the validated `-re` + software `libx264` normalizer path with live timestamps preserved and 15 fps CFR output.
+- Prevented delayed Auto-aspect detection metadata from forcing a second full Guide pipeline rebuild after the Preview is already running. Explicit operator changes between Auto / 16:9 / 4:3 remain normal pipeline-level changes.
+- Fixed Stop Guide/watchdog lifecycle ordering by marking the Guide inactive before process teardown, so an intentional stop remains stopped while unexpected renderer/FFmpeg failures still recover automatically.
+- Suppressed session-wide hardware fallback on generic rapid pipeline restarts during Beta 2 stabilization; VA-API remains selected unless a future scoped encoder-failure path explicitly proves the hardware encoder failed.
+
 ### Shared HDHomeRun source sessions
 
 - Guide Preview: local uploaded video now uses the shared muxed A/V normalization relay instead of splitting video through `latest-preview.jpg` and audio through UDP, preventing split-path A/V latency with sources such as 2160p60 test media.
@@ -27,7 +36,7 @@ The first public beta of RetroStation MC v1.5.0 consolidates all work completed 
 ### Guide Preview synchronization and source legend
 
 - Restored the synchronized local-HLS Guide Preview path for remote HLS and MPEG-TS/HDHomeRun sources so preview video and preview audio share one timeline instead of separate JPEG-video and UDP-audio latency paths.
-- Preserved `+genpts+discardcorrupt` input handling and added real-time `-re` pacing only for HLS preview inputs; continuous MPEG-TS/HDHomeRun inputs remain sender-paced.
+- Preserved `+genpts+discardcorrupt` input handling and real-time pacing for both transport-specific Preview relays. Live HLS uses `-re` with preserved live timestamps; HDHomeRun/MPEG-TS uses `-re` at the local shared-source relay boundary plus explicit 15 fps CFR output to prevent burst delivery from destabilizing the Guide overlay.
 - Restored the Guide footer source key: `[R] RSMC Virtual | [I] IPTV/M3U | [H] HDHomeRun` (with a compact SD fallback when the full legend cannot fit).
 - No Now Playing behavior or configuration was changed.
 

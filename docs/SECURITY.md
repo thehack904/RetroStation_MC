@@ -4,12 +4,12 @@
 
 | Version | Status |
 |---|---|
-| v1.5.0 Beta 1 | Current beta |
+| v1.5.0 Beta 2 | Current beta |
 | v1.4.0 | Previous stable release |
 
 ## Security model
 
-RetroStation MC v1.5.0 Beta 1 is a local-control application. It has no built-in authentication or authorization. Treat it as a trusted-LAN service.
+RetroStation MC v1.5.0 Beta 2 is a local-control application. It has no built-in authentication or authorization. Treat it as a trusted-LAN service.
 
 Do not expose the app directly to the public internet.
 

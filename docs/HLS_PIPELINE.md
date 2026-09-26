@@ -159,10 +159,12 @@ It follows the same guide readiness principles and uses standby fallback while w
 
 Guide Preview input transport is resolved before the Guide pipeline is built. Local uploads are `file`. HTTP/HTTPS sources are classified as `hls`, `mpegts`, or unknown with a bounded detector. The result is cached only for the exact selected source key, so selecting a different URL/channel invalidates stale detection.
 
-The detected **input** transport chooses one of two internal processing paths:
+The detected **input** transport chooses transport-specific processing:
 
-- **HLS / local file / unknown network input:** one shared FFmpeg preview worker keeps normalized video and audio muxed on a common local HLS timeline. Video is normalized to the Guide frame rate and a 640x360 or 640x480 `yuv420p` canvas; audio is resampled to 48 kHz stereo AAC when present. The primary and secondary Guide encoders consume that same timestamped relay for both overlay video and Preview audio. HLS and local files are realtime-paced; local files loop continuously. This avoids the former split `latest-preview.jpg` + UDP-audio path and its independent buffering latency.
-- **Detected MPEG-TS network input:** a dedicated FFmpeg relay normalizes video/audio and writes a short local one-second-segment HLS relay (`data/guide_preview/mpegts-preview.m3u8` plus `mpegts-preview-*.ts`). The Guide FFmpeg process overlays that relay directly; Preview audio is mapped from the same relay input. This preserves the transport-specific path used for sustained MPEG-TS testing.
+- **Live HLS input:** a dedicated FFmpeg relay normalizes video/audio onto a short local HLS timeline. Input is paced with `-re`, output is normalized to the configured Guide frame rate (normally 15 fps) with CFR enforcement, and the incoming live timestamp domain is preserved rather than rebased with `setpts`, `first_pts=0`, or `-avoid_negative_ts make_zero`. This relay intentionally uses software `libx264` for compatibility with older VA-API hardware while the primary/secondary Guide encoders may remain hardware accelerated.
+- **Detected MPEG-TS / HDHomeRun input:** the sustained-tested MPEG-TS relay remains separate. Because the shared localhost source relay can deliver buffered transport data in bursts, this path also uses `-re` before `-i` and explicitly enforces the Guide frame rate with `-r <fps> -fps_mode cfr`. The validated MPEG-TS A/V timestamp rebasing remains in place. The relay writes `data/guide_preview/mpegts-preview.m3u8` plus one-second `mpegts-preview-*.ts` segments for both overlay video and Preview audio.
+- **Local file input:** local files retain real-time looped processing rather than running as fast as storage can deliver them.
+- **Relay supervision:** RSMC monitors both process state and relay output freshness; unhealthy Preview relays trigger coordinated recovery while an intentionally stopped Guide remains stopped.
 
 Preview audio mode remains independent:
 
@@ -170,7 +172,7 @@ Preview audio mode remains independent:
 - `preview`: use Preview-source audio from the matching transport-specific path when available.
 - `silent`: suppress Guide music and Preview audio and emit the normal compatibility-silence path.
 
-Preview enablement, source, transport cache, audio mode, or effective aspect changes are FFmpeg-level settings and require a pipeline rebuild. Auto aspect probing remains separate: it starts with the cached result or 16:9 fallback and performs bounded background aspect detection without delaying Guide startup.
+Preview enablement, source, transport cache, audio mode, and an explicit operator change of aspect mode (Auto / 16:9 / 4:3) are FFmpeg-level settings and require a pipeline rebuild. The delayed `guide_preview_detected_aspect_ratio` metadata produced by Auto probing does **not** itself trigger a second full Guide rebuild; Auto starts with the cached result or 16:9 fallback and performs bounded background detection without delaying Guide startup.
 
 This transport routing applies only to **Guide Preview inputs**. The Guide's generated stream remains HLS with MPEG-TS segments; selectable HLS versus continuous MPEG-TS Guide/Virtual Channel output is not implemented here.
 

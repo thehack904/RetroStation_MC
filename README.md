@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://github.com/thehack904/RetroStation_MC">
-    <img src="https://img.shields.io/badge/version-v1.5.0--beta.1-blue?style=for-the-badge" alt="Version">
+    <img src="https://img.shields.io/badge/version-v1.5.0--beta.2-blue?style=for-the-badge" alt="Version">
   </a>
   <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">
     <img src="https://img.shields.io/badge/license-CC--BY--NC--SA%204.0-lightgrey?style=for-the-badge" alt="License">
@@ -14,7 +14,7 @@
 
 RetroStation MC is an admin-driven retro TV guide channel generator. It ingests an M3U playlist and XMLTV guide data, renders a continuous guide-style video feed, packages that feed as HLS, and exposes M3U/XMLTV outputs for use in RetroIPTVGuide or another IPTV client.
 
-This repository is versioned as **v1.5.0 Beta 1**.
+This repository is versioned as **v1.5.0 Beta 2**.
 
 ## What it does
 
@@ -66,7 +66,7 @@ The output is designed to behave like a live virtual TV channel. The app renders
 
 ## Local-only security model
 
-RetroStation MC v1.5.0 Beta 1 has **no authentication**. Do not expose it directly to the public internet. Run it on a trusted LAN, behind a VPN, or behind an authenticated reverse proxy.
+RetroStation MC v1.5.0 Beta 2 has **no authentication**. Do not expose it directly to the public internet. Run it on a trusted LAN, behind a VPN, or behind an authenticated reverse proxy.
 
 ## Quick start with Docker Compose
 
@@ -256,7 +256,7 @@ If Plex can discover the RSMC tuner and complete guide mapping but playback fail
 
 ## HDHomeRun Input output modes
 
-The v1.5.0 Beta 1 **HDHomeRun Input** tab configures physical tuner discovery, channel selection, rendered-Guide inclusion, and rebroadcast. The compact channel table supports search, All/Used/Rebroadcast/Unused filtering, fixed-height scrolling, sticky headers, counts, and independent bulk selection for **Use** and **Rebroadcast**. The selected Output Mode controls how rebroadcast channels are delivered. Continuous MPEG-TS bypasses HLS segmentation and uses the same source-aware codec/deinterlace/hardware-acceleration policy as the HLS test path.
+The v1.5.0 Beta 2 **HDHomeRun Input** tab configures physical tuner discovery, channel selection, rendered-Guide inclusion, and rebroadcast. The compact channel table supports search, All/Used/Rebroadcast/Unused filtering, fixed-height scrolling, sticky headers, counts, and independent bulk selection for **Use** and **Rebroadcast**. The selected Output Mode controls how rebroadcast channels are delivered. Continuous MPEG-TS bypasses HLS segmentation and uses the same source-aware codec/deinterlace/hardware-acceleration policy as the HLS test path.
 
 The optional **Include selected physical channels in the RetroStation MC Guide** setting merges only channels checked under **Use** into the rendered Guide. This does not replace Playlist Source or XMLTV Source and does not change the validated tuner transport path. When SiliconDust XMLTV data is available, current and future programme titles, times, and descriptions are mapped to those physical channel rows. If guide retrieval is temporarily unavailable, the selected channel remains visible with a programming-unavailable fallback entry.
 

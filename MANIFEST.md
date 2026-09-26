@@ -1,4 +1,4 @@
-# RetroStation MC v1.5.0 Beta 1 Release Manifest
+# RetroStation MC v1.5.0 Beta 2 Release Manifest
 
 Public release package contents include the application source, Linux installer, Docker support, tests, sample data, and documentation.
 

@@ -10,7 +10,7 @@ from app.hdhomerun_source import (
 
 
 def test_normalize_base_url_accepts_hostname():
-    assert normalize_base_url("hdhr-1096b1de.lan") == "http://hdhr-1096b1de.lan"
+    assert normalize_base_url("hdhr-12345678.lan") == "http://hdhr-12345678.lan"
 
 
 def test_merge_lineup_preserves_enabled_selection():
